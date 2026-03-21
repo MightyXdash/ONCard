@@ -37,7 +37,7 @@ _important_
 - Memories: When you chat with the AI, it will save your strengths, weakneses, personality, hobbies to later feel more personalized. (Not related to LTSM)
 
 _minor_
-- enhanced UI: A better and intuitive UI is never a bad choice for a study app. right now, there is some bad engineering choices which will be removed and replaced with a better UI for better focus.
+- enhanced UI: A better and intuitive UI is never a bad choice for a study app. right now, there are some bad engineering choices which will be removed and replaced with a better UI for better focus.
 - Sound effects: Research says, "The more it feels responsive, the more you feel to interact". More studying? never a bad choice.
 
 # Citation:
