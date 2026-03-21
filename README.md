@@ -47,4 +47,4 @@ If you are using my code or elements from this project, please cite:
 https://github.com/MightyXdash/ONCard
 ```
 Thanks for using my app🤗.
-Love to the oepnsource community🥰.
+Love to the opensource community🥰.
