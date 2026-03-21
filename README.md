@@ -29,7 +29,7 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
 
 _important_
 - Files To Card (TFC): FTC will allow you to import PNGs (school notes), Slides(.PPTX) from your teacher, or even PDFs which contains academic questions, then select how much question you want to make (max: 28Q/ 17pg-F). This is usefull since a student wont have time to manually write the questions in the creator. (Max files: 12 with max settings, 17 with max settings + force. minimum specs: GTX 1080 ti/ RTX 2060 super)
-- Neural Algorithm (NNA): Right now, your next question is decided through a random selection from the sequence. With NNA, the study tab will give you test samples and then build the perfect set of cards from the neural network. This neural network uses: a LLM, an embedding model, heuristics.
+- Neural Algorithm (NNA): Right now, your next question is decided through a random selection from the sequence. With NNA, the study tab will give you test samples and then build the perfect set of cards from the neural network. This algorithm uses: a LLM, an embedding model, heuristics.
 - Discuss: This is a generic AI assistant, but tuned to hellp you with studies. The reason for adding this feature is, the user can tag a card to the chat and ask about it. And most importantly the model has three levels of context awareness:
  Global awarenes – Name, Age, etc. (Predefined user data utilized by the application to ensure AI-generated content is appropriate for the user's age group.)
  Self Attention — The short form context the AI hold to remember the information in the chat.
