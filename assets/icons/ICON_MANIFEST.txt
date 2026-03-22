@@ -1,0 +1,53 @@
+Place PNG files in these folders using these exact names.
+Recommended sizes:
+- App logo: 128x128
+- Most UI icons: 64x64
+
+[assets/icons/app]
+app_logo.png
+setup_wizard.png
+
+[assets/icons/setup]
+ram_system_check.png
+install_download.png
+optional_model.png
+warning.png
+success.png
+retry_error.png
+
+[assets/icons/create]
+autofill_magic.png
+question.png
+title.png
+subject.png
+category.png
+subtopic.png
+answer.png
+hint.png
+difficulty.png
+autosave.png
+queue_activity.png
+edit_location.png
+dropdown.png
+
+[assets/icons/study]
+flashcard.png
+start.png
+next.png
+grade.png
+hint.png
+timer.png
+
+[assets/icons/common]
+pending_red_circle.png
+complete_green_circle.png
+popup_confirm.png
+yes.png
+no.png
+chevron_right.png
+chevron_down.png
+disabled_subject.png
+history.png
+folder.png
+backup.png
+settings_info.png

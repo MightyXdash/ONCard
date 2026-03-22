@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data
+data/
+
+# Build outputs
+build/
+dist/
+packaging/out/
+*.dist/
+*.onefile-build/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
