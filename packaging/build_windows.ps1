@@ -6,13 +6,12 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $BuildRoot = Join-Path $RepoRoot "build"
-$NuitkaOutputDir = Join-Path $BuildRoot "nuitka"
 $InstallerOutDir = Join-Path $BuildRoot "installer"
 $VersionScript = Join-Path $RepoRoot "packaging\read_version.py"
 $IconPng = Join-Path $RepoRoot "assets\icons\app\app_logo.png"
 $IconIco = Join-Path $RepoRoot "assets\icons\app\app_logo.ico"
 
-New-Item -ItemType Directory -Force -Path $BuildRoot, $NuitkaOutputDir, $InstallerOutDir | Out-Null
+New-Item -ItemType Directory -Force -Path $BuildRoot, $InstallerOutDir | Out-Null
 
 if (-not (Test-Path $PythonExe)) {
     throw "Python executable not found at $PythonExe"
@@ -22,6 +21,9 @@ $AppVersion = & $PythonExe $VersionScript version
 $FileVersion = & $PythonExe $VersionScript fileversion
 $Publisher = & $PythonExe $VersionScript publisher
 $AppName = & $PythonExe $VersionScript appname
+$NuitkaOutputDir = Join-Path $BuildRoot "nuitka-$AppVersion"
+
+New-Item -ItemType Directory -Force -Path $NuitkaOutputDir | Out-Null
 
 Write-Host "Installing build dependencies..."
 & $PythonExe -m pip install --upgrade pip

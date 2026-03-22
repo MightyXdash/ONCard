@@ -43,8 +43,21 @@ class AppPaths:
     @classmethod
     def from_runtime(cls, root: Path) -> "AppPaths":
         is_frozen = bool(getattr(sys, "frozen", False))
-        bundle_root = Path(getattr(sys, "_MEIPASS", root))
         install_root = Path(sys.executable).resolve().parent if is_frozen else root
+        bundle_candidates: list[Path] = []
+
+        if is_frozen:
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                bundle_candidates.append(Path(meipass))
+            bundle_candidates.append(install_root)
+        else:
+            bundle_candidates.append(root)
+
+        bundle_root = next(
+            (candidate for candidate in bundle_candidates if (candidate / "assets").exists()),
+            bundle_candidates[0],
+        )
 
         if is_frozen:
             roaming = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming")))
@@ -65,18 +78,24 @@ class AppPaths:
         )
 
     def ensure(self) -> None:
-        for path in [
-            self.icons / "app",
-            self.icons / "setup",
-            self.icons / "create",
-            self.icons / "study",
-            self.icons / "common",
-            self.banners,
+        paths_to_create = [
             self.config,
             self.subjects,
             self.study_history,
             self.backups,
             self.updates,
             self.runtime,
-        ]:
+        ]
+        if not self.is_frozen:
+            paths_to_create = [
+                self.icons / "app",
+                self.icons / "setup",
+                self.icons / "create",
+                self.icons / "study",
+                self.icons / "common",
+                self.banners,
+                *paths_to_create,
+            ]
+
+        for path in paths_to_create:
             path.mkdir(parents=True, exist_ok=True)
