@@ -2,6 +2,8 @@
 
 Local-first desktop flashcard app with onboarding, Ollama model setup, AI autofill, and random study mode.
 
+<img width="512" height="512" alt="ONCards logo" src="https://github.com/user-attachments/assets/cd88364e-904a-41d1-87ff-0444d2cd70a7" />
+
 ## Quick Start
 1. Install Python 3.11+.
 2. Install dependencies:
