@@ -3,14 +3,24 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.Python
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
 
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
+.env
+.envrc
 
 # Local runtime data
 data/
@@ -21,6 +31,9 @@ dist/
 packaging/out/
 *.dist/
 *.onefile-build/
+*.egg-info/
+*.egg
+MANIFEST
 
 # IDE / OS
 .idea/
