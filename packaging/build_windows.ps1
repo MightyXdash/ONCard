@@ -21,50 +21,86 @@ $AppVersion = & $PythonExe $VersionScript version
 $FileVersion = & $PythonExe $VersionScript fileversion
 $Publisher = & $PythonExe $VersionScript publisher
 $AppName = & $PythonExe $VersionScript appname
-$NuitkaOutputDir = Join-Path $BuildRoot "nuitka-$AppVersion"
+$PyInstallerOutputDir = Join-Path $BuildRoot "pyinstaller-$AppVersion"
+$PyInstallerDistDir = Join-Path $PyInstallerOutputDir "dist"
+$PyInstallerWorkDir = Join-Path $PyInstallerOutputDir "build"
+$PyInstallerSpecDir = Join-Path $PyInstallerOutputDir "spec"
+$VersionFile = Join-Path $PyInstallerOutputDir "pyinstaller_version_info.txt"
 
-New-Item -ItemType Directory -Force -Path $NuitkaOutputDir | Out-Null
+New-Item -ItemType Directory -Force -Path $PyInstallerOutputDir, $PyInstallerDistDir, $PyInstallerWorkDir, $PyInstallerSpecDir | Out-Null
 
 Write-Host "Installing build dependencies..."
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -r (Join-Path $RepoRoot "requirements.txt")
-& $PythonExe -m pip install nuitka ordered-set zstandard pillow
+& $PythonExe -m pip install pyinstaller pillow
 
 if ((Test-Path $IconPng) -and -not (Test-Path $IconIco)) {
     Write-Host "Generating .ico from PNG..."
     & $PythonExe (Join-Path $RepoRoot "packaging\make_icon.py") $IconPng $IconIco
 }
 
-Write-Host "Building ONCards with Nuitka..."
+Write-Host "Building ONCards with PyInstaller..."
 $env:PYTHONPATH = "$RepoRoot\src"
-$nuitkaArgs = @(
-    "-m", "nuitka",
-    "--standalone",
-    "--mingw64",
-    "--enable-plugin=pyside6",
-    "--include-package=studymate",
-    "--assume-yes-for-downloads",
-    "--windows-console-mode=disable",
-    "--output-dir=$NuitkaOutputDir",
-    "--output-filename=ONCards.exe",
-    "--include-data-dir=$RepoRoot\assets=assets",
-    "--company-name=$Publisher",
-    "--product-name=$AppName",
-    "--file-version=$FileVersion",
-    "--product-version=$FileVersion",
+$versionParts = $FileVersion.Split(".")
+$versionFileBody = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($($versionParts[0]), $($versionParts[1]), $($versionParts[2]), $($versionParts[3])),
+    prodvers=($($versionParts[0]), $($versionParts[1]), $($versionParts[2]), $($versionParts[3])),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', '$Publisher'),
+          StringStruct('FileDescription', '$AppName'),
+          StringStruct('FileVersion', '$FileVersion'),
+          StringStruct('InternalName', '$AppName'),
+          StringStruct('OriginalFilename', 'ONCards.exe'),
+          StringStruct('ProductName', '$AppName'),
+          StringStruct('ProductVersion', '$AppVersion')
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@
+$versionFileBody | Set-Content -Path $VersionFile -Encoding UTF8
+
+$addData = "$RepoRoot\assets;assets"
+$pyinstallerArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm",
+    "--clean",
+    "--windowed",
+    "--name", "ONCards",
+    "--paths", "$RepoRoot\src",
+    "--hidden-import", "studymate.app",
+    "--collect-submodules", "studymate",
+    "--distpath", $PyInstallerDistDir,
+    "--workpath", $PyInstallerWorkDir,
+    "--specpath", $PyInstallerSpecDir,
+    "--version-file", $VersionFile,
+    "--add-data", $addData,
     (Join-Path $RepoRoot "main.py")
 )
 if (Test-Path $IconIco) {
-    $nuitkaArgs += "--windows-icon-from-ico=$IconIco"
+    $pyinstallerArgs += "--icon"
+    $pyinstallerArgs += $IconIco
 }
-& $PythonExe @nuitkaArgs
+& $PythonExe @pyinstallerArgs
 
-$DistDir = Join-Path $NuitkaOutputDir "main.dist"
+$DistDir = Join-Path $PyInstallerDistDir "ONCards"
 if (-not (Test-Path $DistDir)) {
-    $DistDir = Join-Path $NuitkaOutputDir "ONCards.dist"
-}
-if (-not (Test-Path $DistDir)) {
-    throw "Could not find Nuitka standalone output directory."
+    throw "Could not find PyInstaller output directory."
 }
 
 Write-Host "Locating Inno Setup..."
