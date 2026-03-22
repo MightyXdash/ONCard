@@ -24,7 +24,10 @@ from studymate.workers.update_download_worker import UpdateDownloadWorker
 
 
 def run_app() -> int:
-    root = Path(__file__).resolve().parents[2]
+    if getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+    else:
+        root = Path(__file__).resolve().parents[2]
     paths = AppPaths.from_runtime(root)
     paths.ensure()
 
