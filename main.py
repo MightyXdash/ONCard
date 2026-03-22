@@ -5,18 +5,22 @@ import traceback
 
 
 def _write_startup_log(message: str) -> None:
-    local_appdata = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    log_dir = local_appdata / "ONCards" / "runtime"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "startup_error.log"
-    log_path.write_text(message, encoding="utf-8")
+    try:
+        local_appdata = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        log_dir = local_appdata / "ONCards" / "runtime"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "startup_error.log"
+        log_path.write_text(message, encoding="utf-8")
+    except OSError:
+        return
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
+    if not getattr(sys, "frozen", False):
+        src = root / "src"
+        if str(src) not in sys.path:
+            sys.path.insert(0, str(src))
 
     try:
         from studymate.app import run_app  # noqa: E402

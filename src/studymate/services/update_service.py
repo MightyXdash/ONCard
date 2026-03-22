@@ -8,6 +8,7 @@ import subprocess
 from packaging.version import InvalidVersion, Version
 import requests
 
+from studymate.services.update_notes import parse_update_notes
 from studymate.utils.paths import AppPaths
 from studymate.version import GITHUB_RELEASES_API, INSTALLER_NAME_PREFIX
 
@@ -23,6 +24,8 @@ class ReleaseInfo:
     html_url: str
     asset_name: str
     asset_url: str
+    notes_text: str
+    image_urls: list[str]
 
 
 class UpdateService:
@@ -58,6 +61,7 @@ class UpdateService:
         asset = self._pick_installer_asset(payload.get("assets", []))
         if asset is None:
             return None
+        notes = parse_update_notes(str(payload.get("body", "") or ""))
 
         return ReleaseInfo(
             version=latest_version,
@@ -65,6 +69,8 @@ class UpdateService:
             html_url=str(payload.get("html_url", "")),
             asset_name=str(asset.get("name", "")),
             asset_url=str(asset.get("browser_download_url", "")),
+            notes_text=notes.text,
+            image_urls=notes.image_urls,
         )
 
     def _pick_installer_asset(self, assets: list[dict]) -> dict | None:

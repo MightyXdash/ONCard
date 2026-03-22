@@ -34,11 +34,13 @@ if ((Test-Path $IconPng) -and -not (Test-Path $IconIco)) {
 }
 
 Write-Host "Building ONCards with Nuitka..."
+$env:PYTHONPATH = "$RepoRoot\src"
 $nuitkaArgs = @(
     "-m", "nuitka",
     "--standalone",
     "--mingw64",
     "--enable-plugin=pyside6",
+    "--include-package=studymate",
     "--assume-yes-for-downloads",
     "--windows-console-mode=disable",
     "--output-dir=$NuitkaOutputDir",
