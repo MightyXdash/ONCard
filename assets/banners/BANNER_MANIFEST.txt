@@ -1,0 +1,15 @@
+All banners should be 16:9 PNG (example: 1600x900 or 1280x720).
+Use these exact filenames.
+
+onboarding_profile_banner_16x9.png
+onboarding_about_banner_16x9.png
+onboarding_models_banner_16x9.png
+onboarding_quickstart_banner_16x9.png
+
+performance_default_banner_16x9.png
+performance_poor_banner_16x9.png
+performance_normal_banner_16x9.png
+performance_smooth_banner_16x9.png
+performance_best_banner_16x9.png
+
+main_dashboard_banner_16x9.png
