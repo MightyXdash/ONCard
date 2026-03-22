@@ -9,7 +9,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $VersionScript = Join-Path $RepoRoot "packaging\read_version.py"
 $Version = & $PythonExe $VersionScript version
 $Tag = "v$Version"
-$NotesPath = Join-Path $RepoRoot "release_notes\$Version.md"
+$NotesPath = Join-Path $RepoRoot "release_notes\$Tag.md"
 $InstallerPath = Join-Path $RepoRoot "build\installer\ONCards-Setup-$Version.exe"
 
 if (-not (Test-Path $InstallerPath)) {
@@ -37,7 +37,7 @@ $headers = @{
     "User-Agent" = "ONCards-Release-Publisher"
 }
 
-$releaseBody = Get-Content $NotesPath -Raw
+$releaseBody = [System.IO.File]::ReadAllText($NotesPath)
 $releaseApi = "https://api.github.com/repos/$Repo/releases"
 $existing = $null
 try {
