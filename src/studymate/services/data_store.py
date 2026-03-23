@@ -107,11 +107,32 @@ class DataStore:
             "created_at": card_payload.get("created_at") or self.now_iso(),
             "updated_at": self.now_iso(),
         }
+        run_id = str(card_payload.get("run_id", "")).strip()
+        if run_id:
+            record["run_id"] = run_id
         cards = self.load_subject_cards(subject)
         cards = [item for item in cards if item.get("id") != record["id"]]
         cards.append(record)
         self.save_subject_cards(subject, cards)
         return record
+
+    def delete_cards_by_run(self, run_id: str) -> int:
+        removed = 0
+        for subject in SUBJECT_TAXONOMY:
+            cards = self.load_subject_cards(subject)
+            keep = [card for card in cards if card.get("run_id") != run_id]
+            removed += len(cards) - len(keep)
+            if len(keep) != len(cards):
+                self.save_subject_cards(subject, keep)
+        return removed
+
+    def delete_card(self, card_id: str, subject: str) -> bool:
+        cards = self.load_subject_cards(subject)
+        keep = [card for card in cards if card.get("id") != card_id]
+        if len(keep) == len(cards):
+            return False
+        self.save_subject_cards(subject, keep)
+        return True
 
     def move_card(self, card_id: str, old_subject: str, new_subject: str, updates: dict) -> dict | None:
         old_cards = self.load_subject_cards(old_subject)

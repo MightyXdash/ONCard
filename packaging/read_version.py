@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
 from packaging.version import Version  # noqa: E402
 
 from studymate.constants import APP_NAME  # noqa: E402
-from studymate.version import APP_PUBLISHER, APP_VERSION  # noqa: E402
+from studymate.version import APP_COPYRIGHT, APP_DESCRIPTION, APP_INTERNAL_NAME, APP_ORIGINAL_FILENAME, APP_PUBLISHER, APP_VERSION  # noqa: E402
 
 
 def main() -> int:
@@ -23,6 +23,14 @@ def main() -> int:
         print(APP_PUBLISHER)
     elif arg == "appname":
         print(APP_NAME)
+    elif arg == "description":
+        print(APP_DESCRIPTION)
+    elif arg == "internalname":
+        print(APP_INTERNAL_NAME)
+    elif arg == "originalfilename":
+        print(APP_ORIGINAL_FILENAME)
+    elif arg == "copyright":
+        print(APP_COPYRIGHT)
     elif arg == "fileversion":
         version = Version(APP_VERSION)
         parts = [version.major, version.minor, version.micro]

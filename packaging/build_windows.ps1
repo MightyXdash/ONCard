@@ -21,6 +21,10 @@ $AppVersion = & $PythonExe $VersionScript version
 $FileVersion = & $PythonExe $VersionScript fileversion
 $Publisher = & $PythonExe $VersionScript publisher
 $AppName = & $PythonExe $VersionScript appname
+$Description = & $PythonExe $VersionScript description
+$InternalName = & $PythonExe $VersionScript internalname
+$OriginalFilename = & $PythonExe $VersionScript originalfilename
+$CopyrightText = & $PythonExe $VersionScript copyright
 $PyInstallerOutputDir = Join-Path $BuildRoot "pyinstaller-$AppVersion"
 $PyInstallerDistDir = Join-Path $PyInstallerOutputDir "dist"
 $PyInstallerWorkDir = Join-Path $PyInstallerOutputDir "build"
@@ -39,7 +43,7 @@ if ((Test-Path $IconPng) -and -not (Test-Path $IconIco)) {
     & $PythonExe (Join-Path $RepoRoot "packaging\make_icon.py") $IconPng $IconIco
 }
 
-Write-Host "Building ONCards with PyInstaller..."
+Write-Host "Building ONCard with PyInstaller..."
 $env:PYTHONPATH = "$RepoRoot\src"
 $versionParts = $FileVersion.Split(".")
 $versionFileBody = @"
@@ -60,12 +64,13 @@ VSVersionInfo(
         '040904B0',
         [
           StringStruct('CompanyName', '$Publisher'),
-          StringStruct('FileDescription', '$AppName'),
+          StringStruct('FileDescription', '$Description'),
           StringStruct('FileVersion', '$FileVersion'),
-          StringStruct('InternalName', '$AppName'),
-          StringStruct('OriginalFilename', 'ONCards.exe'),
+          StringStruct('InternalName', '$InternalName'),
+          StringStruct('OriginalFilename', '$OriginalFilename'),
           StringStruct('ProductName', '$AppName'),
-          StringStruct('ProductVersion', '$AppVersion')
+          StringStruct('ProductVersion', '$AppVersion'),
+          StringStruct('LegalCopyright', '$CopyrightText')
         ]
       )
     ]),
@@ -81,7 +86,7 @@ $pyinstallerArgs = @(
     "--noconfirm",
     "--clean",
     "--windowed",
-    "--name", "ONCards",
+    "--name", "ONCard",
     "--paths", "$RepoRoot\src",
     "--hidden-import", "studymate.app",
     "--collect-submodules", "studymate",
@@ -98,7 +103,7 @@ if (Test-Path $IconIco) {
 }
 & $PythonExe @pyinstallerArgs
 
-$DistDir = Join-Path $PyInstallerDistDir "ONCards"
+$DistDir = Join-Path $PyInstallerDistDir "ONCard"
 if (-not (Test-Path $DistDir)) {
     throw "Could not find PyInstaller output directory."
 }
@@ -122,6 +127,6 @@ Write-Host "Building installer with Inno Setup..."
     "/DSourceRoot=$RepoRoot" `
     "/DBuildOutput=$DistDir" `
     "/DInstallerOutput=$InstallerOutDir" `
-    (Join-Path $RepoRoot "packaging\ONCards.iss")
+    (Join-Path $RepoRoot "packaging\ONCard.iss")
 
 Write-Host "Build complete."

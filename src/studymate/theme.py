@@ -54,6 +54,16 @@ def app_stylesheet() -> str:
         padding: 8px 14px;
         font-weight: 700;
     }
+    QLabel#FTCBetaBadge {
+        background-color: #151515;
+        color: #ffffff;
+        border: 1px solid #151515;
+        border-radius: 12px;
+        padding: 5px 11px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+    }
     QLabel#QueueStatusDotPending {
         background-color: #8c8c8c;
         min-width: 12px;
@@ -102,6 +112,31 @@ def app_stylesheet() -> str:
     QPushButton#DangerlessButton {
         background-color: #f1f1f1;
         border-color: #dcdcdc;
+    }
+    QPushButton#CompactGhostButton {
+        background-color: #ffffff;
+        border: 1px solid #e4e4e4;
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        min-width: 0px;
+    }
+    QPushButton#CompactGhostButton:hover {
+        background-color: #f4f4f4;
+        border-color: #d8d8d8;
+    }
+    QToolButton#CompactGhostButton {
+        background-color: #ffffff;
+        border: 1px solid #e4e4e4;
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    QToolButton#CompactGhostButton:hover {
+        background-color: #f4f4f4;
+        border-color: #d8d8d8;
     }
     QPushButton#TopNavButton {
         min-width: 110px;
@@ -268,5 +303,89 @@ def app_stylesheet() -> str:
         background-color: #fafafa;
         border: 1px solid #e6e6e6;
         border-radius: 16px;
+    }
+    QFrame#FTCControlsSurface {
+        background-color: #fcfcfc;
+        border: 1px solid #ececec;
+        border-radius: 16px;
+    }
+    QWidget#FTCFileRow {
+        background-color: #ffffff;
+        border: 1px solid #ececec;
+        border-radius: 16px;
+    }
+    QWidget#FTCFileBody, QWidget#FTCFileActions {
+        background: transparent;
+        border: none;
+    }
+    QWidget#FTCFileName {
+        color: #232323;
+        font-size: 13px;
+        font-weight: 700;
+        background: transparent;
+    }
+    QListWidget#FTCFileList {
+        background: transparent;
+        border: none;
+    }
+    QListWidget#FTCFileList::item {
+        background: transparent;
+        border: none;
+        padding: 0px;
+        margin: 0px;
+    }
+    QListWidget#FTCFileList::item:selected, QListWidget#FTCFileList::item:hover {
+        background: transparent;
+    }
+    QFrame#DropZone {
+        background-color: #fbfbfb;
+        border: 1px dashed #cfcfcf;
+        border-radius: 18px;
+    }
+    QFrame#DropZone:disabled {
+        background-color: #f2f2f2;
+        border-color: #dddddd;
+    }
+    QLabel#FTCPreviewThumb {
+        background-color: #f6f6f6;
+        border: 1px solid #e6e6e6;
+        border-radius: 12px;
+        color: #666666;
+        font-size: 11px;
+        font-weight: 800;
+        padding: 4px;
+    }
+    QLabel#FTCPreviewDialog {
+        background-color: #fafafa;
+        border: 1px solid #e6e6e6;
+        border-radius: 18px;
+        padding: 12px;
+    }
+    QScrollArea {
+        background: transparent;
+        border: none;
+    }
+    QPushButton#FTCToggle {
+        background-color: #f2f2f2;
+        border: 1px solid #dddddd;
+        border-radius: 18px;
+        padding: 10px 16px;
+        font-size: 13px;
+        font-weight: 700;
+        color: #494949;
+    }
+    QPushButton#FTCToggle:hover {
+        background-color: #ebebeb;
+        border-color: #d3d3d3;
+    }
+    QPushButton#FTCToggle:checked {
+        background-color: #111111;
+        border-color: #111111;
+        color: #ffffff;
+    }
+    QPushButton#FTCToggle:disabled {
+        background-color: #ededed;
+        color: #a8a8a8;
+        border-color: #e3e3e3;
     }
     """

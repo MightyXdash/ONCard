@@ -20,7 +20,7 @@ class MainWindow(QMainWindow):
         self.ollama = ollama
         self.icons = icons
         self.pending_update_launcher: Path | None = None
-        self.setWindowTitle("ONCards")
+        self.setWindowTitle("ONCard")
         self.resize(1600, 980)
         self._build_ui()
 
@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Force quit?",
-                "A question(s) is being saved. do you want to force quit?",
+                "ONCard is still processing queued work. Do you want to force quit?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

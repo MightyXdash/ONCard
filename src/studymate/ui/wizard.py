@@ -7,7 +7,6 @@ import webbrowser
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -18,7 +17,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -98,7 +96,7 @@ class FieldBlock(QWidget):
 class ProfilePage(OnboardingPage):
     def __init__(self, banners_root: Path) -> None:
         super().__init__(
-            title="Welcome to ONCards",
+            title="Welcome to ONCard",
             body="Let us shape the app around how you study, with clean controls and less clutter from the start.",
             banner_path=banners_root / "onboarding_profile_banner_16x9.png",
             banner_name="onboarding_profile_banner_16x9.png",
@@ -200,7 +198,7 @@ class ModelInstallerPage(OnboardingPage):
     def __init__(self, banners_root: Path, icons: IconHelper, ollama: OllamaService) -> None:
         super().__init__(
             title="Install AI models",
-            body="Auto mode picks the clean default set. Advanced installation lets you choose model-by-model.",
+            body="ONCard installs the required Gemma models automatically so every user goes through the same setup.",
             banner_path=banners_root / "onboarding_models_banner_16x9.png",
             banner_name="onboarding_models_banner_16x9.png",
         )
@@ -234,35 +232,6 @@ class ModelInstallerPage(OnboardingPage):
             self.ollama_label.hide()
             self.ollama_button.hide()
 
-        top_row = QHBoxLayout()
-        self.advanced_checkbox = QCheckBox("Advanced installation")
-        self.advanced_checkbox.toggled.connect(self._apply_mode_state)
-        self.advanced_checkbox.toggled.connect(lambda *_: self.changed.emit())
-        self.models_toggle = QPushButton("Show models")
-        self.models_toggle.setCheckable(True)
-        self.models_toggle.clicked.connect(self._toggle_model_panel)
-        top_row.addWidget(self.advanced_checkbox)
-        top_row.addStretch(1)
-        top_row.addWidget(self.models_toggle)
-
-        checks_host = QWidget()
-        self.checks_layout = QVBoxLayout(checks_host)
-        self.checks_layout.setContentsMargins(0, 0, 0, 0)
-        self.checks_layout.setSpacing(6)
-        self.model_checks: dict[str, QCheckBox] = {}
-        for key, spec in MODELS.items():
-            check = QCheckBox(f"{spec.display_name}  |  {spec.size_label}")
-            check.toggled.connect(self._on_selection_changed)
-            self.model_checks[key] = check
-            self.checks_layout.addWidget(check)
-
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setWidget(checks_host)
-        self.scroll.setMinimumHeight(110)
-        self.scroll.setMaximumHeight(150)
-        self.scroll.hide()
-
         self.install_button = QPushButton("Install selected models")
         self.install_button.setObjectName("PrimaryButton")
         self.install_button.clicked.connect(self._install_models)
@@ -279,8 +248,6 @@ class ModelInstallerPage(OnboardingPage):
         layout.addWidget(self.warning_label)
         layout.addWidget(self.ollama_label)
         layout.addWidget(self.ollama_button, 0, Qt.AlignLeft)
-        layout.addLayout(top_row)
-        layout.addWidget(self.scroll)
         layout.addWidget(self.install_button)
         layout.addWidget(self.progress)
         layout.addWidget(self.log)
@@ -289,43 +256,18 @@ class ModelInstallerPage(OnboardingPage):
         self.body_layout().addStretch(1)
 
         self._apply_recommended_selection()
-        self._apply_mode_state()
-
-    def _toggle_model_panel(self) -> None:
-        visible = self.models_toggle.isChecked()
-        self.scroll.setVisible(visible)
-        self.models_toggle.setText("Hide models" if visible else "Show models")
-
-    def _on_selection_changed(self, *_args) -> None:
-        self.last_selected = self.selected_models()
         self._refresh_copy()
-        self.changed.emit()
 
     def _apply_recommended_selection(self) -> None:
-        recommended = recommended_models_for_ram(self.ram_gb)
-        for key, check in self.model_checks.items():
-            check.blockSignals(True)
-            check.setChecked(key in recommended)
-            check.blockSignals(False)
-        self.last_selected = recommended
+        self.last_selected = recommended_models_for_ram(self.ram_gb)
         self._refresh_copy()
-
-    def _apply_mode_state(self, *_args) -> None:
-        advanced = self.advanced_checkbox.isChecked()
-        if not advanced:
-            self._apply_recommended_selection()
-        for key, check in self.model_checks.items():
-            check.setEnabled(self.ram_gb >= 7 and advanced)
-        self.scroll.setEnabled(advanced)
-        self._refresh_copy()
-        self.changed.emit()
 
     def _refresh_copy(self) -> None:
         selected = self.selected_models()
         size_gb = total_selected_size_gb(selected)
         can_install = self.ollama_installed and self.ram_gb >= 7
         if self.ram_gb < 7:
-            self.summary_label.setText("This device is below the minimum requirement for ONCards.")
+            self.summary_label.setText("This device is below the minimum requirement for ONCard.")
             self.install_button.setEnabled(False)
         elif not self.ollama_installed:
             self.summary_label.setText("Install Ollama first to unlock model downloads.")
@@ -341,33 +283,21 @@ class ModelInstallerPage(OnboardingPage):
             self.install_button.setEnabled(True)
 
         self.size_label.setText(f"Selected download size: {size_gb:.1f} GB")
-        if self.ram_gb < 15:
-            self.warning_label.setText(
-                "Some experimental tasks may require Qwen3.5:9b, but your system isn't eligible. "
-                'You can download it by: ticking "advanced installation" and enabling Qwen3.5:9b.'
-            )
-            self.warning_label.show()
-        else:
-            self.warning_label.hide()
+        self.warning_label.setText("ONCard now uses only gemma3:4b for OCR, paper generation, questions, grading, and follow-up.")
+        self.warning_label.show()
 
-        if not self.advanced_checkbox.isChecked():
-            self.models_toggle.setText("Show models")
-            self.models_toggle.setChecked(False)
-            self.scroll.hide()
         self.ollama_label.setVisible(not self.ollama_installed)
         self.ollama_button.setVisible(not self.ollama_installed)
-        self.models_toggle.setEnabled(can_install)
-        self.advanced_checkbox.setEnabled(can_install)
 
     def selected_models(self) -> list[str]:
-        return [key for key, check in self.model_checks.items() if check.isChecked()]
+        return list(recommended_models_for_ram(self.ram_gb))
 
     def _append_log(self, text: str) -> None:
         self.log.append(text)
 
     def _install_models(self) -> None:
         if self.ram_gb < 7:
-            QMessageBox.warning(self, "Requirements", "ONCards needs at least 7GB of RAM.")
+            QMessageBox.warning(self, "Requirements", "ONCard needs at least 7GB of RAM.")
             return
         if self.install_worker and self.install_worker.isRunning():
             return
@@ -381,8 +311,6 @@ class ModelInstallerPage(OnboardingPage):
         self.progress.setValue(0)
         self.log.clear()
         self.install_button.setEnabled(False)
-        self.models_toggle.setEnabled(False)
-        self.advanced_checkbox.setEnabled(False)
 
         self.install_worker = ModelInstallWorker(selected, self.ollama)
         self.install_worker.line.connect(self._append_log)
@@ -402,8 +330,6 @@ class ModelInstallerPage(OnboardingPage):
 
     def _on_install_complete(self, _: dict) -> None:
         self.install_button.setEnabled(True)
-        self.models_toggle.setEnabled(True)
-        self.advanced_checkbox.setEnabled(True)
         self.changed.emit()
 
     def can_continue(self) -> bool:
@@ -424,7 +350,7 @@ class ModelInstallerPage(OnboardingPage):
     def setup_payload(self) -> SetupState:
         return SetupState(
             ram_gb=self.ram_gb,
-            advanced_installation=self.advanced_checkbox.isChecked(),
+            advanced_installation=False,
             selected_models=self.last_selected or self.selected_models(),
             installed_models=self.installed_models,
         )
@@ -434,7 +360,7 @@ class PerformancePage(OnboardingPage):
     def __init__(self, banners_root: Path, ollama: OllamaService) -> None:
         super().__init__(
             title="Test performance",
-            body="Run a quick Gemma3:4b speed test if you want. You can continue without it, but it helps set expectations.",
+            body="Run the Gemma3:4b speed test. This step is required so ONCard can continue with the full setup flow.",
             banner_path=banners_root / "performance_default_banner_16x9.png",
             banner_name="performance_default_banner_16x9.png",
         )
@@ -519,8 +445,11 @@ class PerformancePage(OnboardingPage):
 
     def performance_payload(self) -> dict:
         if self.avg_tps is None:
-            return {"skipped": True, "avg_tps": None, "tier": ""}
+            return {"skipped": False, "avg_tps": None, "tier": ""}
         return {"skipped": False, "avg_tps": self.avg_tps, "tier": self.tier}
+
+    def can_continue(self) -> bool:
+        return self.avg_tps is not None
 
 
 class QuickStartPage(OnboardingPage):
@@ -568,7 +497,7 @@ class QuickStartPage(OnboardingPage):
         self._remaining -= 1
         if self._remaining <= 0:
             self._timer.stop()
-            self.timer_label.setText("You are all set. Press Finish to enter ONCards.")
+            self.timer_label.setText("You are all set. Press Finish to enter ONCard.")
         else:
             self.timer_label.setText(f"Please read this page. Finish unlocks in {self._remaining}s.")
         self.changed.emit()
@@ -586,7 +515,7 @@ class OnboardingWizard(QDialog):
         self.icons = icons
         self.current_index = 0
 
-        self.setWindowTitle("ONCards Setup")
+        self.setWindowTitle("ONCard Setup")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
         self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
         self.setFixedSize(1040, 760)
