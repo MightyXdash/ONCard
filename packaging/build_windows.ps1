@@ -102,6 +102,9 @@ if (Test-Path $IconIco) {
     $pyinstallerArgs += $IconIco
 }
 & $PythonExe @pyinstallerArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller build failed with exit code $LASTEXITCODE"
+}
 
 $DistDir = Join-Path $PyInstallerDistDir "ONCard"
 if (-not (Test-Path $DistDir)) {
@@ -128,5 +131,8 @@ Write-Host "Building installer with Inno Setup..."
     "/DBuildOutput=$DistDir" `
     "/DInstallerOutput=$InstallerOutDir" `
     (Join-Path $RepoRoot "packaging\ONCard.iss")
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup build failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Build complete."

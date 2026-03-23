@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
@@ -19,7 +17,7 @@ class MainWindow(QMainWindow):
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
-        self.pending_update_launcher: Path | None = None
+        self._update_shutdown_requested = False
         self.setWindowTitle("ONCard")
         self.resize(1600, 980)
         self._build_ui()
@@ -76,17 +74,11 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         QMessageBox.information(self, "Settings", "Settings panel is coming next.")
 
-    def queue_update_launcher(self, launcher_path: Path) -> None:
-        self.pending_update_launcher = launcher_path
-        self.close()
-
-    def consume_pending_update_launcher(self) -> Path | None:
-        launcher = self.pending_update_launcher
-        self.pending_update_launcher = None
-        return launcher
+    def begin_update_shutdown(self) -> None:
+        self._update_shutdown_requested = True
 
     def closeEvent(self, event) -> None:
-        if self.create_tab.has_pending_work():
+        if not self._update_shutdown_requested and self.create_tab.has_pending_work():
             answer = QMessageBox.question(
                 self,
                 "Force quit?",
@@ -95,7 +87,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.No,
             )
             if answer != QMessageBox.Yes:
-                self.pending_update_launcher = None
                 event.ignore()
                 return
         super().closeEvent(event)
