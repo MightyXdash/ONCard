@@ -30,6 +30,10 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+UsePreviousAppDir=yes
+CloseApplications=yes
+CloseApplicationsFilter=ONCard.exe
+RestartApplications=no
 OutputDir={#InstallerOutput}
 OutputBaseFilename=ONCard-Setup-{#AppVersion}
 UninstallDisplayIcon={app}\ONCard.exe
@@ -42,4 +46,31 @@ Name: "{group}\ONCard"; Filename: "{app}\ONCard.exe"
 Name: "{group}\Uninstall ONCard"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "{app}\ONCard.exe"; Description: "Launch ONCard"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ONCard.exe"; Description: "Launch ONCard"; Flags: nowait postinstall skipifsilent; Check: ShouldShowLaunchOption
+Filename: "{app}\ONCard.exe"; Flags: nowait skipifsilent; Check: ShouldAutoLaunchAfterUpdate
+
+[Code]
+function IsUpdateFlow: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    if Uppercase(ParamStr(I)) = '/UPDATEFLOW' then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function ShouldShowLaunchOption: Boolean;
+begin
+  Result := not IsUpdateFlow;
+end;
+
+function ShouldAutoLaunchAfterUpdate: Boolean;
+begin
+  Result := IsUpdateFlow;
+end;

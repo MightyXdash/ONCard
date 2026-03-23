@@ -62,8 +62,8 @@ class AppPaths:
         if is_frozen:
             roaming = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming")))
             local = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-            data_root = roaming / APP_NAME
-            local_data_root = local / APP_NAME
+            data_root = _select_roaming_data_root(roaming / APP_NAME, roaming / "ONCards")
+            local_data_root = _select_local_data_root(local / APP_NAME, local / "ONCards")
         else:
             data_root = root / "data"
             local_data_root = data_root
@@ -99,3 +99,46 @@ class AppPaths:
 
         for path in paths_to_create:
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _select_roaming_data_root(primary: Path, legacy: Path) -> Path:
+    primary_has_data = _has_roaming_user_data(primary)
+    legacy_has_data = _has_roaming_user_data(legacy)
+    if legacy_has_data and not primary_has_data:
+        return legacy
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    return primary
+
+
+def _select_local_data_root(primary: Path, legacy: Path) -> Path:
+    primary_has_state = _has_local_user_state(primary)
+    legacy_has_state = _has_local_user_state(legacy)
+    if legacy_has_state and not primary_has_state:
+        return legacy
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    return primary
+
+
+def _has_roaming_user_data(root: Path) -> bool:
+    markers = [
+        root / "config" / "setup.json",
+        root / "config" / "profile.json",
+        root / "subjects",
+        root / "study_history" / "attempts.json",
+    ]
+    return any(marker.exists() for marker in markers)
+
+
+def _has_local_user_state(root: Path) -> bool:
+    markers = [
+        root / "runtime" / "update_state.json",
+        root / "runtime",
+        root / "updates",
+    ]
+    return any(marker.exists() for marker in markers)

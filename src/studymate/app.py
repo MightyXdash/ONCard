@@ -60,7 +60,6 @@ def run_app() -> int:
 
     window = MainWindow(paths, datastore, ollama, icons)
     app.aboutToQuit.connect(backup_service.create_exit_backup)
-    app.aboutToQuit.connect(lambda: _launch_pending_update(window, update_service))
     window.show()
 
     QTimer.singleShot(500, lambda: _show_whats_new_if_needed(window, update_service, paths))
@@ -104,12 +103,7 @@ def _download_update_and_install(
     def on_finished(path_str: str) -> None:
         progress.close()
         installer_path = Path(path_str)
-        relaunch_name = Path(sys.executable).name if getattr(sys, "frozen", False) else "ONCard.exe"
-        launcher = update_service.create_post_exit_launcher(
-            installer_path,
-            os.getpid(),
-            relaunch_path=window.paths.install_root / relaunch_name,
-        )
+        launcher = update_service.create_post_exit_launcher(installer_path, os.getpid())
         update_service.save_update_state(
             {
                 "current_version": APP_VERSION,
@@ -120,6 +114,7 @@ def _download_update_and_install(
             }
         )
         update_service.launch_helper(launcher)
+        window.begin_update_shutdown()
         QTimer.singleShot(0, app.quit)
 
     def on_failed(message: str) -> None:
@@ -131,13 +126,6 @@ def _download_update_and_install(
     worker.finished.connect(on_finished)
     worker.failed.connect(on_failed)
     worker.start()
-
-
-def _launch_pending_update(window: MainWindow, update_service: UpdateService) -> None:
-    launcher = window.consume_pending_update_launcher()
-    if launcher and launcher.exists():
-        update_service.launch_helper(launcher)
-
 
 def _show_whats_new_if_needed(window: MainWindow, update_service: UpdateService, paths: AppPaths) -> None:
     state = update_service.load_update_state()

@@ -106,33 +106,37 @@ class UpdateService:
         return destination
 
     def create_post_exit_launcher(self, installer_path: Path, current_pid: int, relaunch_path: Path | None = None) -> Path:
-        launcher_path = self.paths.updates / "run_update.cmd"
+        launcher_path = self.paths.updates / "run_update.ps1"
         launcher_path.parent.mkdir(parents=True, exist_ok=True)
-        relaunch_line = f'if exist "{relaunch_path}" start "" "{relaunch_path}"' if relaunch_path else ""
+        log_path = self.paths.runtime / "update_launcher.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _ps_quote(value: Path | str) -> str:
+            return "'" + str(value).replace("'", "''") + "'"
+
         script = "\r\n".join(
             [
-                "@echo off",
-                "setlocal",
-                f"set PID={current_pid}",
-                ":wait_loop",
-                'tasklist /FI "PID eq %PID%" | find "%PID%" >nul',
-                "if not errorlevel 1 (",
-                "  timeout /t 1 /nobreak >nul",
-                "  goto wait_loop",
-                ")",
-                f'start /wait "" "{installer_path}"',
-                relaunch_line,
-                "endlocal",
+                "$ErrorActionPreference = 'SilentlyContinue'",
+                f"$pidToWait = {current_pid}",
+                f"$installerPath = {_ps_quote(installer_path)}",
+                f"$logPath = {_ps_quote(log_path)}",
+                "Add-Content -Path $logPath -Value ('Launcher started ' + (Get-Date -Format o))",
+                "while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {",
+                "    Start-Sleep -Milliseconds 500",
+                "}",
+                "Add-Content -Path $logPath -Value ('Launching installer ' + $installerPath)",
+                "$process = Start-Process -FilePath $installerPath -ArgumentList @('/UPDATEFLOW', '/CLOSEAPPLICATIONS') -PassThru -Wait",
+                "Add-Content -Path $logPath -Value ('Installer finished with code ' + $process.ExitCode)",
             ]
         )
-        launcher_path.write_text(script, encoding="ascii")
+        launcher_path.write_text(script, encoding="utf-8")
         return launcher_path
 
     def launch_helper(self, launcher_path: Path) -> None:
         subprocess.Popen(
-            ["cmd.exe", "/c", str(launcher_path)],
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher_path)],
             cwd=str(launcher_path.parent),
-            creationflags=0x08000000,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def save_update_state(self, payload: dict) -> None:
