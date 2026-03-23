@@ -119,7 +119,7 @@ def _download_update_and_install(
                 "show_whats_new_for": release.version,
             }
         )
-        window.queue_update_launcher(launcher)
+        update_service.launch_helper(launcher)
         QTimer.singleShot(0, app.quit)
 
     def on_failed(message: str) -> None:
