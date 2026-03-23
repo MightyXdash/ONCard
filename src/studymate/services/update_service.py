@@ -107,10 +107,12 @@ class UpdateService:
 
     def create_post_exit_launcher(self, installer_path: Path, current_pid: int, relaunch_path: Path | None = None) -> Path:
         launcher_path = self.paths.updates / "run_update.cmd"
-        relaunch_line = f'start "" "{relaunch_path}"' if relaunch_path else ""
-        script = "\n".join(
+        launcher_path.parent.mkdir(parents=True, exist_ok=True)
+        relaunch_line = f'if exist "{relaunch_path}" start "" "{relaunch_path}"' if relaunch_path else ""
+        script = "\r\n".join(
             [
                 "@echo off",
+                "setlocal",
                 f"set PID={current_pid}",
                 ":wait_loop",
                 'tasklist /FI "PID eq %PID%" | find "%PID%" >nul',
@@ -120,13 +122,18 @@ class UpdateService:
                 ")",
                 f'start /wait "" "{installer_path}"',
                 relaunch_line,
+                "endlocal",
             ]
         )
-        launcher_path.write_text(script, encoding="utf-8")
+        launcher_path.write_text(script, encoding="ascii")
         return launcher_path
 
     def launch_helper(self, launcher_path: Path) -> None:
-        subprocess.Popen(["cmd.exe", "/c", str(launcher_path)], creationflags=0x08000000)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(launcher_path)],
+            cwd=str(launcher_path.parent),
+            creationflags=0x08000000,
+        )
 
     def save_update_state(self, payload: dict) -> None:
         self.paths.update_state.parent.mkdir(parents=True, exist_ok=True)
