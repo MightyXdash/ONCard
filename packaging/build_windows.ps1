@@ -29,9 +29,11 @@ $PyInstallerOutputDir = Join-Path $BuildRoot "pyinstaller-$AppVersion"
 $PyInstallerDistDir = Join-Path $PyInstallerOutputDir "dist"
 $PyInstallerWorkDir = Join-Path $PyInstallerOutputDir "build"
 $PyInstallerSpecDir = Join-Path $PyInstallerOutputDir "spec"
+$WrapperWorkDir = Join-Path $PyInstallerOutputDir "wrapper-build"
+$WrapperSpecDir = Join-Path $PyInstallerOutputDir "wrapper-spec"
 $VersionFile = Join-Path $PyInstallerOutputDir "pyinstaller_version_info.txt"
 
-New-Item -ItemType Directory -Force -Path $PyInstallerOutputDir, $PyInstallerDistDir, $PyInstallerWorkDir, $PyInstallerSpecDir | Out-Null
+New-Item -ItemType Directory -Force -Path $PyInstallerOutputDir, $PyInstallerDistDir, $PyInstallerWorkDir, $PyInstallerSpecDir, $WrapperWorkDir, $WrapperSpecDir | Out-Null
 
 Write-Host "Installing build dependencies..."
 & $PythonExe -m pip install --upgrade pip
@@ -133,6 +135,39 @@ Write-Host "Building installer with Inno Setup..."
     (Join-Path $RepoRoot "packaging\ONCard.iss")
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup build failed with exit code $LASTEXITCODE"
+}
+
+Write-Host "Wrapping installer for updater compatibility..."
+$InnerInstallerPath = Join-Path $InstallerOutDir "ONCard-Installer-$AppVersion.exe"
+if (-not (Test-Path $InnerInstallerPath)) {
+    throw "Inner installer not found at $InnerInstallerPath"
+}
+$WrapperName = "ONCard-Setup-$AppVersion"
+$wrapperAddData = "$InnerInstallerPath;."
+$wrapperArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm",
+    "--clean",
+    "--onefile",
+    "--windowed",
+    "--name", $WrapperName,
+    "--distpath", $InstallerOutDir,
+    "--workpath", $WrapperWorkDir,
+    "--specpath", $WrapperSpecDir,
+    "--add-data", $wrapperAddData,
+    (Join-Path $RepoRoot "packaging\update_wrapper.py")
+)
+if (Test-Path $IconIco) {
+    $wrapperArgs += "--icon"
+    $wrapperArgs += $IconIco
+}
+& $PythonExe @wrapperArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Installer wrapper build failed with exit code $LASTEXITCODE"
+}
+$WrapperPath = Join-Path $InstallerOutDir "$WrapperName.exe"
+if (-not (Test-Path $WrapperPath)) {
+    throw "Wrapped installer not found at $WrapperPath"
 }
 
 Write-Host "Build complete."

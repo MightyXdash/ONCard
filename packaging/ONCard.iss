@@ -35,7 +35,7 @@ CloseApplications=yes
 CloseApplicationsFilter=ONCard.exe
 RestartApplications=no
 OutputDir={#InstallerOutput}
-OutputBaseFilename=ONCard-Setup-{#AppVersion}
+OutputBaseFilename=ONCard-Installer-{#AppVersion}
 UninstallDisplayIcon={app}\ONCard.exe
 
 [Files]
