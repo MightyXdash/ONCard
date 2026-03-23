@@ -7,7 +7,7 @@ import traceback
 def _write_startup_log(message: str) -> None:
     try:
         local_appdata = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-        log_dir = local_appdata / "ONCards" / "runtime"
+        log_dir = local_appdata / "ONCard" / "runtime"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "startup_error.log"
         log_path.write_text(message, encoding="utf-8")
@@ -39,8 +39,8 @@ def main() -> int:
     try:
         return run_app()
     except Exception:
-        print("ONCards encountered an unexpected error.")
-        _write_startup_log("ONCards encountered an unexpected error.\n" + traceback.format_exc())
+        print("ONCard encountered an unexpected error.")
+        _write_startup_log("ONCard encountered an unexpected error.\n" + traceback.format_exc())
         traceback.print_exc()
         return 1
 

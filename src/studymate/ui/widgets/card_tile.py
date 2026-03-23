@@ -5,9 +5,11 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
 )
 
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
 class CardTile(QFrame):
     selected = Signal(dict)
     move_requested = Signal(dict)
+    remove_requested = Signal(dict)
 
     def __init__(self, card: dict) -> None:
         super().__init__()
@@ -44,13 +47,21 @@ class CardTile(QFrame):
         )
         meta.setObjectName("SmallMeta")
 
-        move_button = QPushButton("Move card")
-        move_button.clicked.connect(lambda: self.move_requested.emit(self.card))
+        options_button = QToolButton()
+        options_button.setText("Options")
+        options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_button.setObjectName("CompactGhostButton")
+        options_menu = QMenu(options_button)
+        move_action = options_menu.addAction("Move card")
+        remove_action = options_menu.addAction("Remove")
+        move_action.triggered.connect(lambda: self.move_requested.emit(self.card))
+        remove_action.triggered.connect(lambda: self.remove_requested.emit(self.card))
+        options_button.setMenu(options_menu)
 
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
         footer.addWidget(meta, 1)
-        footer.addWidget(move_button)
+        footer.addWidget(options_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)

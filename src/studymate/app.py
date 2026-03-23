@@ -10,12 +10,13 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from studymate.services.backup_service import BackupService
 from studymate.services.data_store import DataStore
+from studymate.services.update_content import load_packaged_update_content
 from studymate.services.ollama_service import OllamaService
 from studymate.services.update_service import ReleaseInfo, UpdateService
 from studymate.theme import app_stylesheet
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
-from studymate.ui.update_dialog import UpdateDialog
+from studymate.ui.update_dialog import UpdateDialog, WhatsNewDialog
 from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
@@ -62,18 +63,20 @@ def run_app() -> int:
     app.aboutToQuit.connect(lambda: _launch_pending_update(window, update_service))
     window.show()
 
+    QTimer.singleShot(500, lambda: _show_whats_new_if_needed(window, update_service, paths))
     QTimer.singleShot(1200, lambda: _check_for_updates(app, window, update_service))
     return app.exec()
 
 
 def _check_for_updates(app: QApplication, window: MainWindow, update_service: UpdateService) -> None:
     worker = UpdateCheckWorker(update_service, APP_VERSION)
-    app._oncards_update_check_worker = worker  # type: ignore[attr-defined]
+    app._oncard_update_check_worker = worker  # type: ignore[attr-defined]
 
     def on_available(release: ReleaseInfo) -> None:
-        dialog = UpdateDialog(current_version=APP_VERSION, release=release)
+        content = load_packaged_update_content(update_service.paths.assets, APP_VERSION)
+        dialog = UpdateDialog(release=release, content=content)
         if dialog.exec():
-            _download_update(app, window, update_service, release)
+            _download_update_and_install(app, window, update_service, release)
 
     worker.available.connect(on_available)
     worker.up_to_date.connect(lambda: None)
@@ -81,7 +84,7 @@ def _check_for_updates(app: QApplication, window: MainWindow, update_service: Up
     worker.start()
 
 
-def _download_update(
+def _download_update_and_install(
     app: QApplication,
     window: MainWindow,
     update_service: UpdateService,
@@ -96,29 +99,28 @@ def _download_update(
     progress.show()
 
     worker = UpdateDownloadWorker(update_service, release)
-    app._oncards_update_download_worker = worker  # type: ignore[attr-defined]
+    app._oncard_update_download_worker = worker  # type: ignore[attr-defined]
 
     def on_finished(path_str: str) -> None:
         progress.close()
         installer_path = Path(path_str)
-        launcher = update_service.create_post_exit_launcher(installer_path, os.getpid())
+        relaunch_name = Path(sys.executable).name if getattr(sys, "frozen", False) else "ONCard.exe"
+        launcher = update_service.create_post_exit_launcher(
+            installer_path,
+            os.getpid(),
+            relaunch_path=window.paths.install_root / relaunch_name,
+        )
         update_service.save_update_state(
             {
                 "current_version": APP_VERSION,
                 "latest_version": release.version,
                 "installer_path": str(installer_path),
                 "launcher_path": str(launcher),
+                "show_whats_new_for": release.version,
             }
         )
-        answer = QMessageBox.question(
-            window,
-            "Install update",
-            "The new installer is ready. Close ONCards and launch the installer now?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if answer == QMessageBox.Yes:
-            window.queue_update_launcher(launcher)
+        window.queue_update_launcher(launcher)
+        QTimer.singleShot(0, app.quit)
 
     def on_failed(message: str) -> None:
         progress.close()
@@ -135,3 +137,13 @@ def _launch_pending_update(window: MainWindow, update_service: UpdateService) ->
     launcher = window.consume_pending_update_launcher()
     if launcher and launcher.exists():
         update_service.launch_helper(launcher)
+
+
+def _show_whats_new_if_needed(window: MainWindow, update_service: UpdateService, paths: AppPaths) -> None:
+    state = update_service.load_update_state()
+    if state.get("show_whats_new_for") != APP_VERSION:
+        return
+    content = load_packaged_update_content(paths.assets, APP_VERSION)
+    dialog = WhatsNewDialog(version=APP_VERSION, content=content)
+    dialog.exec()
+    update_service.clear_update_state()

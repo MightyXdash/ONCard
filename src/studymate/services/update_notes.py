@@ -17,7 +17,7 @@ class UpdateNotesContent:
 def parse_update_notes(markdown: str) -> UpdateNotesContent:
     if not markdown.strip():
         return UpdateNotesContent(
-            text="A new ONCards update is available.",
+            text="A new ONCard update is available.",
             image_urls=[],
         )
 
@@ -51,5 +51,5 @@ def parse_update_notes(markdown: str) -> UpdateNotesContent:
 
     cleaned = "\n".join(lines).strip()
     if not cleaned:
-        cleaned = "A new ONCards update is available."
+        cleaned = "A new ONCard update is available."
     return UpdateNotesContent(text=cleaned, image_urls=image_urls[:3])

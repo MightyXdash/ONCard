@@ -328,10 +328,13 @@ class StudyTab(QWidget):
         self.hints_text.setPlaceholderText("Hints will appear one by one.")
 
         button_row = QHBoxLayout()
+        self.idk_btn = QPushButton("I don't know")
+        self.idk_btn.clicked.connect(self._ask_i_dont_know)
         self.grade_btn = QPushButton("Grade")
         self.grade_btn.clicked.connect(self._grade)
         self.next_btn = QPushButton("Next")
         self.next_btn.clicked.connect(self._next_card)
+        button_row.addWidget(self.idk_btn)
         button_row.addWidget(self.grade_btn)
         button_row.addWidget(self.next_btn)
 
@@ -355,7 +358,7 @@ class StudyTab(QWidget):
         self.grade_feedback = QTextBrowser()
         self.grade_feedback.setMinimumHeight(280)
 
-        self.followup_title = QLabel("Follow up on your grades")
+        self.followup_title = QLabel("Follow up on this card")
         self.followup_title.setObjectName("SectionTitle")
         self.followup_title.hide()
         self.followup_input = PromptTextEdit()
@@ -476,6 +479,7 @@ class StudyTab(QWidget):
             tile = CardTile(card)
             tile.selected.connect(self._card_selected)
             tile.move_requested.connect(self._move_card)
+            tile.remove_requested.connect(self._remove_card)
             row = idx // 4
             col = idx % 4
             self.card_grid.addWidget(tile, row, col)
@@ -484,6 +488,26 @@ class StudyTab(QWidget):
         dialog = MoveCardDialog(card, self.datastore)
         if dialog.exec():
             self.reload_cards()
+
+    def _remove_card(self, card: dict) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Remove card",
+            "Remove this card permanently?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        deleted = self.datastore.delete_card(
+            str(card.get("id", "")),
+            str(card.get("subject", "Mathematics")),
+        )
+        if not deleted:
+            QMessageBox.warning(self, "Remove failed", "Could not remove that card.")
+            return
+        self._remove_card_from_session(card)
+        self.reload_cards()
 
     def _card_selected(self, card: dict) -> None:
         answer = QMessageBox.question(
@@ -547,6 +571,37 @@ class StudyTab(QWidget):
         self.followup_title.setVisible(visible)
         self.followup_input.setVisible(visible)
         self.followup_btn.setVisible(visible)
+
+    def _build_followup_context(self) -> str:
+        if not self.current_card:
+            return ""
+        parts = [
+            f"Question: {self.current_card.get('question', '')}",
+            f"Expected answer: {self.current_card.get('answer', '')}",
+            f"Hints: {', '.join(self.current_card.get('hints', []))}",
+        ]
+        if self.last_grade_report:
+            parts.extend(
+                [
+                    f"Score: {self.last_grade_report.get('marks_out_of_10', '')}",
+                    f"Summary: {self.last_grade_report.get('answer_summary', '')}",
+                    f"What went good: {self.last_grade_report.get('what_went_good', '')}",
+                    f"What went bad: {self.last_grade_report.get('what_went_bad', '')}",
+                    f"What to improve: {self.last_grade_report.get('what_to_improve', '')}",
+                ]
+            )
+        return "\n".join(parts) + "\n"
+
+    def _ask_i_dont_know(self) -> None:
+        if not self.current_card:
+            QMessageBox.information(self, "No card", "Start a card first.")
+            return
+        self._set_followup_visible(True)
+        self.followup_title.setText("Follow up on this card")
+        self.followup_input.setPlainText("Thoroughly explain this to me step by step")
+        self.grade_summary.setText("Study help")
+        self.grade_feedback.setMarkdown("### Study help\nWorking on a step-by-step explanation...")
+        self._run_followup(auto_prompt="Thoroughly explain this to me step by step")
 
     def _show_hint(self) -> None:
         if not self.current_card:
@@ -644,6 +699,10 @@ class StudyTab(QWidget):
         ]
         if report.get("what_to_improve"):
             extra.append(f"Improve: {report.get('what_to_improve')}")
+        if float(score) >= 9:
+            extra.append("Coach: Great work. You got the core meaning right, and that matters most.")
+        elif float(score) <= 5:
+            extra.append("Coach: Keep going. Use the follow up feature to ask more questions and work through it step by step.")
         self.grade_feedback.append("<hr>")
         self.grade_feedback.append("<br>".join(extra))
         self._set_followup_visible(True)
@@ -656,28 +715,22 @@ class StudyTab(QWidget):
         self.grade_btn.setEnabled(True)
         self.next_btn.setEnabled(True)
 
-    def _run_followup(self) -> None:
+    def _run_followup(self, auto_prompt: str | None = None) -> None:
         if self.followup_worker and self.followup_worker.isRunning():
             return
-        if not self.last_grade_report:
+        if not self.current_card:
             return
-        prompt = self.followup_input.toPlainText().strip()
+        prompt = (auto_prompt or self.followup_input.toPlainText()).strip()
         if not prompt:
             QMessageBox.information(self, "Follow up", "Write a follow-up prompt first.")
             return
-        context = (
-            f"Question: {self.current_card.get('question', '')}\n"
-            f"Score: {self.last_grade_report.get('marks_out_of_10', '')}\n"
-            f"Summary: {self.last_grade_report.get('answer_summary', '')}\n"
-            f"What went good: {self.last_grade_report.get('what_went_good', '')}\n"
-            f"What went bad: {self.last_grade_report.get('what_went_bad', '')}\n"
-            f"What to improve: {self.last_grade_report.get('what_to_improve', '')}\n"
-        )
+        context = self._build_followup_context()
         self.followup_btn.setEnabled(False)
-        self.followup_input.clear()
+        if auto_prompt is None:
+            self.followup_input.clear()
         self.followup_worker = FollowUpWorker(
             ollama=self.ollama,
-            model="gemma3n:e2b",
+            model="gemma3:4b",
             prompt=prompt,
             context=context,
         )
@@ -721,3 +774,21 @@ class StudyTab(QWidget):
         self.grade_feedback.clear()
         self.grade_summary.setText("AI grader")
         self._set_followup_visible(False)
+
+    def _remove_card_from_session(self, card: dict) -> None:
+        card_id = str(card.get("id", ""))
+        self.session_queue = [item for item in self.session_queue if str(item.get("id", "")) != card_id]
+        self.session_cards = [item for item in self.session_cards if str(item.get("id", "")) != card_id]
+        if self.current_card and str(self.current_card.get("id", "")) == card_id:
+            if self.session_queue:
+                self._start_session(self.session_queue.pop(0))
+            else:
+                self.current_card = None
+                self.session_title.setText("Pick a card to start")
+                self.session_meta.setText("")
+                self.session_question.setText("Use the Cards subtab or press Start for the current section.")
+                self.answer_input.clear()
+                self.hints_text.clear()
+                self.grade_feedback.clear()
+                self.grade_summary.setText("AI grader")
+                self._set_followup_visible(False)

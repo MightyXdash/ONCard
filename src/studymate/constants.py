@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 
-APP_NAME = "ONCards"
+APP_NAME = "ONCard"
 APP_TAGLINE = "Free and Open-Source AI Flashcard Study App"
+
+FILES_TO_CARDS_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+FILES_TO_CARDS_SOURCE_LIMITS = {
+    "standard": {"max_inputs": 12, "up_to_6": 14, "up_to_9": 18, "up_to_max": 20},
+    "force": {"max_inputs": 24, "up_to_6": 19, "up_to_9": 21, "up_to_max": 29},
+}
 
 
 SUBJECT_TAXONOMY = {
@@ -175,3 +181,18 @@ GRADE_RESPONSE_SCHEMA = {
     },
     "required": ["marks_out_of_10", "state", "answer_summary", "what_went_bad", "what_went_good"],
 }
+
+
+def files_to_cards_question_schema(question_count: int) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": question_count,
+                "maxItems": question_count,
+            }
+        },
+        "required": ["questions"],
+    }

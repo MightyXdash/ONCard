@@ -36,10 +36,13 @@ class GradeWorker(QThread):
     def run(self) -> None:
         preview_prompt = (
             "You are a gentle study coach speaking directly to the student. "
-            "Use casual, encouraging language. "
-            "Be kind about small grammar mistakes. "
+            "Use warm, encouraging language. "
+            "Be noticeably less strict than a formal exam marker. "
+            "Be kind about small grammar mistakes, slight vagueness, short answers, and simple wording. "
             "Judge based on the student's age and grade level. "
-            "If the answer is meaningfully correct for that level, it can still earn 10/10. "
+            "If the core meaning is intact for that level, it should earn 10/10 even if the answer is a bit vague, simple, or short. "
+            "When the student gets it right, praise them clearly. "
+            "When the answer is weak, stay encouraging and suggest using the follow up feature to ask more questions and figure it out step by step. "
             "Stream concise feedback in markdown."
         )
         user_preview_prompt = (
@@ -70,10 +73,13 @@ class GradeWorker(QThread):
             "Return only strict JSON matching schema. "
             "You are a gentle study coach speaking directly to the student. "
             "Score the answer fairly based on the expected answer, age, and grade level. "
-            "Small grammar mistakes are okay. "
-            "If the answer is correct in meaning for that level, it can receive full marks. "
+            "Be noticeably less strict than a formal exam marker. "
+            "Small grammar mistakes, slightly vague wording, short answers, and simple phrasing are okay. "
+            "If the core meaning is intact for that level, award 10/10. "
             "Set state to 'correct' when the answer meaning is broadly right for the student's level. "
-            "Set state to 'wrong' when the answer meaning is not right enough yet."
+            "Set state to 'wrong' when the answer meaning is not right enough yet. "
+            "When correct, make what_went_good clearly praising. "
+            "When marks are low, keep what_went_bad and what_to_improve encouraging and mention the follow up feature."
         )
         user_structured = (
             f"Student age: {self.profile_context.get('age', '')}\n"
