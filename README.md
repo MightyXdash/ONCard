@@ -10,6 +10,7 @@ Elevate your learning experience.
 - 16GB DDR3
 - GTX 1070
 
+⚠️ _The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._ ⚠️
 # What is ONCards?
  **ONCards — Opensource Neural-accellerated Cards**
 A fully offline study app with a virtual teacher and an algorithm which learns you as you go for better context and teach you better as you keep using the app.
