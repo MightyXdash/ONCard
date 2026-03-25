@@ -138,3 +138,49 @@ class WhatsNewDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         close_row.addWidget(close_btn)
         layout.addLayout(close_row)
+
+
+class EmbeddingOnboardingDialog(QDialog):
+    def __init__(self, *, content: PackagedUpdateContent) -> None:
+        super().__init__()
+        self.setWindowTitle("Smarter study mode")
+        self.setFixedSize(520, 360)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(14)
+
+        banner = BannerWidget(
+            banner_path=content.prompt_banner,
+            placeholder_text="update_prompt_banner_16x9.png",
+            height=150,
+            radius=22,
+        )
+        layout.addWidget(banner, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        title = QLabel("Install the embedding model for NNA?")
+        title.setObjectName("PageTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = QLabel(
+            "This optional model powers smarter topic grouping, weak-area detection, and reinforcement cards. "
+            "It is only used for the new adaptive study flow."
+        )
+        description.setObjectName("SectionText")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        later = QPushButton("No")
+        install = QPushButton("Yes")
+        install.setObjectName("PrimaryButton")
+        later.clicked.connect(self.reject)
+        install.clicked.connect(self.accept)
+        buttons.addWidget(later)
+        buttons.addWidget(install)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)

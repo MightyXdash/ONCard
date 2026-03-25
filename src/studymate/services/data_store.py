@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
 import uuid
 
 from studymate.constants import SUBJECT_TAXONOMY
@@ -40,6 +41,8 @@ class DataStore:
             "selected_models": [],
             "installed_models": {},
             "performance_arena": {"skipped": True, "avg_tps": None, "tier": ""},
+            "embedding_gate_declined_version": "",
+            "embedding_gate_prompted_version": "",
             "updated_at": self.now_iso(),
         }
         return self._read_json(self.paths.setup_config, default)
@@ -64,6 +67,20 @@ class DataStore:
     def save_profile(self, payload: dict) -> None:
         payload["updated_at"] = self.now_iso()
         self._write_json(self.paths.profile_config, payload)
+
+    def load_ai_settings(self) -> dict:
+        default = {
+            "assistant_tone": "",
+            "discuss_context_length": 8192,
+            "followup_context_length": 8192,
+            "reinforcement_context_length": 8192,
+            "updated_at": self.now_iso(),
+        }
+        return self._read_json(self.paths.ai_settings_config, default)
+
+    def save_ai_settings(self, payload: dict) -> None:
+        payload["updated_at"] = self.now_iso()
+        self._write_json(self.paths.ai_settings_config, payload)
 
     @staticmethod
     def subject_slug(subject: str) -> str:
@@ -116,6 +133,21 @@ class DataStore:
         self.save_subject_cards(subject, cards)
         return record
 
+    def load_embedding_cache(self) -> dict[str, dict[str, Any]]:
+        raw = self._read_json(self.paths.embedding_cache_file, {})
+        return raw if isinstance(raw, dict) else {}
+
+    def upsert_embedding_cache_record(self, cache_key: str, record: dict[str, Any]) -> None:
+        cache = self.load_embedding_cache()
+        cache[cache_key] = record
+        self._write_json(self.paths.embedding_cache_file, cache)
+
+    def remove_embedding_cache_record(self, cache_key: str) -> None:
+        cache = self.load_embedding_cache()
+        if cache_key in cache:
+            del cache[cache_key]
+            self._write_json(self.paths.embedding_cache_file, cache)
+
     def delete_cards_by_run(self, run_id: str) -> int:
         removed = 0
         for subject in SUBJECT_TAXONOMY:
@@ -160,5 +192,32 @@ class DataStore:
 
     def save_attempt(self, attempt: dict) -> None:
         attempts = self.load_attempts()
-        attempts.append(attempt)
+        payload = dict(attempt)
+        card_id = str(payload.get("card_id", "")).strip()
+        if "attempt_index" not in payload or payload.get("attempt_index") in (None, 0, ""):
+            prior = 0
+            if card_id:
+                prior = sum(1 for item in attempts if str(item.get("card_id", "")) == card_id)
+            payload["attempt_index"] = prior + 1
+        payload.setdefault("timestamp", self.now_iso())
+        attempts.append(payload)
         self._write_json(self.paths.study_history_file, attempts)
+
+    def save_attempts(self, attempts: list[dict]) -> None:
+        existing = self.load_attempts()
+        pending = list(existing)
+        next_indexes: dict[str, int] = {}
+        for attempt in attempts:
+            payload = dict(attempt)
+            card_id = str(payload.get("card_id", "")).strip()
+            if card_id and card_id not in next_indexes:
+                next_indexes[card_id] = sum(1 for item in pending if str(item.get("card_id", "")) == card_id)
+            if "attempt_index" not in payload or payload.get("attempt_index") in (None, 0, ""):
+                if card_id:
+                    next_indexes[card_id] = next_indexes.get(card_id, 0) + 1
+                    payload["attempt_index"] = next_indexes[card_id]
+                else:
+                    payload["attempt_index"] = 1
+            payload.setdefault("timestamp", self.now_iso())
+            pending.append(payload)
+        self._write_json(self.paths.study_history_file, pending)
