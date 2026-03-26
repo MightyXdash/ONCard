@@ -198,7 +198,7 @@ class ModelInstallerPage(OnboardingPage):
     def __init__(self, banners_root: Path, icons: IconHelper, ollama: OllamaService) -> None:
         super().__init__(
             title="Install AI models",
-            body="ONCard installs the required Gemma models automatically so every user goes through the same setup.",
+            body="ONCard installs the required AI models automatically, including Gemma for generation and Nomic for embeddings.",
             banner_path=banners_root / "onboarding_models_banner_16x9.png",
             banner_name="onboarding_models_banner_16x9.png",
         )
@@ -283,7 +283,9 @@ class ModelInstallerPage(OnboardingPage):
             self.install_button.setEnabled(True)
 
         self.size_label.setText(f"Selected download size: {size_gb:.1f} GB")
-        self.warning_label.setText("ONCard now uses only gemma3:4b for OCR, paper generation, questions, grading, and follow-up.")
+        self.warning_label.setText(
+            "ONCard uses gemma3:4b for OCR and generation tasks, plus nomic-embed-text-v2-moe for adaptive-study embeddings."
+        )
         self.warning_label.show()
 
         self.ollama_label.setVisible(not self.ollama_installed)

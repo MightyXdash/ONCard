@@ -119,6 +119,11 @@ class DataStore:
             "category": card_payload.get("category", "All").strip() or "All",
             "subtopic": card_payload.get("subtopic", "All").strip() or "All",
             "hints": list(card_payload.get("hints", [])),
+            "search_terms": [
+                str(term).strip()
+                for term in list(card_payload.get("search_terms", []))
+                if str(term).strip()
+            ][:5],
             "answer": card_payload.get("answer", "").strip(),
             "natural_difficulty": int(card_payload.get("natural_difficulty", 5)),
             "created_at": card_payload.get("created_at") or self.now_iso(),

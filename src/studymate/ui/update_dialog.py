@@ -158,14 +158,14 @@ class EmbeddingOnboardingDialog(QDialog):
         )
         layout.addWidget(banner, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        title = QLabel("Install the embedding model for NNA?")
+        title = QLabel("Install the Nomic embedding model for NNA?")
         title.setObjectName("PageTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setWordWrap(True)
         layout.addWidget(title)
 
         description = QLabel(
-            "This optional model powers smarter topic grouping, weak-area detection, and reinforcement cards. "
+            "This optional model, nomic-embed-text-v2-moe, powers smarter topic grouping, weak-area detection, and reinforcement cards. "
             "It is only used for the new adaptive study flow."
         )
         description.setObjectName("SectionText")
