@@ -4,15 +4,19 @@ from datetime import datetime, timezone
 import random
 import uuid
 
-from PySide6.QtCore import QEventLoop, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtCore import QEasingCurve, QEvent, QEventLoop, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QProgressDialog,
@@ -218,6 +222,34 @@ class ReinforcementProgressDialog(QDialog):
         icon_label.setPixmap(self._done_icon if done else self._pending_icon)
 
 
+class CardSearchWorker(QThread):
+    finished = Signal(int, str, object)
+
+    def __init__(self, *, request_id: int, query: str, cards: list[dict], embedding_service: EmbeddingService, limit: int) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.query = query
+        self.cards = list(cards)
+        self.embedding_service = embedding_service
+        self.limit = limit
+
+    def run(self) -> None:
+        query = self.query.strip()
+        if not query:
+            self.finished.emit(self.request_id, query, [])
+            return
+        scored: list[dict] = []
+        try:
+            semantic = self.embedding_service.search_cards_by_text(query, self.cards, max_results=self.limit)
+            scored = [{"card": item.card, "score": float(item.score), "source": "semantic"} for item in semantic]
+        except Exception:
+            scored = []
+        if not scored:
+            fallback = StudyTab._fallback_text_search(query, self.cards)[: self.limit]
+            scored = [{"card": card, "score": 0.0, "source": "fallback"} for card in fallback]
+        self.finished.emit(self.request_id, query, scored)
+
+
 class StudyTab(QWidget):
     def __init__(self, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
         super().__init__()
@@ -244,10 +276,27 @@ class StudyTab(QWidget):
         self.followup_worker: FollowUpWorker | None = None
         self.embedding_worker: EmbeddingWorker | None = None
         self.reinforcement_worker: ReinforcementWorker | None = None
+        self.card_search_worker: CardSearchWorker | None = None
         self.last_grade_report: dict | None = None
+        self.card_search_query = ""
+        self.card_search_suggestions: list[dict] = []
+        self.card_search_full_results: list[dict] = []
+        self.card_search_result_limit = 20
+        self.card_search_last_scores: list[float] = []
+        self.card_search_has_executed = False
+        self.card_search_request_id = 0
+        self.card_search_no_close_match = False
+        self._card_search_animations: list[QPropertyAnimation] = []
+        self._card_search_workers: list[CardSearchWorker] = []
 
         self.cooldown_timer = QTimer(self)
         self.cooldown_timer.timeout.connect(self._tick_hint_cooldown)
+        self.card_search_timer = QTimer(self)
+        self.card_search_timer.setSingleShot(True)
+        self.card_search_timer.timeout.connect(self._request_card_suggestions)
+        self.card_layout_timer = QTimer(self)
+        self.card_layout_timer.setSingleShot(True)
+        self.card_layout_timer.timeout.connect(self._render_cards)
 
         self._build_ui()
         self.reload_cards()
@@ -318,43 +367,102 @@ class StudyTab(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        header = self._surface()
-        head_layout = QHBoxLayout(header)
-        head_layout.setContentsMargins(18, 18, 18, 18)
-        title = QLabel("Cards")
-        title.setObjectName("PageTitle")
-        subtitle = QLabel("Browse, move, and choose where to begin.")
-        subtitle.setObjectName("SectionText")
-        subtitle.setWordWrap(True)
-        left = QVBoxLayout()
-        left.addWidget(title)
-        left.addWidget(subtitle)
-        head_layout.addLayout(left)
-        head_layout.addStretch(1)
+        search_bar = self._surface()
+        search_layout = QHBoxLayout(search_bar)
+        search_layout.setContentsMargins(14, 12, 14, 12)
+        search_layout.setSpacing(10)
+
+        self.card_search_input = QLineEdit()
+        self.card_search_input.setPlaceholderText("Search cards semantically...")
+        self.card_search_input.textChanged.connect(self._queue_card_search)
+        self.card_search_input.returnPressed.connect(self._execute_card_search)
+        search_layout.addWidget(self.card_search_input, 1)
+
+        self.card_search_btn = QToolButton()
+        self.card_search_btn.setObjectName("CompactGhostButton")
+        self.card_search_btn.setIcon(self._build_search_icon())
+        self.card_search_btn.setIconSize(QSize(18, 18))
+        self.card_search_btn.setFixedSize(42, 42)
+        self.card_search_btn.setToolTip("Search")
+        self.card_search_btn.clicked.connect(self._execute_card_search)
+        search_layout.addWidget(self.card_search_btn)
+
         self.start_cards_btn = QPushButton("Start")
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
-        head_layout.addWidget(self.start_cards_btn)
+        search_layout.addWidget(self.start_cards_btn)
         self.refresh_cards_btn = QPushButton("Refresh")
         self.refresh_cards_btn.clicked.connect(self.reload_cards)
-        head_layout.addWidget(self.refresh_cards_btn)
-        layout.addWidget(header)
+        search_layout.addWidget(self.refresh_cards_btn)
+        layout.addWidget(search_bar)
+
+        self.card_search_dropdown = self._surface()
+        self.card_search_dropdown.setVisible(False)
+        dropdown_layout = QVBoxLayout(self.card_search_dropdown)
+        dropdown_layout.setContentsMargins(10, 10, 10, 10)
+        dropdown_layout.setSpacing(6)
+        self.card_search_list = QListWidget()
+        self.card_search_list.itemClicked.connect(self._card_search_suggestion_clicked)
+        dropdown_layout.addWidget(self.card_search_list)
+        layout.addWidget(self.card_search_dropdown)
 
         self.cards_surface = self._surface()
         cards_layout = QVBoxLayout(self.cards_surface)
         cards_layout.setContentsMargins(18, 18, 18, 18)
+        cards_layout.setSpacing(12)
         self.card_scroll = QScrollArea()
         self.card_scroll.setWidgetResizable(True)
+        self.card_scroll.viewport().installEventFilter(self)
         self.card_host = QWidget()
         self.card_grid = QGridLayout(self.card_host)
         self.card_grid.setContentsMargins(0, 0, 0, 0)
-        self.card_grid.setSpacing(14)
+        self.card_grid.setHorizontalSpacing(18)
+        self.card_grid.setVerticalSpacing(16)
         self.card_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.card_scroll.setWidget(self.card_host)
         cards_layout.addWidget(self.card_scroll)
+        self.card_empty_state = QWidget()
+        empty_layout = QVBoxLayout(self.card_empty_state)
+        empty_layout.setContentsMargins(56, 40, 56, 40)
+        empty_layout.setSpacing(18)
+        empty_layout.setAlignment(Qt.AlignCenter)
+        self.card_empty_image = QLabel()
+        self.card_empty_image.setAlignment(Qt.AlignCenter)
+        self.card_empty_title = QLabel("Try another search")
+        self.card_empty_title.setObjectName("PageTitle")
+        self.card_empty_title.setAlignment(Qt.AlignCenter)
+        self.card_empty_note = QLabel("Use a more direct topic, keyword, or idea from the card.")
+        self.card_empty_note.setObjectName("SectionText")
+        self.card_empty_note.setAlignment(Qt.AlignCenter)
+        self.card_empty_note.setWordWrap(True)
+        self.card_empty_note.setMaximumWidth(520)
+        empty_layout.addStretch(1)
+        empty_layout.addWidget(self.card_empty_image)
+        empty_layout.addWidget(self.card_empty_title)
+        empty_layout.addWidget(self.card_empty_note)
+        empty_layout.addStretch(1)
+        self.card_empty_state.hide()
+        cards_layout.addWidget(self.card_empty_state)
+        self.card_search_more_btn = QPushButton("See more")
+        self.card_search_more_btn.clicked.connect(self._show_more_search_results)
+        self.card_search_more_btn.hide()
+        cards_layout.addWidget(self.card_search_more_btn, 0, Qt.AlignHCenter)
         layout.addWidget(self.cards_surface, 1)
         return container
+
+    def _build_search_icon(self) -> QIcon:
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor("#111111"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawEllipse(4, 4, 11, 11)
+        painter.drawLine(14, 14, 20, 20)
+        painter.end()
+        return QIcon(pixmap)
 
     def _build_study_view(self) -> QWidget:
         container = QWidget()
@@ -469,8 +577,14 @@ class StudyTab(QWidget):
         self.subject_tree.setVisible(self.sidebar_expanded)
         self.collapse_btn.setText("<" if self.sidebar_expanded else ">")
 
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.card_scroll.viewport() and event.type() == QEvent.Resize:
+            self.card_layout_timer.start(60)
+        return super().eventFilter(watched, event)
+
     def reload_cards(self) -> None:
         self.cards = self.datastore.list_all_cards()
+        self.card_search_dropdown.setVisible(False)
         self._refresh_subjects()
         self._render_cards()
 
@@ -522,6 +636,7 @@ class StudyTab(QWidget):
         self.current_subject = payload["subject"]
         self.current_category = payload["category"]
         self.current_subtopic = payload.get("subtopic", "All")
+        self.card_search_dropdown.setVisible(False)
         self._render_cards()
 
     def _clear_grid(self) -> None:
@@ -541,24 +656,208 @@ class StudyTab(QWidget):
             filtered = [card for card in filtered if card.get("subtopic") == self.current_subtopic]
         return filtered
 
-    def _render_cards(self) -> None:
-        self._clear_grid()
+    def _queue_card_search(self, text: str) -> None:
+        self.card_search_query = text
+        self.card_search_has_executed = False if not text.strip() else self.card_search_has_executed
+        self.card_search_dropdown.setVisible(False)
+        self.card_search_suggestions = []
+        if not text.strip():
+            self.card_search_full_results = []
+            self.card_search_last_scores = []
+            self.card_search_no_close_match = False
+            self.card_search_more_btn.hide()
+            self._render_cards()
+            return
+        self.card_search_timer.start(80)
+
+    def _request_card_suggestions(self) -> None:
+        query = self.card_search_input.text().strip()
+        if not query:
+            return
         cards = self._filtered_cards()
         if not cards:
-            empty = QLabel("No cards in this section yet.")
+            self.card_search_dropdown.setVisible(False)
+            return
+        missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
+        if missing:
+            self._embed_remaining_cards_in_background(missing)
+        self.card_search_request_id += 1
+        worker = CardSearchWorker(
+            request_id=self.card_search_request_id,
+            query=query,
+            cards=cards,
+            embedding_service=self.embedding_service,
+            limit=5,
+        )
+        worker.finished.connect(self._on_card_suggestions_ready)
+        worker.finished.connect(lambda *_args, current=worker: self._cleanup_card_search_worker(current))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self.card_search_worker = worker
+        self._card_search_workers.append(worker)
+
+    def _on_card_suggestions_ready(self, request_id: int, query: str, scored: object) -> None:
+        if request_id != self.card_search_request_id:
+            return
+        if query != self.card_search_input.text().strip():
+            return
+        scored_items = scored if isinstance(scored, list) else []
+        self.card_search_suggestions = [item.get("card", {}) for item in scored_items if isinstance(item, dict)]
+        self.card_search_list.clear()
+        for item in scored_items[:5]:
+            if not isinstance(item, dict):
+                continue
+            card = item.get("card", {})
+            title = str(card.get("title", "Untitled")).strip() or "Untitled"
+            short_title = title if len(title) <= 34 else f"{title[:31]}..."
+            row = QListWidgetItem(short_title)
+            row.setToolTip(title)
+            row.setData(Qt.UserRole, card)
+            self.card_search_list.addItem(row)
+        has_items = self.card_search_list.count() > 0 and bool(query)
+        self.card_search_dropdown.setVisible(has_items)
+
+    def _card_search_suggestion_clicked(self, item: QListWidgetItem) -> None:
+        card = item.data(Qt.UserRole) or {}
+        title = str(card.get("title", "")).strip()
+        if title:
+            self.card_search_input.setText(title)
+        self._execute_card_search()
+
+    def _execute_card_search(self) -> None:
+        query = self.card_search_input.text().strip()
+        self.card_search_dropdown.setVisible(False)
+        if not query:
+            self.card_search_query = ""
+            self.card_search_has_executed = False
+            self.card_search_full_results = []
+            self.card_search_last_scores = []
+            self.card_search_no_close_match = False
+            self.card_search_more_btn.hide()
+            self._render_cards()
+            return
+
+        cards = self._filtered_cards()
+        self.card_search_query = query
+        self.card_search_has_executed = True
+        self.card_search_result_limit = 20
+        scored_items: list[dict] = []
+        try:
+            semantic = self.embedding_service.search_cards_by_text(query, cards, max_results=max(20, len(cards)))
+            scored_items = [{"card": item.card, "score": float(item.score), "source": "semantic"} for item in semantic]
+        except Exception:
+            scored_items = []
+        if not scored_items:
+            fallback = self._fallback_text_search(query, cards)
+            scored_items = [{"card": card, "score": 0.0, "source": "fallback"} for card in fallback]
+
+        self.card_search_full_results = [item["card"] for item in scored_items]
+        self.card_search_last_scores = [float(item.get("score", 0.0)) for item in scored_items]
+        best_score = self.card_search_last_scores[0] if self.card_search_last_scores else 0.0
+        self.card_search_no_close_match = bool(cards) and best_score < 0.22
+        self._render_cards()
+
+    def _show_more_search_results(self) -> None:
+        self.card_search_result_limit += 20
+        self._render_cards()
+
+    def _cleanup_card_search_worker(self, worker: CardSearchWorker) -> None:
+        if worker in self._card_search_workers:
+            self._card_search_workers.remove(worker)
+        if self.card_search_worker is worker:
+            self.card_search_worker = None
+
+    @staticmethod
+    def _fallback_text_search(query: str, cards: list[dict]) -> list[dict]:
+        terms = [term for term in query.lower().split() if term]
+        if not terms:
+            return []
+
+        def score(card: dict) -> tuple[int, int]:
+            haystack = " ".join(
+                [
+                    str(card.get("title", "")).lower(),
+                    str(card.get("question", "")).lower(),
+                    str(card.get("answer", "")).lower(),
+                ]
+            )
+            matches = sum(1 for term in terms if term in haystack)
+            return matches, len(haystack)
+
+        return sorted(cards, key=score, reverse=True)
+
+    def _render_cards(self) -> None:
+        self._clear_grid()
+        self.card_scroll.show()
+        self.card_empty_state.hide()
+        self.card_search_more_btn.hide()
+        if self.card_search_has_executed:
+            cards = self.card_search_full_results[: self.card_search_result_limit]
+        else:
+            cards = self._filtered_cards()
+
+        if self.card_search_has_executed and self.card_search_no_close_match:
+            self._show_card_empty_state()
+            return
+        if not cards:
+            empty_text = "No cards in this section yet." if not self.card_search_has_executed else "No matching cards found."
+            empty = QLabel(empty_text)
             empty.setObjectName("SectionText")
             empty.setAlignment(Qt.AlignCenter)
             self.card_grid.addWidget(empty, 0, 0, 1, 4)
             return
 
+        available_width = max(self.card_scroll.viewport().width() - 8, 300)
+        min_width = 280
+        max_width = 420
+        spacing = self.card_grid.horizontalSpacing() or 18
+        columns = max(1, min(5, available_width // 300))
+        tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        while tile_width < min_width and columns > 1:
+            columns -= 1
+            tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        tile_width = max(min_width, min(max_width, tile_width))
+
+        self._card_search_animations = []
         for idx, card in enumerate(cards):
             tile = CardTile(card)
+            tile.set_tile_width(tile_width)
             tile.selected.connect(self._card_selected)
             tile.move_requested.connect(self._move_card)
             tile.remove_requested.connect(self._remove_card)
-            row = idx // 4
-            col = idx % 4
+            row = idx // columns
+            col = idx % columns
             self.card_grid.addWidget(tile, row, col)
+            if self.card_search_has_executed:
+                self._animate_card_tile(tile, idx)
+        if self.card_search_has_executed and len(self.card_search_full_results) > len(cards):
+            self.card_search_more_btn.show()
+
+    def _show_card_empty_state(self) -> None:
+        image_path = self.datastore.paths.banners / "cards_search_empty_1x1.png"
+        self.card_scroll.hide()
+        self.card_empty_state.setMinimumHeight(max(self.cards_surface.height() - 44, 520))
+        if image_path.exists():
+            pixmap = QPixmap(str(image_path))
+            self.card_empty_image.setPixmap(pixmap.scaled(420, 420, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.card_empty_image.show()
+        else:
+            self.card_empty_image.hide()
+        self.card_empty_title.setText("Try another search")
+        self.card_empty_note.setText("Use a more direct topic, keyword, or idea from the card.")
+        self.card_empty_state.show()
+
+    def _animate_card_tile(self, tile: QWidget, index: int) -> None:
+        effect = QGraphicsOpacityEffect(tile)
+        effect.setOpacity(0.0)
+        tile.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", tile)
+        animation.setDuration(850)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.OutQuart)
+        self._card_search_animations.append(animation)
+        QTimer.singleShot(index * 225, animation.start)
 
     def _move_card(self, card: dict) -> None:
         dialog = MoveCardDialog(card, self.datastore)
@@ -729,6 +1028,8 @@ class StudyTab(QWidget):
         self.embedding_worker = None
         if self.study_state:
             refresh_topic_clusters(self.study_state, self.embedding_service)
+        if self.card_search_input.text().strip():
+            self.card_search_timer.start(10)
 
     def _set_followup_visible(self, visible: bool) -> None:
         self.followup_title.setVisible(visible)

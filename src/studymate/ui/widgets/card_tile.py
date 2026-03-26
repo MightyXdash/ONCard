@@ -24,23 +24,25 @@ class CardTile(QFrame):
         self.card = card
         self.setObjectName("CardTile")
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(280)
-        self.setFixedHeight(218)
+        self._min_tile_width = 260
+        self._max_tile_width = 420
+        self.setMinimumWidth(self._min_tile_width)
+        self.setMaximumWidth(self._max_tile_width)
+        self.setFixedHeight(232)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
-        title = QTextEdit()
-        title.setReadOnly(True)
-        title.setPlainText(card.get("title", "Untitled"))
-        title.setObjectName("CardTitleDisplay")
-        title.setMaximumHeight(54)
+        self.title_display = QTextEdit()
+        self.title_display.setReadOnly(True)
+        self.title_display.setPlainText(card.get("title", "Untitled"))
+        self.title_display.setObjectName("CardTitleDisplay")
+        self.title_display.setMaximumHeight(58)
 
-        question = QTextEdit()
-        question.setReadOnly(True)
-        question.setPlainText(card.get("question", ""))
-        question.setObjectName("CardQuestionDisplay")
-        question.setMinimumHeight(72)
-        question.setMaximumHeight(78)
+        self.question_display = QTextEdit()
+        self.question_display.setReadOnly(True)
+        self.question_display.setPlainText(card.get("question", ""))
+        self.question_display.setObjectName("CardQuestionDisplay")
+        self.question_display.setMinimumHeight(86)
+        self.question_display.setMaximumHeight(104)
 
         meta = QLabel(
             f"{card.get('subject', 'General')}  |  Difficulty {card.get('natural_difficulty', 5)}/10"
@@ -66,9 +68,18 @@ class CardTile(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
-        layout.addWidget(title)
-        layout.addWidget(question, 1)
+        layout.addWidget(self.title_display)
+        layout.addWidget(self.question_display, 1)
         layout.addLayout(footer)
+        self.set_tile_width(320)
+
+    def set_tile_width(self, width: int) -> None:
+        clamped = max(self._min_tile_width, min(self._max_tile_width, int(width)))
+        self.setFixedWidth(clamped)
+        self.setFixedHeight(220 if clamped <= 290 else 236 if clamped <= 340 else 252 if clamped <= 390 else 268)
+        self.title_display.setMaximumHeight(54 if clamped <= 290 else 62)
+        self.question_display.setMinimumHeight(78 if clamped <= 290 else 94)
+        self.question_display.setMaximumHeight(86 if clamped <= 290 else 112)
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
