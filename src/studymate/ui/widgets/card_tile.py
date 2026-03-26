@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
-    QTextEdit,
     QToolButton,
     QVBoxLayout,
 )
@@ -24,51 +23,83 @@ class CardTile(QFrame):
         self.card = card
         self.setObjectName("CardTile")
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(280)
-        self.setFixedHeight(218)
+        self._min_tile_width = 300
+        self._max_tile_width = 460
+        self.setMinimumWidth(self._min_tile_width)
+        self.setMaximumWidth(self._max_tile_width)
+        self.setFixedHeight(238)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
-        title = QTextEdit()
-        title.setReadOnly(True)
-        title.setPlainText(card.get("title", "Untitled"))
-        title.setObjectName("CardTitleDisplay")
-        title.setMaximumHeight(54)
+        self.title_display = QLabel(card.get("title", "Untitled"))
+        self.title_display.setObjectName("CardTitleLabel")
+        self.title_display.setWordWrap(True)
+        self.title_display.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
-        question = QTextEdit()
-        question.setReadOnly(True)
-        question.setPlainText(card.get("question", ""))
-        question.setObjectName("CardQuestionDisplay")
-        question.setMinimumHeight(72)
-        question.setMaximumHeight(78)
+        self.question_display = QLabel(card.get("question", ""))
+        self.question_display.setObjectName("CardQuestionLabel")
+        self.question_display.setWordWrap(True)
+        self.question_display.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.question_display.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-        meta = QLabel(
-            f"{card.get('subject', 'General')}  |  Difficulty {card.get('natural_difficulty', 5)}/10"
-        )
-        meta.setObjectName("SmallMeta")
+        subject_label = QLabel(card.get("subject", "General"))
+        subject_label.setObjectName("SmallMeta")
 
         options_button = QToolButton()
-        options_button.setText("Options")
+        options_button.setText("More")
         options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        options_button.setObjectName("CompactGhostButton")
+        options_button.setObjectName("CardOptionsButton")
         options_menu = QMenu(options_button)
+        options_menu.setObjectName("CardOptionsMenu")
+        options_menu.setWindowFlag(Qt.FramelessWindowHint, True)
+        options_menu.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+        options_menu.setAttribute(Qt.WA_TranslucentBackground, True)
         move_action = options_menu.addAction("Move card")
         remove_action = options_menu.addAction("Remove")
         move_action.triggered.connect(lambda: self.move_requested.emit(self.card))
         remove_action.triggered.connect(lambda: self.remove_requested.emit(self.card))
         options_button.setMenu(options_menu)
 
+        difficulty_badge = QLabel(f"Difficulty {card.get('natural_difficulty', 5)}/10")
+        difficulty_badge.setObjectName("CardMetaPill")
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+        header.addWidget(self.title_display, 1)
+        header.addWidget(options_button, 0, Qt.AlignTop)
+
         footer = QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
-        footer.addWidget(meta, 1)
-        footer.addWidget(options_button)
+        footer.setSpacing(8)
+        footer.addWidget(subject_label, 1)
+        footer.addWidget(difficulty_badge, 0, Qt.AlignRight)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
-        layout.addWidget(title)
-        layout.addWidget(question, 1)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addLayout(header)
+        layout.addWidget(self.question_display, 1)
         layout.addLayout(footer)
+        self.set_tile_width(336)
+
+    def set_tile_width(self, width: int) -> None:
+        clamped = max(self._min_tile_width, min(self._max_tile_width, int(width)))
+        self.setFixedWidth(clamped)
+        if clamped <= 330:
+            tile_height = 228
+            title_height = 52
+            question_height = 74
+        elif clamped <= 390:
+            tile_height = 242
+            title_height = 60
+            question_height = 88
+        else:
+            tile_height = 256
+            title_height = 68
+            question_height = 102
+        self.setFixedHeight(tile_height)
+        self.title_display.setMaximumHeight(title_height)
+        self.question_display.setMaximumHeight(question_height)
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
+from studymate.services.recommendation_service import build_global_recommendations
 from studymate.services.study_intelligence import build_session_state, enqueue_similar_cards, refresh_topic_clusters, register_grade_result
 from studymate.utils.paths import AppPaths
 
@@ -20,6 +21,10 @@ class FakeOllama:
     def embed_text(self, model_tag: str, text: str) -> list[float]:
         self.calls.append(f"{model_tag}:{text}")
         lowered = text.lower()
+        if "topic a bridge" in lowered:
+            return [0.94, 0.06, 0.0]
+        if "topic a strong" in lowered:
+            return [0.98, 0.02, 0.0]
         if "topic a" in lowered:
             return [1.0, 0.0, 0.0]
         if "topic b" in lowered:
@@ -105,6 +110,112 @@ class NnaServiceTests(unittest.TestCase):
         self.assertTrue(cluster_key)
         self.assertGreaterEqual(count, 1)
         self.assertIn("2", state.priority_ids + state.deferred_ids)
+
+    def test_recommendations_return_weak_cards_with_strong_similar_anchors(self) -> None:
+        weak_card = self._card("weak", "Topic A bridge")
+        strong_card = self._card("strong", "Topic A strong")
+        unrelated_card = self._card("other", "Topic B")
+        for card in [weak_card, strong_card, unrelated_card]:
+            self.embedding_service.ensure_card_embedding(card)
+
+        attempts = [
+            {
+                "card_id": "weak",
+                "marks_out_of_10": 5.0,
+                "how_good": 72.0,
+                "temporary": False,
+                "timestamp": "2026-01-03T00:00:00+00:00",
+            },
+            {
+                "card_id": "strong",
+                "marks_out_of_10": 9.0,
+                "how_good": 97.0,
+                "temporary": False,
+                "timestamp": "2026-01-02T00:00:00+00:00",
+            },
+            {
+                "card_id": "other",
+                "marks_out_of_10": 4.0,
+                "how_good": 60.0,
+                "temporary": False,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+        ]
+
+        recommendations = build_global_recommendations(
+            [weak_card, strong_card, unrelated_card],
+            attempts,
+            self.embedding_service,
+            limit=10,
+        )
+
+        self.assertEqual(1, len(recommendations))
+        self.assertEqual("weak", recommendations[0].card["id"])
+        self.assertEqual("strong", recommendations[0].reason_anchor_card_id)
+        self.assertGreaterEqual(recommendations[0].reason_similarity, 0.80)
+
+    def test_recommendations_ignore_temporary_attempts(self) -> None:
+        weak_card = self._card("weak", "Topic A bridge")
+        strong_card = self._card("strong", "Topic A strong")
+        for card in [weak_card, strong_card]:
+            self.embedding_service.ensure_card_embedding(card)
+
+        attempts = [
+            {
+                "card_id": "weak",
+                "marks_out_of_10": 3.0,
+                "how_good": 55.0,
+                "temporary": True,
+                "timestamp": "2026-01-03T00:00:00+00:00",
+            },
+            {
+                "card_id": "strong",
+                "marks_out_of_10": 9.0,
+                "how_good": 97.0,
+                "temporary": False,
+                "timestamp": "2026-01-02T00:00:00+00:00",
+            },
+        ]
+
+        recommendations = build_global_recommendations(
+            [weak_card, strong_card],
+            attempts,
+            self.embedding_service,
+            limit=10,
+        )
+
+        self.assertEqual([], recommendations)
+
+    def test_recommendations_skip_missing_embeddings_without_crashing(self) -> None:
+        weak_card = self._card("weak", "Topic A bridge")
+        strong_card = self._card("strong", "Topic A strong")
+        self.embedding_service.ensure_card_embedding(strong_card)
+
+        attempts = [
+            {
+                "card_id": "weak",
+                "marks_out_of_10": 5.0,
+                "how_good": 72.0,
+                "temporary": False,
+                "timestamp": "2026-01-03T00:00:00+00:00",
+            },
+            {
+                "card_id": "strong",
+                "marks_out_of_10": 9.0,
+                "how_good": 97.0,
+                "temporary": False,
+                "timestamp": "2026-01-02T00:00:00+00:00",
+            },
+        ]
+
+        recommendations = build_global_recommendations(
+            [weak_card, strong_card],
+            attempts,
+            self.embedding_service,
+            limit=10,
+        )
+
+        self.assertEqual([], recommendations)
 
 
 if __name__ == "__main__":

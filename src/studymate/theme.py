@@ -25,6 +25,24 @@ def app_stylesheet() -> str:
         border: 1px solid #dddddd;
         border-radius: 24px;
     }
+    QFrame#RecommendationBlock {
+        background-color: #f7f7f7;
+        border: 1px solid #e8e8e8;
+        border-radius: 22px;
+    }
+    QWidget#CardsCanvas {
+        background-color: #f7f7f7;
+    }
+    QLabel#RecommendationTitle {
+        font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+        font-size: 18px;
+        font-weight: 700;
+        color: #141414;
+    }
+    QLabel#RecommendationMeta {
+        font-size: 12px;
+        color: #6e6e6e;
+    }
     QLabel#PageTitle {
         font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
         font-size: 28px;
@@ -151,6 +169,21 @@ def app_stylesheet() -> str:
         color: #111111;
         border-color: #cfcfcf;
     }
+    QPushButton#SettingsNavButton {
+        min-width: 0px;
+        padding: 0px;
+        border: none;
+        border-radius: 0px;
+        background: transparent;
+    }
+    QPushButton#SettingsNavButton:hover {
+        background: transparent;
+        border: none;
+    }
+    QPushButton#SettingsNavButton:pressed {
+        background: transparent;
+        border: none;
+    }
     QToolButton#CollapseButton {
         background-color: transparent;
         border: none;
@@ -165,6 +198,9 @@ def app_stylesheet() -> str:
         padding: 12px 14px;
         font-size: 14px;
         selection-background-color: #cfcfcf;
+    }
+    QComboBox {
+        padding-right: 34px;
     }
     QSpinBox::up-button, QSpinBox::down-button {
         width: 24px;
@@ -200,6 +236,25 @@ def app_stylesheet() -> str:
         font-size: 13px;
         color: #5b5b5b;
     }
+    QLabel#CardTitleLabel {
+        font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+        font-size: 15px;
+        font-weight: 700;
+        color: #141414;
+    }
+    QLabel#CardQuestionLabel {
+        font-size: 13px;
+        color: #5b5b5b;
+    }
+    QLabel#CardMetaPill {
+        background-color: #f1f1f1;
+        color: #343434;
+        border: 1px solid #e3e3e3;
+        border-radius: 12px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 700;
+    }
     QListWidget, QScrollArea {
         background-color: transparent;
         border: none;
@@ -224,12 +279,13 @@ def app_stylesheet() -> str:
         border: none;
         outline: none;
         padding: 2px 0px;
+        show-decoration-selected: 0;
     }
     QTreeWidget::item {
         min-height: 26px;
-        padding: 8px 10px;
+        padding: 8px 12px;
         margin: 2px 0px;
-        border-radius: 12px;
+        border-radius: 14px;
     }
     QTreeWidget::item:hover {
         background: #e8e8e8;
@@ -239,6 +295,9 @@ def app_stylesheet() -> str:
         color: #111111;
     }
     QTreeView::branch {
+        background: transparent;
+    }
+    QTreeView::branch:selected {
         background: transparent;
     }
     QCheckBox {
@@ -260,6 +319,31 @@ def app_stylesheet() -> str:
     QComboBox::drop-down {
         width: 34px;
         border: none;
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        background: transparent;
+    }
+    QComboBox QAbstractItemView {
+        background-color: #ffffff;
+        border: 1px solid #e3e3e3;
+        border-radius: 10px;
+        padding: 8px 6px;
+        outline: none;
+        selection-background-color: #ececec;
+        selection-color: #111111;
+    }
+    QComboBox QAbstractItemView::item {
+        min-height: 22px;
+        padding: 8px 12px;
+        margin: 2px 4px;
+        border-radius: 10px;
+    }
+    QComboBox QAbstractItemView::item:hover {
+        background: #f2f2f2;
+    }
+    QComboBox QAbstractItemView::item:selected {
+        background: #e8e8e8;
+        color: #111111;
     }
     QSlider::groove:horizontal {
         height: 6px;
@@ -299,10 +383,70 @@ def app_stylesheet() -> str:
         background-color: #fafafa;
         border-color: #cfcfcf;
     }
+    QToolButton#CardOptionsButton {
+        background-color: #ffffff;
+        color: #343434;
+        border: 1px solid #e4e4e4;
+        border-radius: 10px;
+        padding: 5px 10px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    QToolButton#CardOptionsButton:hover {
+        background-color: #f4f4f4;
+        border-color: #d7d7d7;
+    }
+    QToolButton#CardOptionsButton::menu-indicator {
+        image: none;
+        width: 0px;
+    }
     QFrame#QueueRow {
         background-color: #fafafa;
         border: 1px solid #e6e6e6;
         border-radius: 16px;
+    }
+    QMenu {
+        background-color: #ffffff;
+        border: 1px solid #dcdcdc;
+        border-radius: 10px;
+        padding: 6px;
+        margin: 0px;
+    }
+    QMenu::item {
+        background-color: #ffffff;
+        color: #141414;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 14px;
+        margin: 1px 0px;
+    }
+    QMenu::item:selected {
+        background-color: #efefef;
+        color: #111111;
+    }
+    QMenu::separator {
+        height: 1px;
+        background: #ececec;
+        margin: 6px 8px;
+    }
+    QMenu#CardOptionsMenu {
+        background-color: #ffffff;
+        border: 1px solid #e3e3e3;
+        border-radius: 10px;
+        padding: 8px 6px;
+        margin: 0px;
+    }
+    QMenu#CardOptionsMenu::item {
+        background: transparent;
+        color: #141414;
+        border: none;
+        border-radius: 10px;
+        padding: 8px 12px;
+        margin: 2px 4px;
+    }
+    QMenu#CardOptionsMenu::item:selected {
+        background: #e8e8e8;
+        color: #111111;
     }
     QFrame#FTCControlsSurface {
         background-color: #fcfcfc;
@@ -364,6 +508,66 @@ def app_stylesheet() -> str:
     QScrollArea {
         background: transparent;
         border: none;
+    }
+    QScrollBar:vertical {
+        background: transparent;
+        width: 14px;
+        margin: 8px 3px 8px 3px;
+    }
+    QScrollBar::handle:vertical {
+        background: #d1d1d1;
+        min-height: 56px;
+        border-radius: 7px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #bdbdbd;
+    }
+    QScrollBar::handle:vertical:pressed {
+        background: #ababab;
+    }
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {
+        background: transparent;
+        border: none;
+        height: 0px;
+    }
+    QScrollBar::up-arrow:vertical,
+    QScrollBar::down-arrow:vertical,
+    QScrollBar::up-arrow:horizontal,
+    QScrollBar::down-arrow:horizontal,
+    QScrollBar::left-arrow:horizontal,
+    QScrollBar::right-arrow:horizontal {
+        width: 0px;
+        height: 0px;
+        background: transparent;
+    }
+    QScrollBar::add-page:vertical,
+    QScrollBar::sub-page:vertical,
+    QScrollBar::add-page:horizontal,
+    QScrollBar::sub-page:horizontal {
+        background: transparent;
+    }
+    QScrollBar:horizontal {
+        background: transparent;
+        height: 14px;
+        margin: 3px 8px 3px 8px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #d1d1d1;
+        min-width: 56px;
+        border-radius: 7px;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background: #bdbdbd;
+    }
+    QScrollBar::handle:horizontal:pressed {
+        background: #ababab;
+    }
+    QScrollBar::add-line:horizontal,
+    QScrollBar::sub-line:horizontal {
+        background: transparent;
+        border: none;
+        width: 0px;
     }
     QPushButton#FTCToggle {
         background-color: #f2f2f2;
