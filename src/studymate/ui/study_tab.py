@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QProgressDialog,
     QScrollArea,
     QStackedWidget,
@@ -35,6 +36,11 @@ from studymate.constants import SUBJECT_TAXONOMY
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
 from studymate.services.ollama_service import OllamaService
+from studymate.services.recommendation_service import (
+    RecommendedCard,
+    build_global_recommendations,
+    recommendation_candidate_cards,
+)
 from studymate.services.study_intelligence import (
     StudySessionState,
     SessionCardEntry,
@@ -44,7 +50,6 @@ from studymate.services.study_intelligence import (
     mark_card_completed,
     next_card_for_session,
     queue_reinforcement_cards,
-    refresh_topic_clusters,
     register_grade_result,
 )
 from studymate.ui.icon_helper import IconHelper
@@ -222,6 +227,142 @@ class ReinforcementProgressDialog(QDialog):
         icon_label.setPixmap(self._done_icon if done else self._pending_icon)
 
 
+class SessionPrepDialog(QDialog):
+    def __init__(self, icons: IconHelper) -> None:
+        super().__init__()
+        self.setWindowTitle("Preparing study session")
+        self.setFixedSize(460, 308)
+        self.rows: dict[str, tuple[QLabel, QLabel]] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(14)
+
+        title = QLabel("Preparing your study session")
+        title.setObjectName("PageTitle")
+        layout.addWidget(title)
+
+        subtitle = QLabel("ONCard is getting the next study block ready.")
+        subtitle.setObjectName("SectionText")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        self.status_label = QLabel("Waiting to start...")
+        self.status_label.setObjectName("SmallMeta")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        self._done_icon = icons.icon("common", "complete_green_circle", "O").pixmap(18, 18)
+        self._pending_icon = icons.icon("common", "pending_red_circle", ".").pixmap(18, 18)
+
+        for key, label_text in [
+            ("seed", "Preparing seed cards"),
+            ("topics", "Building topic links"),
+            ("launch", "Starting study"),
+        ]:
+            row = QHBoxLayout()
+            icon_label = QLabel()
+            icon_label.setPixmap(self._pending_icon)
+            text_label = QLabel(label_text)
+            text_label.setObjectName("SectionText")
+            row.addWidget(icon_label)
+            row.addWidget(text_label, 1)
+            layout.addLayout(row)
+            self.rows[key] = (icon_label, text_label)
+
+    def update_step(self, key: str, message: str, done: bool) -> None:
+        self.status_label.setText(message)
+        row = self.rows.get(key)
+        if row is None:
+            return
+        icon_label, _text_label = row
+        icon_label.setPixmap(self._done_icon if done else self._pending_icon)
+
+    def set_progress(self, value: int) -> None:
+        self.progress_bar.setValue(max(0, min(100, int(value))))
+
+
+class SessionPrepWorker(QThread):
+    progress = Signal(str, str, str, int, int, bool)
+    finished = Signal(str, object)
+    failed = Signal(str, str)
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        cards: list[dict],
+        seed_cards: list[dict],
+        embedding_service: EmbeddingService,
+    ) -> None:
+        super().__init__()
+        self.session_id = session_id
+        self.cards = list(cards)
+        self.seed_cards = list(seed_cards)
+        self.embedding_service = embedding_service
+
+    def run(self) -> None:
+        try:
+            total_seed = max(1, len(self.seed_cards))
+            if not self.seed_cards:
+                self.progress.emit(self.session_id, "seed", "Seed cards already had embeddings.", 1, 1, True)
+            else:
+                self.progress.emit(self.session_id, "seed", "Checking seed card embeddings...", 0, total_seed, False)
+                for index, card in enumerate(self.seed_cards, start=1):
+                    if self.isInterruptionRequested():
+                        return
+                    label = str(card.get("title") or card.get("question") or "Card").strip() or "Card"
+                    self.progress.emit(
+                        self.session_id,
+                        "seed",
+                        f"Embedding seed cards... ({index}/{total_seed}) {label}",
+                        index,
+                        total_seed,
+                        False,
+                    )
+                    self.embedding_service.ensure_card_embedding(card)
+                    self.msleep(25)
+                self.progress.emit(self.session_id, "seed", "Seed cards are ready.", total_seed, total_seed, True)
+
+            if self.isInterruptionRequested():
+                return
+            self.progress.emit(self.session_id, "topics", "Building topic links from the seed set...", 0, 1, False)
+            cluster_map = self.embedding_service.topic_clusters(self.cards)
+            if self.isInterruptionRequested():
+                return
+            self.progress.emit(self.session_id, "topics", "Topic links are ready.", 1, 1, True)
+            self.progress.emit(self.session_id, "launch", "Study session ready.", 1, 1, True)
+            self.finished.emit(self.session_id, cluster_map)
+        except Exception as exc:
+            self.failed.emit(self.session_id, str(exc))
+
+
+class TopicClusterWorker(QThread):
+    finished = Signal(str, object)
+    failed = Signal(str, str)
+
+    def __init__(self, *, session_id: str, cards: list[dict], embedding_service: EmbeddingService) -> None:
+        super().__init__()
+        self.session_id = session_id
+        self.cards = list(cards)
+        self.embedding_service = embedding_service
+
+    def run(self) -> None:
+        try:
+            cluster_map = self.embedding_service.topic_clusters(self.cards)
+            if self.isInterruptionRequested():
+                return
+            self.finished.emit(self.session_id, cluster_map)
+        except Exception as exc:
+            self.failed.emit(self.session_id, str(exc))
+
+
 class CardSearchWorker(QThread):
     finished = Signal(int, str, object)
 
@@ -276,7 +417,12 @@ class StudyTab(QWidget):
         self.followup_worker: FollowUpWorker | None = None
         self.embedding_worker: EmbeddingWorker | None = None
         self.reinforcement_worker: ReinforcementWorker | None = None
+        self.session_prep_worker: SessionPrepWorker | None = None
+        self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
+        self.session_prep_dialog: SessionPrepDialog | None = None
+        self.session_prep_remaining_cards: list[dict] = []
+        self.pending_cluster_refresh = False
         self.last_grade_report: dict | None = None
         self.card_search_query = ""
         self.card_search_suggestions: list[dict] = []
@@ -286,6 +432,7 @@ class StudyTab(QWidget):
         self.card_search_has_executed = False
         self.card_search_request_id = 0
         self.card_search_no_close_match = False
+        self.global_recommendations: list[RecommendedCard] = []
         self._card_search_animations: list[QPropertyAnimation] = []
         self._card_search_workers: list[CardSearchWorker] = []
 
@@ -332,6 +479,9 @@ class StudyTab(QWidget):
 
         self.subject_tree = QTreeWidget()
         self.subject_tree.setHeaderHidden(True)
+        self.subject_tree.setRootIsDecorated(False)
+        self.subject_tree.setIndentation(0)
+        self.subject_tree.setUniformRowHeights(True)
         self.subject_tree.itemClicked.connect(self._subject_clicked)
         side_layout.addWidget(self.subject_tree, 1)
         root.addWidget(self.sidebar)
@@ -378,16 +528,18 @@ class StudyTab(QWidget):
         self.card_search_input.setPlaceholderText("Search cards semantically...")
         self.card_search_input.textChanged.connect(self._queue_card_search)
         self.card_search_input.returnPressed.connect(self._execute_card_search)
-        search_layout.addWidget(self.card_search_input, 1)
-
-        self.card_search_btn = QToolButton()
-        self.card_search_btn.setObjectName("CompactGhostButton")
+        self.card_search_input.setTextMargins(0, 0, 36, 0)
+        self.card_search_input.installEventFilter(self)
+        self.card_search_btn = QToolButton(self.card_search_input)
         self.card_search_btn.setIcon(self._build_search_icon())
         self.card_search_btn.setIconSize(QSize(18, 18))
-        self.card_search_btn.setFixedSize(42, 42)
+        self.card_search_btn.setCursor(Qt.PointingHandCursor)
+        self.card_search_btn.setStyleSheet("QToolButton { border: none; background: transparent; padding: 0px; }")
+        self.card_search_btn.setFixedSize(24, 24)
         self.card_search_btn.setToolTip("Search")
         self.card_search_btn.clicked.connect(self._execute_card_search)
-        search_layout.addWidget(self.card_search_btn)
+        search_layout.addWidget(self.card_search_input, 1)
+        self._position_card_search_button()
 
         self.start_cards_btn = QPushButton("Start")
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
@@ -402,8 +554,13 @@ class StudyTab(QWidget):
         dropdown_layout = QVBoxLayout(self.card_search_dropdown)
         dropdown_layout.setContentsMargins(10, 10, 10, 10)
         dropdown_layout.setSpacing(6)
+        self.card_search_label = QLabel("Did you mean something like:")
+        self.card_search_label.setObjectName("SmallMeta")
+        dropdown_layout.addWidget(self.card_search_label)
         self.card_search_list = QListWidget()
         self.card_search_list.itemClicked.connect(self._card_search_suggestion_clicked)
+        self.card_search_list.itemPressed.connect(self._card_search_suggestion_clicked)
+        self.card_search_list.itemActivated.connect(self._card_search_suggestion_clicked)
         dropdown_layout.addWidget(self.card_search_list)
         layout.addWidget(self.card_search_dropdown)
 
@@ -415,11 +572,41 @@ class StudyTab(QWidget):
         self.card_scroll.setWidgetResizable(True)
         self.card_scroll.viewport().installEventFilter(self)
         self.card_host = QWidget()
-        self.card_grid = QGridLayout(self.card_host)
-        self.card_grid.setContentsMargins(0, 0, 0, 0)
-        self.card_grid.setHorizontalSpacing(18)
-        self.card_grid.setVerticalSpacing(16)
+        self.card_host.setObjectName("CardsCanvas")
+        self.card_host_layout = QVBoxLayout(self.card_host)
+        self.card_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.card_host_layout.setSpacing(0)
+        self.recommendation_block = self._surface()
+        self.recommendation_block.setObjectName("RecommendationBlock")
+        recommendation_layout = QVBoxLayout(self.recommendation_block)
+        recommendation_layout.setContentsMargins(18, 18, 18, 18)
+        recommendation_layout.setSpacing(12)
+        self.recommendation_title = QLabel("Our recommendation")
+        self.recommendation_title.setObjectName("RecommendationTitle")
+        recommendation_layout.addWidget(self.recommendation_title)
+        self.recommendation_meta = QLabel(
+            "According your past interactions, you will benefit from learning these first"
+        )
+        self.recommendation_meta.setObjectName("RecommendationMeta")
+        self.recommendation_meta.setWordWrap(True)
+        recommendation_layout.addWidget(self.recommendation_meta)
+        self.recommendation_host = QWidget()
+        self.recommendation_grid = QGridLayout(self.recommendation_host)
+        self.recommendation_grid.setContentsMargins(0, 0, 0, 0)
+        self.recommendation_grid.setHorizontalSpacing(16)
+        self.recommendation_grid.setVerticalSpacing(16)
+        self.recommendation_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        recommendation_layout.addWidget(self.recommendation_host)
+        self.recommendation_block.hide()
+        self.card_host_layout.addWidget(self.recommendation_block)
+        self.card_grid_host = QWidget()
+        self.card_grid_host.setObjectName("CardsCanvas")
+        self.card_grid = QGridLayout(self.card_grid_host)
+        self.card_grid.setContentsMargins(0, 14, 0, 0)
+        self.card_grid.setHorizontalSpacing(20)
+        self.card_grid.setVerticalSpacing(18)
         self.card_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.card_host_layout.addWidget(self.card_grid_host)
         self.card_scroll.setWidget(self.card_host)
         cards_layout.addWidget(self.card_scroll)
         self.card_empty_state = QWidget()
@@ -578,12 +765,22 @@ class StudyTab(QWidget):
         self.collapse_btn.setText("<" if self.sidebar_expanded else ">")
 
     def eventFilter(self, watched, event) -> bool:
-        if watched is self.card_scroll.viewport() and event.type() == QEvent.Resize:
+        if hasattr(self, "card_scroll") and watched is self.card_scroll.viewport() and event.type() == QEvent.Resize:
             self.card_layout_timer.start(60)
+        elif watched is self.card_search_input and event.type() == QEvent.Resize:
+            self._position_card_search_button()
         return super().eventFilter(watched, event)
+
+    def _position_card_search_button(self) -> None:
+        if not hasattr(self, "card_search_btn") or not hasattr(self, "card_search_input"):
+            return
+        x_pos = self.card_search_input.width() - self.card_search_btn.width() - 10
+        y_pos = max(0, int((self.card_search_input.height() - self.card_search_btn.height()) / 2))
+        self.card_search_btn.move(x_pos, y_pos)
 
     def reload_cards(self) -> None:
         self.cards = self.datastore.list_all_cards()
+        self._refresh_global_recommendations()
         self.card_search_dropdown.setVisible(False)
         self._refresh_subjects()
         self._render_cards()
@@ -600,7 +797,7 @@ class StudyTab(QWidget):
             subject_item = QTreeWidgetItem([f"{subject} ({counts.get(subject, 0)})"])
             subject_item.setData(0, Qt.UserRole, {"subject": subject, "category": "All", "subtopic": "All"})
             if counts.get(subject, 0) == 0:
-                subject_item.setForeground(0, QColor("#9b9387"))
+                subject_item.setForeground(0, QColor("#8f8f8f"))
             self.subject_tree.addTopLevelItem(subject_item)
             for category in details.get("core", []):
                 category_item = QTreeWidgetItem([category])
@@ -646,6 +843,14 @@ class StudyTab(QWidget):
             if widget:
                 widget.deleteLater()
 
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        while layout.count():
+            child = layout.takeAt(0)
+            widget = child.widget()
+            if widget:
+                widget.deleteLater()
+
     def _filtered_cards(self) -> list[dict]:
         filtered = list(self.cards)
         if self.current_subject != "All Subjects":
@@ -668,7 +873,7 @@ class StudyTab(QWidget):
             self.card_search_more_btn.hide()
             self._render_cards()
             return
-        self.card_search_timer.start(80)
+        self.card_search_timer.start(1000)
 
     def _request_card_suggestions(self) -> None:
         query = self.card_search_input.text().strip()
@@ -678,23 +883,8 @@ class StudyTab(QWidget):
         if not cards:
             self.card_search_dropdown.setVisible(False)
             return
-        missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
-        if missing:
-            self._embed_remaining_cards_in_background(missing)
-        self.card_search_request_id += 1
-        worker = CardSearchWorker(
-            request_id=self.card_search_request_id,
-            query=query,
-            cards=cards,
-            embedding_service=self.embedding_service,
-            limit=5,
-        )
-        worker.finished.connect(self._on_card_suggestions_ready)
-        worker.finished.connect(lambda *_args, current=worker: self._cleanup_card_search_worker(current))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
-        self.card_search_worker = worker
-        self._card_search_workers.append(worker)
+        suggestions = self._fast_card_suggestions(query, cards, limit=5)
+        self._on_card_suggestions_ready(self.card_search_request_id, query, suggestions)
 
     def _on_card_suggestions_ready(self, request_id: int, query: str, scored: object) -> None:
         if request_id != self.card_search_request_id:
@@ -709,7 +899,7 @@ class StudyTab(QWidget):
                 continue
             card = item.get("card", {})
             title = str(card.get("title", "Untitled")).strip() or "Untitled"
-            short_title = title if len(title) <= 34 else f"{title[:31]}..."
+            short_title = title if len(title) <= 200 else f"{title[:197]}..."
             row = QListWidgetItem(short_title)
             row.setToolTip(title)
             row.setData(Qt.UserRole, card)
@@ -786,8 +976,90 @@ class StudyTab(QWidget):
 
         return sorted(cards, key=score, reverse=True)
 
+    @staticmethod
+    def _fast_card_suggestions(query: str, cards: list[dict], limit: int = 5) -> list[dict]:
+        terms = [term for term in query.lower().split() if term]
+        if not terms:
+            return []
+
+        scored: list[tuple[tuple[int, int, int, int], dict]] = []
+        for card in cards:
+            title = str(card.get("title", "")).strip()
+            title_lower = title.lower()
+            question_lower = str(card.get("question", "")).lower()
+            answer_lower = str(card.get("answer", "")).lower()
+            prefix_hits = sum(1 for term in terms if title_lower.startswith(term))
+            title_hits = sum(1 for term in terms if term in title_lower)
+            content_hits = sum(1 for term in terms if term in question_lower or term in answer_lower)
+            if prefix_hits == 0 and title_hits == 0 and content_hits == 0:
+                continue
+            scored.append(((prefix_hits, title_hits, content_hits, -len(title_lower)), card))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [{"card": card, "score": 0.0, "source": "fast"} for _score, card in scored[:limit]]
+
+    def _is_global_all_view(self) -> bool:
+        return (
+            self.current_subject == "All Subjects"
+            and self.current_category == "All"
+            and self.current_subtopic == "All"
+        )
+
+    def _refresh_global_recommendations(self) -> None:
+        if len(self.cards) <= 60:
+            self.global_recommendations = []
+            return
+        attempts = self.datastore.load_attempts()
+        self.global_recommendations = build_global_recommendations(
+            self.cards,
+            attempts,
+            self.embedding_service,
+            limit=10,
+        )
+        candidate_cards = recommendation_candidate_cards(self.cards, attempts)
+        missing = [card for card in candidate_cards if not self.embedding_service.is_card_cached(card)]
+        if missing:
+            self._embed_remaining_cards_in_background(missing)
+
+    def _render_recommendations(self) -> None:
+        self._clear_layout(self.recommendation_grid)
+        should_show = (
+            not self.card_search_has_executed
+            and self._is_global_all_view()
+            and len(self.cards) > 60
+            and bool(self.global_recommendations)
+        )
+        if not should_show:
+            self.recommendation_block.hide()
+            return
+
+        visible_items = self.global_recommendations[:3]
+        available_width = max(self.card_scroll.viewport().width() - 52, 320)
+        spacing = self.recommendation_grid.horizontalSpacing() or 16
+        min_width = 300
+        max_width = 380
+        columns = max(1, min(3, len(visible_items), available_width // min_width))
+        tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        while tile_width < min_width and columns > 1:
+            columns -= 1
+            tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        tile_width = max(min_width, min(max_width, tile_width))
+
+        for idx, item in enumerate(visible_items):
+            tile = CardTile(item.card)
+            tile.set_tile_width(tile_width)
+            tile.setToolTip(f"Related strong match similarity: {item.reason_similarity:.2f}")
+            tile.selected.connect(self._card_selected)
+            tile.move_requested.connect(self._move_card)
+            tile.remove_requested.connect(self._remove_card)
+            row = idx // columns
+            col = idx % columns
+            self.recommendation_grid.addWidget(tile, row, col)
+        self.recommendation_block.show()
+
     def _render_cards(self) -> None:
         self._clear_grid()
+        self._render_recommendations()
         self.card_scroll.show()
         self.card_empty_state.hide()
         self.card_search_more_btn.hide()
@@ -808,10 +1080,10 @@ class StudyTab(QWidget):
             return
 
         available_width = max(self.card_scroll.viewport().width() - 8, 300)
-        min_width = 280
-        max_width = 420
+        min_width = 320
+        max_width = 460
         spacing = self.card_grid.horizontalSpacing() or 18
-        columns = max(1, min(5, available_width // 300))
+        columns = max(1, min(4, available_width // min_width))
         tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
         while tile_width < min_width and columns > 1:
             columns -= 1
@@ -852,12 +1124,12 @@ class StudyTab(QWidget):
         effect.setOpacity(0.0)
         tile.setGraphicsEffect(effect)
         animation = QPropertyAnimation(effect, b"opacity", tile)
-        animation.setDuration(850)
+        animation.setDuration(760)
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.setEasingCurve(QEasingCurve.OutQuart)
         self._card_search_animations.append(animation)
-        QTimer.singleShot(index * 225, animation.start)
+        QTimer.singleShot(index * 190, animation.start)
 
     def _move_card(self, card: dict) -> None:
         dialog = MoveCardDialog(card, self.datastore)
@@ -905,6 +1177,7 @@ class StudyTab(QWidget):
     def _begin_session_pool(self, pool: list[dict], first_card: dict | None = None) -> None:
         if not pool:
             return
+        self._cancel_session_prep()
         cards = list(pool)
         random.shuffle(cards)
         if first_card is not None:
@@ -916,8 +1189,12 @@ class StudyTab(QWidget):
         self.session_cards = list(cards)
         self.session_scores = []
         self.session_temp_batches = {}
+        self.session_prep_remaining_cards = []
         self._switch_mode(1)
+        seed_cards: list[dict] = []
+        should_prepare_async = False
         if len(cards) > 5:
+            should_prepare_async = True
             self.study_state = build_session_state(cards, self._current_path_label())
             seed_cards = [self.study_state.card_lookup[card_id] for card_id in self.study_state.seed_ids if card_id in self.study_state.card_lookup]
             if first_card is not None:
@@ -926,13 +1203,13 @@ class StudyTab(QWidget):
                 self.study_state.seed_ids.insert(0, first_id)
                 seed_cards = [card for card in seed_cards if str(card.get("id", "")) != str(first_card.get("id", ""))]
                 seed_cards.insert(0, first_card)
-            if not self._ensure_seed_embeddings(seed_cards):
-                return
-            refresh_topic_clusters(self.study_state, self.embedding_service)
             remaining = [card for card in cards if not self.embedding_service.is_card_cached(card)]
-            remaining = [card for card in remaining if str(card.get("id", "")) not in {str(seed.get("id", "")) for seed in seed_cards}]
-            self._embed_remaining_cards_in_background(remaining)
+            self.session_prep_remaining_cards = [
+                card for card in remaining if str(card.get("id", "")) not in {str(seed.get("id", "")) for seed in seed_cards}
+            ]
         self._advance_session()
+        if should_prepare_async:
+            self._start_session_prep(cards, seed_cards)
 
     def _advance_session(self) -> None:
         if self.study_state and self.study_state.nna_enabled:
@@ -972,16 +1249,143 @@ class StudyTab(QWidget):
         if self.study_state and self.study_state.nna_enabled:
             self.study_state.shown_entries.append(SessionCardEntry(card=card))
 
-    def _ensure_seed_embeddings(self, cards: list[dict]) -> bool:
+    def _cancel_session_prep(self) -> None:
+        if self.session_prep_worker and self.session_prep_worker.isRunning():
+            self.session_prep_worker.requestInterruption()
+        self.session_prep_worker = None
+        if self.topic_cluster_worker and self.topic_cluster_worker.isRunning():
+            self.topic_cluster_worker.requestInterruption()
+        self.topic_cluster_worker = None
+        self.pending_cluster_refresh = False
+        self.session_prep_remaining_cards = []
+        if self.session_prep_dialog is not None:
+            self.session_prep_dialog.close()
+            self.session_prep_dialog.deleteLater()
+            self.session_prep_dialog = None
+
+    def _ensure_session_prep_dialog(self) -> SessionPrepDialog:
+        if self.session_prep_dialog is None:
+            self.session_prep_dialog = SessionPrepDialog(self.icons)
+        return self.session_prep_dialog
+
+    def _start_session_prep(self, cards: list[dict], seed_cards: list[dict]) -> None:
+        dialog = self._ensure_session_prep_dialog()
+        dialog.set_progress(5)
+        dialog.update_step("seed", "Preparing your first cards in the background...", False)
+        dialog.update_step("topics", "Waiting for seed cards...", False)
+        dialog.update_step("launch", "First question is ready. Finishing the smart queue in background...", True)
+        dialog.show()
+        QApplication.processEvents()
+
+        worker = SessionPrepWorker(
+            session_id=self.session_id,
+            cards=cards,
+            seed_cards=seed_cards,
+            embedding_service=self.embedding_service,
+        )
+        self.session_prep_worker = worker
+        worker.progress.connect(self._on_session_prep_progress)
+        worker.finished.connect(self._on_session_prep_finished)
+        worker.failed.connect(self._on_session_prep_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.start()
+
+    def _session_prep_progress_value(self, key: str, current: int, total: int) -> int:
+        safe_total = max(1, total)
+        safe_current = max(0, min(current, safe_total))
+        if key == "seed":
+            return 5 + int((safe_current / safe_total) * 65)
+        if key == "topics":
+            return 70 + int((safe_current / safe_total) * 25)
+        if key == "launch":
+            return 95 + int((safe_current / safe_total) * 5)
+        return 0
+
+    def _on_session_prep_progress(
+        self,
+        session_id: str,
+        key: str,
+        message: str,
+        current: int,
+        total: int,
+        done: bool,
+    ) -> None:
+        if session_id != self.session_id:
+            return
+        dialog = self._ensure_session_prep_dialog()
+        dialog.update_step(key, message, done)
+        dialog.set_progress(self._session_prep_progress_value(key, current, total))
+
+    def _on_session_prep_finished(self, session_id: str, cluster_map: object) -> None:
+        if session_id != self.session_id:
+            return
+        self.session_prep_worker = None
+        if self.study_state and isinstance(cluster_map, dict):
+            self.study_state.cluster_map = {str(key): str(value) for key, value in cluster_map.items()}
+        dialog = self._ensure_session_prep_dialog()
+        dialog.update_step("launch", "Study session ready.", True)
+        dialog.set_progress(100)
+        QTimer.singleShot(500, self._close_session_prep_dialog)
+        if self.session_prep_remaining_cards:
+            remaining = list(self.session_prep_remaining_cards)
+            self.session_prep_remaining_cards = []
+            self._embed_remaining_cards_in_background(remaining)
+
+    def _on_session_prep_failed(self, session_id: str, message: str) -> None:
+        if session_id != self.session_id:
+            return
+        self.session_prep_worker = None
+        self._close_session_prep_dialog()
+        QMessageBox.warning(self, "Session prep failed", message)
+
+    def _close_session_prep_dialog(self) -> None:
+        if self.session_prep_dialog is None:
+            return
+        self.session_prep_dialog.close()
+        self.session_prep_dialog.deleteLater()
+        self.session_prep_dialog = None
+
+    def _schedule_topic_cluster_refresh(self) -> None:
+        if not self.study_state or not self.study_state.nna_enabled:
+            return
+        if self.topic_cluster_worker and self.topic_cluster_worker.isRunning():
+            self.pending_cluster_refresh = True
+            return
+        self.pending_cluster_refresh = False
+        worker = TopicClusterWorker(
+            session_id=self.session_id,
+            cards=list(self.study_state.cards),
+            embedding_service=self.embedding_service,
+        )
+        self.topic_cluster_worker = worker
+        worker.finished.connect(self._on_topic_cluster_refresh_finished)
+        worker.failed.connect(self._on_topic_cluster_refresh_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_topic_cluster_refresh_finished(self, session_id: str, cluster_map: object) -> None:
+        if session_id == self.session_id and self.study_state and isinstance(cluster_map, dict):
+            self.study_state.cluster_map = {str(key): str(value) for key, value in cluster_map.items()}
+        self.topic_cluster_worker = None
+        if self.pending_cluster_refresh and session_id == self.session_id:
+            self.pending_cluster_refresh = False
+            self._schedule_topic_cluster_refresh()
+
+    def _on_topic_cluster_refresh_failed(self, session_id: str, _message: str) -> None:
+        self.topic_cluster_worker = None
+        if self.pending_cluster_refresh and session_id == self.session_id:
+            self.pending_cluster_refresh = False
+            self._schedule_topic_cluster_refresh()
+
+    def _ensure_seed_embeddings(self, cards: list[dict], dialog: SessionPrepDialog | None = None) -> bool:
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
         if not missing:
+            if dialog is not None:
+                dialog.update_step("seed", "Seed cards already had embeddings.", True)
+                QApplication.processEvents()
             return True
-        progress = QProgressDialog("Embedding seed cards...", None, 0, len(missing), self)
-        progress.setWindowTitle("Preparing study session")
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)
-        progress.setValue(0)
-        progress.show()
 
         loop = QEventLoop(self)
         result = {"ok": True}
@@ -989,12 +1393,11 @@ class StudyTab(QWidget):
         self.embedding_worker = worker
 
         def on_progress(label: str, index: int, total: int) -> None:
-            progress.setMaximum(total)
-            progress.setValue(index - 1)
-            progress.setLabelText(f"Embedding seed cards... ({index}/{total})\n{label}")
+            if dialog is not None:
+                dialog.update_step("seed", f"Embedding seed cards... ({index}/{total}) {label}", False)
+                QApplication.processEvents()
 
         def on_finished(_cards: list[dict]) -> None:
-            progress.setValue(progress.maximum())
             loop.quit()
 
         def on_failed(message: str) -> None:
@@ -1007,15 +1410,13 @@ class StudyTab(QWidget):
         worker.failed.connect(on_failed)
         worker.start()
         loop.exec()
-        progress.close()
         self.embedding_worker = None
         return bool(result["ok"])
 
     def _embed_remaining_cards_in_background(self, cards: list[dict]) -> None:
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
         if not missing:
-            if self.study_state:
-                refresh_topic_clusters(self.study_state, self.embedding_service)
+            self._schedule_topic_cluster_refresh()
             return
         if self.embedding_worker and self.embedding_worker.isRunning():
             return
@@ -1026,8 +1427,9 @@ class StudyTab(QWidget):
 
     def _on_background_embeddings_finished(self, _cards: list[dict]) -> None:
         self.embedding_worker = None
-        if self.study_state:
-            refresh_topic_clusters(self.study_state, self.embedding_service)
+        self._schedule_topic_cluster_refresh()
+        self._refresh_global_recommendations()
+        self._render_cards()
         if self.card_search_input.text().strip():
             self.card_search_timer.start(10)
 
@@ -1194,6 +1596,7 @@ class StudyTab(QWidget):
         state = str(report.get("state", "wrong")).title()
         self.grade_summary.setText(f"Final score: {score:.1f}/10  |  {state}")
         self._save_attempt(graded=True, grade_payload=report)
+        self._refresh_global_recommendations()
         self.current_attempt_logged = True
         self.session_scores.append(score)
         if self.study_state and self.current_card:
@@ -1302,7 +1705,7 @@ class StudyTab(QWidget):
         self.session_temp_batches[batch_id] = {"expected_count": len(temp_cards), "attempts": [], "card_ids": set()}
         self.session_cards.extend(temp_cards)
         queue_reinforcement_cards(self.study_state, temp_cards, cluster_key)
-        refresh_topic_clusters(self.study_state, self.embedding_service)
+        self._schedule_topic_cluster_refresh()
         dialog.update_step("adding", "Adding to session...", True)
         dialog.close()
 
@@ -1409,6 +1812,7 @@ class StudyTab(QWidget):
             "Session complete",
             f"Average marks: {avg_marks:.1f}/10\nAverage difficulty: {avg_difficulty:.1f}/10",
         )
+        self._cancel_session_prep()
         self.current_card = None
         self.study_state = None
         self.session_id = ""

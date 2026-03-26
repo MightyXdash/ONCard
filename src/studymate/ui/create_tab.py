@@ -356,6 +356,7 @@ class CreateTab(QWidget):
         self.ftc_run: FilesToCardsRunState | None = None
         self.selected_source_files: list[SelectedSourceFile] = []
         self.use_ocr = True
+        self._last_ftc_mode = "standard"
 
         self._build_ui()
 
@@ -816,10 +817,12 @@ class CreateTab(QWidget):
         self.question_count.setEnabled(total_units > 0 and not locked)
         self.question_count.setMaximum(max(question_cap, 0))
         self.question_count.setMinimum(1 if question_cap else 0)
-        if question_cap and self.question_count.value() == 0:
-            self.question_count.setValue(1)
+        default_question_count = 8 if mode == "force" else 4
+        if question_cap and (self.question_count.value() == 0 or mode != self._last_ftc_mode):
+            self.question_count.setValue(min(default_question_count, question_cap))
         if question_cap and self.question_count.value() > question_cap:
             self.question_count.setValue(question_cap)
+        self._last_ftc_mode = mode
 
         can_generate = total_units > 0 and total_units <= limit and question_cap > 0 and not locked
         self.generate_btn.setEnabled(can_generate)
