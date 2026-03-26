@@ -29,9 +29,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(18)
 
         nav = QHBoxLayout()
+        nav.setContentsMargins(0, 0, 0, 0)
+        nav.setSpacing(12)
         self.settings_btn = QPushButton("")
-        self.settings_btn.setObjectName("TopNavButton")
-        self.settings_btn.setFixedWidth(52)
+        self.settings_btn.setObjectName("SettingsNavButton")
+        self.settings_btn.setFixedSize(34, 34)
         self.settings_btn.setIcon(self.icons.icon("common", "settings_info", "S"))
         self.settings_btn.clicked.connect(self._open_settings)
         nav.addWidget(self.settings_btn, 0, Qt.AlignLeft)
