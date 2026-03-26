@@ -3,6 +3,11 @@ from __future__ import annotations
 
 APP_NAME = "ONCard"
 APP_TAGLINE = "Free and Open-Source AI Flashcard Study App"
+EMBEDDING_MODEL = "embeddinggemma:300m"
+WEAK_THRESHOLD = 88.8888
+ROLLING_ATTEMPT_WINDOW = 15
+SIMILARITY_TOP_K = 6
+SIMILARITY_MIN_SCORE = 0.80
 
 FILES_TO_CARDS_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
 FILES_TO_CARDS_SOURCE_LIMITS = {
@@ -173,13 +178,27 @@ GRADE_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "marks_out_of_10": {"type": "number", "minimum": 0, "maximum": 10},
+        "how_good": {"type": "number", "minimum": 0, "maximum": 120},
         "state": {"type": "string", "enum": ["correct", "wrong"]},
-        "answer_summary": {"type": "string"},
         "what_went_bad": {"type": "string"},
         "what_went_good": {"type": "string"},
         "what_to_improve": {"type": "string"},
     },
-    "required": ["marks_out_of_10", "state", "answer_summary", "what_went_bad", "what_went_good"],
+    "required": ["marks_out_of_10", "how_good", "state", "what_went_bad", "what_went_good"],
+}
+
+
+REINFORCEMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 4,
+            "maxItems": 4,
+        }
+    },
+    "required": ["questions"],
 }
 
 

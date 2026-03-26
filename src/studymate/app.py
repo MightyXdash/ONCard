@@ -10,16 +10,18 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from studymate.services.backup_service import BackupService
 from studymate.services.data_store import DataStore
+from studymate.services.model_registry import MODELS
 from studymate.services.update_content import load_packaged_update_content
 from studymate.services.ollama_service import OllamaService
 from studymate.services.update_service import ReleaseInfo, UpdateService
 from studymate.theme import app_stylesheet
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
-from studymate.ui.update_dialog import UpdateDialog, WhatsNewDialog
+from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog
 from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
+from studymate.workers.install_worker import ModelInstallWorker
 from studymate.workers.update_check_worker import UpdateCheckWorker
 from studymate.workers.update_download_worker import UpdateDownloadWorker
 
@@ -62,7 +64,7 @@ def run_app() -> int:
     app.aboutToQuit.connect(backup_service.create_exit_backup)
     window.show()
 
-    QTimer.singleShot(500, lambda: _show_whats_new_if_needed(window, update_service, paths))
+    QTimer.singleShot(500, lambda: _show_whats_new_if_needed(app, window, datastore, ollama, update_service, paths))
     QTimer.singleShot(1200, lambda: _check_for_updates(app, window, update_service))
     return app.exec()
 
@@ -127,11 +129,78 @@ def _download_update_and_install(
     worker.failed.connect(on_failed)
     worker.start()
 
-def _show_whats_new_if_needed(window: MainWindow, update_service: UpdateService, paths: AppPaths) -> None:
+def _show_whats_new_if_needed(
+    app: QApplication,
+    window: MainWindow,
+    datastore: DataStore,
+    ollama: OllamaService,
+    update_service: UpdateService,
+    paths: AppPaths,
+) -> None:
     state = update_service.load_update_state()
     if state.get("show_whats_new_for") != APP_VERSION:
         return
     content = load_packaged_update_content(paths.assets, APP_VERSION)
     dialog = WhatsNewDialog(version=APP_VERSION, content=content)
     dialog.exec()
+    _maybe_prompt_embedding_onboarding(app, window, datastore, ollama, content)
     update_service.clear_update_state()
+
+
+def _maybe_prompt_embedding_onboarding(
+    app: QApplication,
+    window: MainWindow,
+    datastore: DataStore,
+    ollama: OllamaService,
+    content,
+) -> None:
+    setup = datastore.load_setup()
+    prompted_version = str(setup.get("embedding_gate_prompted_version", ""))
+    if prompted_version == APP_VERSION:
+        return
+    try:
+        installed = ollama.installed_tags()
+    except Exception:
+        return
+    if MODELS["embeddinggemma_300m"].primary_tag in installed:
+        return
+
+    dialog = EmbeddingOnboardingDialog(content=content)
+    setup["embedding_gate_prompted_version"] = APP_VERSION
+    if dialog.exec():
+        datastore.save_setup(setup)
+        _install_embedding_model(app, window, datastore, ollama)
+        return
+    setup["embedding_gate_declined_version"] = APP_VERSION
+    datastore.save_setup(setup)
+
+
+def _install_embedding_model(app: QApplication, window: MainWindow, datastore: DataStore, ollama: OllamaService) -> None:
+    progress = QProgressDialog("Installing embedding model...", None, 0, 0, window)
+    progress.setWindowTitle("Adaptive study setup")
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setCancelButton(None)
+    progress.show()
+
+    worker = ModelInstallWorker(["embeddinggemma_300m"], ollama)
+    app._oncard_embedding_install_worker = worker  # type: ignore[attr-defined]
+
+    def on_line(message: str) -> None:
+        progress.setLabelText(message or "Installing embedding model...")
+
+    def on_complete(status: dict) -> None:
+        progress.close()
+        updated = datastore.load_setup()
+        installed_models = dict(updated.get("installed_models", {}))
+        installed_models["embeddinggemma_300m"] = bool(status.get("embeddinggemma_300m"))
+        updated["installed_models"] = installed_models
+        datastore.save_setup(updated)
+        if status.get("embeddinggemma_300m"):
+            QMessageBox.information(window, "Adaptive study ready", "Embedding model installed successfully.")
+        else:
+            QMessageBox.warning(window, "Install failed", "Could not install embeddinggemma:300m right now.")
+
+    worker.line.connect(on_line)
+    worker.complete.connect(on_complete)
+    worker.start()

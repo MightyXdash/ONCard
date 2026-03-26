@@ -37,7 +37,9 @@ class AppPaths:
 
         self.setup_config = self.config / "setup.json"
         self.profile_config = self.config / "profile.json"
+        self.ai_settings_config = self.config / "ai_settings.json"
         self.study_history_file = self.study_history / "attempts.json"
+        self.embedding_cache_file = self.runtime / "embedding_cache.json"
         self.update_state = self.runtime / "update_state.json"
 
     @classmethod

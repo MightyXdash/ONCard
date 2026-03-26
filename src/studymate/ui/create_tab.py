@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.services.data_store import DataStore
+from studymate.services.embedding_service import EmbeddingService
 from studymate.services.files_to_cards_service import (
     SelectedSourceFile,
     create_source_preview,
@@ -41,6 +42,7 @@ from studymate.services.files_to_cards_service import (
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.icon_helper import IconHelper
 from studymate.workers.autofill_worker import AutofillWorker
+from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.files_to_cards_worker import FilesToCardsJob, FilesToCardsWorker
 
 
@@ -342,10 +344,13 @@ class CreateTab(QWidget):
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
+        self.embedding_service = EmbeddingService(datastore, ollama)
 
         self.autofill_worker: AutofillWorker | None = None
         self.pending_jobs: list[dict] = []
         self.active_job: dict | None = None
+        self.embedding_worker: EmbeddingWorker | None = None
+        self.pending_embedding_cards: list[dict] = []
 
         self.ftc_worker: FilesToCardsWorker | None = None
         self.ftc_run: FilesToCardsRunState | None = None
@@ -656,6 +661,7 @@ class CreateTab(QWidget):
         saved = self.datastore.save_card(payload)
         item.setText(f"Saved  |  {self._short_label(saved.get('question', ''))}")
         self._add_activity(kind="status", title="Queue", text="Question saved.")
+        self._enqueue_embedding(saved)
         self.card_saved.emit()
         self.active_job = None
         self._finalize_run_if_ready(run_id)
@@ -1076,6 +1082,34 @@ class CreateTab(QWidget):
         run_dir = self.datastore.paths.runtime / "files_to_cards" / run_id
         if run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
+
+    def _enqueue_embedding(self, card: dict) -> None:
+        card_id = str(card.get("id", "")).strip()
+        if not card_id:
+            return
+        if self.embedding_service.is_card_cached(card):
+            return
+        if any(str(item.get("id", "")).strip() == card_id for item in self.pending_embedding_cards):
+            return
+        self.pending_embedding_cards.append(card)
+        self._start_embedding_worker()
+
+    def _start_embedding_worker(self) -> None:
+        if self.embedding_worker is not None or not self.pending_embedding_cards:
+            return
+        card = self.pending_embedding_cards.pop(0)
+        self.embedding_worker = EmbeddingWorker(cards=[card], embedding_service=self.embedding_service)
+        self.embedding_worker.finished.connect(self._on_embedding_finished)
+        self.embedding_worker.failed.connect(self._on_embedding_failed)
+        self.embedding_worker.start()
+
+    def _on_embedding_finished(self, _cards: list[dict]) -> None:
+        self.embedding_worker = None
+        self._start_embedding_worker()
+
+    def _on_embedding_failed(self, _message: str) -> None:
+        self.embedding_worker = None
+        self._start_embedding_worker()
 
     @staticmethod
     def _short_label(text: str, limit: int = 56) -> str:
