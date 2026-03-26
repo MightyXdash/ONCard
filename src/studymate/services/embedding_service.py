@@ -132,6 +132,27 @@ class EmbeddingService:
             scored.append(SimilarCard(card=candidate, score=score))
         return sorted(scored, key=lambda item: item.score, reverse=True)[:max_results]
 
+    def search_cards_by_text(
+        self,
+        query: str,
+        cards: list[dict],
+        *,
+        max_results: int = 5,
+    ) -> list[SimilarCard]:
+        if not query.strip():
+            return []
+        query_vector = self.ollama.embed_text(self.model_tag, query.strip())
+        scored: list[SimilarCard] = []
+        for card in cards:
+            record = self.get_card_record(card)
+            if record is None:
+                continue
+            score = cosine_similarity(query_vector, record.vector)
+            if math.isnan(score):
+                continue
+            scored.append(SimilarCard(card=card, score=score))
+        return sorted(scored, key=lambda item: item.score, reverse=True)[:max_results]
+
     def topic_clusters(
         self,
         cards: list[dict],
