@@ -10,12 +10,21 @@ class FollowUpWorker(QThread):
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, *, ollama: OllamaService, model: str, prompt: str, context: str) -> None:
+    def __init__(
+        self,
+        *,
+        ollama: OllamaService,
+        model: str,
+        prompt: str,
+        context: str,
+        context_length: int = 8192,
+    ) -> None:
         super().__init__()
         self.ollama = ollama
         self.model = model
         self.prompt = prompt
         self.context = context
+        self.context_length = context_length
 
     def run(self) -> None:
         system_prompt = "You are a friendly study coach. Give concise practical follow-up advice."
@@ -27,6 +36,7 @@ class FollowUpWorker(QThread):
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.3,
+                extra_options={"num_ctx": self.context_length},
             ):
                 text += piece
                 self.chunk.emit(text)

@@ -7,6 +7,7 @@ from studymate.services.data_store import DataStore
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.create_tab import CreateTab
 from studymate.ui.icon_helper import IconHelper
+from studymate.ui.settings_dialog import SettingsDialog
 from studymate.ui.study_tab import StudyTab
 
 
@@ -74,7 +75,8 @@ class MainWindow(QMainWindow):
             self.study_tab.reload_cards()
 
     def _open_settings(self) -> None:
-        QMessageBox.information(self, "Settings", "Settings panel is coming next.")
+        dialog = SettingsDialog(self.datastore, self.ollama, self)
+        dialog.exec()
 
     def begin_update_shutdown(self) -> None:
         self._update_shutdown_requested = True

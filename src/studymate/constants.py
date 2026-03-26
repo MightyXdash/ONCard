@@ -3,11 +3,13 @@ from __future__ import annotations
 
 APP_NAME = "ONCard"
 APP_TAGLINE = "Free and Open-Source AI Flashcard Study App"
-EMBEDDING_MODEL = "embeddinggemma:300m"
+EMBEDDING_MODEL = "nomic-embed-text-v2-moe"
 WEAK_THRESHOLD = 88.8888
 ROLLING_ATTEMPT_WINDOW = 15
 SIMILARITY_TOP_K = 6
 SIMILARITY_MIN_SCORE = 0.80
+SEMANTIC_SEARCH_MIN_SCORE = 0.22
+SEMANTIC_SEARCH_SCORE_MARGIN = 0.18
 
 FILES_TO_CARDS_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
 FILES_TO_CARDS_SOURCE_LIMITS = {
@@ -157,6 +159,7 @@ CREATE_RESPONSE_SCHEMA = {
         "category": {"type": "string"},
         "subtopic": {"type": "string"},
         "hints": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 5},
+        "search_terms": {"type": "array", "items": {"type": "string"}, "minItems": 5, "maxItems": 5},
         "answer": {"type": "string"},
         "natural_difficulty": {"type": "integer", "minimum": 1, "maximum": 10},
         "response_to_user": {"type": "string"},
@@ -167,6 +170,7 @@ CREATE_RESPONSE_SCHEMA = {
         "category",
         "subtopic",
         "hints",
+        "search_terms",
         "answer",
         "natural_difficulty",
         "response_to_user",

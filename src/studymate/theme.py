@@ -374,6 +374,25 @@ def app_stylesheet() -> str:
         border: none;
         background: transparent;
     }
+    QTabBar::tab {
+        background-color: #efefef;
+        border: 1px solid #dcdcdc;
+        border-radius: 14px;
+        padding: 10px 18px;
+        margin-right: 8px;
+        color: #2b2b2b;
+        font-weight: 700;
+        min-width: 90px;
+    }
+    QTabBar::tab:selected {
+        background-color: #111111;
+        border-color: #111111;
+        color: #ffffff;
+    }
+    QTabBar::tab:hover:!selected {
+        background-color: #e7e7e7;
+        border-color: #d1d1d1;
+    }
     QFrame#CardTile {
         background-color: #ffffff;
         border: 1px solid #e2e2e2;

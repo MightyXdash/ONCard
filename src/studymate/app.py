@@ -162,7 +162,7 @@ def _maybe_prompt_embedding_onboarding(
         installed = ollama.installed_tags()
     except Exception:
         return
-    if MODELS["embeddinggemma_300m"].primary_tag in installed:
+    if MODELS["nomic_embed_text_v2_moe"].primary_tag in installed:
         return
 
     dialog = EmbeddingOnboardingDialog(content=content)
@@ -183,7 +183,7 @@ def _install_embedding_model(app: QApplication, window: MainWindow, datastore: D
     progress.setCancelButton(None)
     progress.show()
 
-    worker = ModelInstallWorker(["embeddinggemma_300m"], ollama)
+    worker = ModelInstallWorker(["nomic_embed_text_v2_moe"], ollama)
     app._oncard_embedding_install_worker = worker  # type: ignore[attr-defined]
 
     def on_line(message: str) -> None:
@@ -193,13 +193,13 @@ def _install_embedding_model(app: QApplication, window: MainWindow, datastore: D
         progress.close()
         updated = datastore.load_setup()
         installed_models = dict(updated.get("installed_models", {}))
-        installed_models["embeddinggemma_300m"] = bool(status.get("embeddinggemma_300m"))
+        installed_models["nomic_embed_text_v2_moe"] = bool(status.get("nomic_embed_text_v2_moe"))
         updated["installed_models"] = installed_models
         datastore.save_setup(updated)
-        if status.get("embeddinggemma_300m"):
+        if status.get("nomic_embed_text_v2_moe"):
             QMessageBox.information(window, "Adaptive study ready", "Embedding model installed successfully.")
         else:
-            QMessageBox.warning(window, "Install failed", "Could not install embeddinggemma:300m right now.")
+            QMessageBox.warning(window, "Install failed", "Could not install nomic-embed-text-v2-moe right now.")
 
     worker.line.connect(on_line)
     worker.complete.connect(on_complete)

@@ -26,15 +26,15 @@ MODELS: dict[str, ModelSpec] = {
         size_gb=3.8,
         required=True,
     ),
-    "embeddinggemma_300m": ModelSpec(
-        key="embeddinggemma_300m",
-        display_name="EmbeddingGemma:300m",
-        primary_tag="embeddinggemma:300m",
-        candidate_tags=["embeddinggemma:300m"],
-        size_label="0.2GB",
-        size_gb=0.2,
-        required=False,
-        optional=True,
+    "nomic_embed_text_v2_moe": ModelSpec(
+        key="nomic_embed_text_v2_moe",
+        display_name="Nomic Embed Text v2 MoE",
+        primary_tag="nomic-embed-text-v2-moe",
+        candidate_tags=["nomic-embed-text-v2-moe"],
+        size_label="1.0GB",
+        size_gb=1.0,
+        required=True,
+        optional=False,
         min_ram_gb=4,
     ),
 }
@@ -43,7 +43,7 @@ MODELS: dict[str, ModelSpec] = {
 def recommended_models_for_ram(ram_gb: int) -> list[str]:
     if ram_gb < 7:
         return []
-    return ["gemma3_4b"]
+    return ["gemma3_4b", "nomic_embed_text_v2_moe"]
 
 
 def required_models_for_ram(ram_gb: int) -> list[str]:
