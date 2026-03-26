@@ -225,3 +225,26 @@ class OllamaService:
             return round(eval_count / seconds, 2) if seconds > 0 else 0.0
         except requests.RequestException as exc:
             raise OllamaError(f"Benchmark failed: {exc}") from exc
+
+    def embed_text(self, model_tag: str, text: str, timeout: int = 120) -> list[float]:
+        payload = {"model": model_tag, "input": text}
+        try:
+            response = requests.post(f"{self.host}/api/embed", json=payload, timeout=timeout)
+            if response.status_code == 404:
+                response = requests.post(f"{self.host}/api/embeddings", json={"model": model_tag, "prompt": text}, timeout=timeout)
+            response.raise_for_status()
+            body = response.json()
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            raise OllamaError(f"Embedding failed: {exc}") from exc
+
+        vector = body.get("embedding")
+        if vector is None:
+            embeddings = body.get("embeddings")
+            if isinstance(embeddings, list) and embeddings:
+                vector = embeddings[0]
+        if not isinstance(vector, list):
+            raise OllamaError("Embedding failed: Ollama returned no embedding vector.")
+        try:
+            return [float(item) for item in vector]
+        except (TypeError, ValueError) as exc:
+            raise OllamaError(f"Embedding failed: invalid embedding vector: {exc}") from exc

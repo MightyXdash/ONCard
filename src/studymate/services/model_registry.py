@@ -26,6 +26,17 @@ MODELS: dict[str, ModelSpec] = {
         size_gb=3.8,
         required=True,
     ),
+    "embeddinggemma_300m": ModelSpec(
+        key="embeddinggemma_300m",
+        display_name="EmbeddingGemma:300m",
+        primary_tag="embeddinggemma:300m",
+        candidate_tags=["embeddinggemma:300m"],
+        size_label="0.2GB",
+        size_gb=0.2,
+        required=False,
+        optional=True,
+        min_ram_gb=4,
+    ),
 }
 
 
