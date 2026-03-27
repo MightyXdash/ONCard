@@ -3,6 +3,13 @@
     "banner": "update_prompt_banner_16x9.png",
     "short_description": "ONCard 1.0 is here with smarter studying and cleaner workflows."
   },
+  "post_install": {
+    "update_name": "Welcome to ONCard 1.0",
+    "banner1": "whats_new_top_banner_16x9.png",
+    "text1": "The full release brings smarter study tools, cleaner flows, and a more polished app.",
+    "banner2": "whats_new_showcase_16x9.png",
+    "text2": "- Files To Cards can turn slides, PDFs, and note images into study questions.\n- Study mode now includes softer grading, follow-up help, and an I don't know shortcut.\n- Setup is simpler now with one required Gemma model and a cleaner flow.\n- Download size shrank from 31 GB to 4 GB, making updates faster and lighter."
+  },
   "whats_new": {
     "top_banner": "whats_new_top_banner_16x9.png",
     "title": "Welcome to ONCard 1.0",

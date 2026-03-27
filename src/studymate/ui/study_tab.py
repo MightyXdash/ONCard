@@ -11,15 +11,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
-    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QProgressBar,
     QProgressDialog,
     QSizePolicy,
@@ -27,7 +24,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTextBrowser,
     QTextEdit,
-    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -54,6 +50,14 @@ from studymate.services.study_intelligence import (
     next_card_for_session,
     queue_reinforcement_cards,
     register_grade_result,
+)
+from studymate.ui.animated import (
+    AnimatedButton,
+    AnimatedLineEdit,
+    AnimatedStackedWidget,
+    AnimatedToolButton,
+    fade_widget_visibility,
+    polish_surface,
 )
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.widgets.card_tile import CardTile
@@ -91,8 +95,8 @@ class StartStudyDialog(QDialog):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
-        cancel = QPushButton("Cancel")
-        start = QPushButton("Start")
+        cancel = AnimatedButton("Cancel")
+        start = AnimatedButton("Start")
         start.setObjectName("PrimaryButton")
         cancel.clicked.connect(self.reject)
         start.clicked.connect(self.accept)
@@ -127,8 +131,8 @@ class MoveCardDialog(QDialog):
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
-        cancel = QPushButton("Cancel")
-        move = QPushButton("Move")
+        cancel = AnimatedButton("Cancel")
+        move = AnimatedButton("Move")
         move.setObjectName("PrimaryButton")
         cancel.clicked.connect(self.reject)
         move.clicked.connect(self._move)
@@ -412,10 +416,13 @@ class StudyTab(QWidget):
         self.session_scores: list[float] = []
         self.session_temp_batches: dict[str, dict] = {}
         self.current_attempt_logged = False
+        self.session_history: list[dict] = []
+        self.current_history_index = -1
         self.revealed_hints = 0
         self.hint_cooldown = 0
         self.sidebar_expanded = True
         self.grade_worker: GradeWorker | None = None
+        self.queued_grade_worker: GradeWorker | None = None
         self.followup_worker: FollowUpWorker | None = None
         self.embedding_worker: EmbeddingWorker | None = None
         self.reinforcement_worker: ReinforcementWorker | None = None
@@ -426,6 +433,7 @@ class StudyTab(QWidget):
         self.session_prep_remaining_cards: list[dict] = []
         self.pending_cluster_refresh = False
         self.last_grade_report: dict | None = None
+        self.session_end_requested = False
         self.card_search_query = ""
         self.card_search_suggestions: list[dict] = []
         self.card_search_full_results: list[dict] = []
@@ -438,8 +446,8 @@ class StudyTab(QWidget):
         self.global_recommendations: list[RecommendedCard] = []
         self._card_search_animations: list[QParallelAnimationGroup] = []
         self._card_search_workers: list[CardSearchWorker] = []
-        self._silent_grade_mode = False
-        self._advance_after_grade = False
+        self.queued_grade_indexes: list[int] = []
+        self.active_queue_entry_index = -1
 
         self.cooldown_timer = QTimer(self)
         self.cooldown_timer.timeout.connect(self._tick_hint_cooldown)
@@ -456,6 +464,7 @@ class StudyTab(QWidget):
     def _surface(self, sidebar: bool = False) -> QFrame:
         frame = QFrame()
         frame.setObjectName("SidebarSurface" if sidebar else "Surface")
+        polish_surface(frame, sidebar=sidebar)
         return frame
 
     def _build_ui(self) -> None:
@@ -473,7 +482,7 @@ class StudyTab(QWidget):
         side_head = QHBoxLayout()
         title = QLabel("Subjects")
         title.setObjectName("SectionTitle")
-        self.collapse_btn = QToolButton()
+        self.collapse_btn = AnimatedToolButton()
         self.collapse_btn.setObjectName("CollapseButton")
         self.collapse_btn.setText("<")
         self.collapse_btn.clicked.connect(self._toggle_sidebar)
@@ -495,11 +504,11 @@ class StudyTab(QWidget):
         content.setSpacing(14)
 
         subnav = QHBoxLayout()
-        self.cards_sub_btn = QPushButton("Cards")
+        self.cards_sub_btn = AnimatedButton("Cards")
         self.cards_sub_btn.setObjectName("TopNavButton")
         self.cards_sub_btn.setCheckable(True)
         self.cards_sub_btn.setChecked(True)
-        self.study_sub_btn = QPushButton("Study")
+        self.study_sub_btn = AnimatedButton("Study")
         self.study_sub_btn.setObjectName("TopNavButton")
         self.study_sub_btn.setCheckable(True)
         self.cards_sub_btn.clicked.connect(lambda: self._switch_mode(0))
@@ -509,7 +518,7 @@ class StudyTab(QWidget):
         subnav.addStretch(1)
         content.addLayout(subnav)
 
-        self.mode_stack = QStackedWidget()
+        self.mode_stack = AnimatedStackedWidget()
         self.cards_view = self._build_cards_view()
         self.study_view = self._build_study_view()
         self.mode_stack.addWidget(self.cards_view)
@@ -529,13 +538,14 @@ class StudyTab(QWidget):
         search_layout.setContentsMargins(14, 12, 14, 12)
         search_layout.setSpacing(10)
 
-        self.card_search_input = QLineEdit()
+        self.card_search_input = AnimatedLineEdit()
+        self.card_search_input.setObjectName("SearchInput")
         self.card_search_input.setPlaceholderText("Search cards semantically...")
         self.card_search_input.textChanged.connect(self._queue_card_search)
         self.card_search_input.returnPressed.connect(self._execute_card_search)
         self.card_search_input.setTextMargins(0, 0, 36, 0)
         self.card_search_input.installEventFilter(self)
-        self.card_search_btn = QToolButton(self.card_search_input)
+        self.card_search_btn = AnimatedToolButton(self.card_search_input)
         self.card_search_btn.setIcon(self._build_search_icon())
         self.card_search_btn.setIconSize(QSize(18, 18))
         self.card_search_btn.setCursor(Qt.PointingHandCursor)
@@ -546,15 +556,16 @@ class StudyTab(QWidget):
         search_layout.addWidget(self.card_search_input, 1)
         self._position_card_search_button()
 
-        self.start_cards_btn = QPushButton("Start")
+        self.start_cards_btn = AnimatedButton("Start")
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
         search_layout.addWidget(self.start_cards_btn)
-        self.refresh_cards_btn = QPushButton("Refresh")
+        self.refresh_cards_btn = AnimatedButton("Refresh")
         self.refresh_cards_btn.clicked.connect(self.reload_cards)
         search_layout.addWidget(self.refresh_cards_btn)
         layout.addWidget(search_bar)
 
-        self.card_search_dropdown = self._surface()
+        self.card_search_dropdown = QFrame()
+        self.card_search_dropdown.setObjectName("Surface")
         self.card_search_dropdown.setVisible(False)
         dropdown_layout = QVBoxLayout(self.card_search_dropdown)
         dropdown_layout.setContentsMargins(10, 10, 10, 10)
@@ -638,7 +649,7 @@ class StudyTab(QWidget):
         empty_layout.addStretch(1)
         self.card_empty_state.hide()
         cards_layout.addWidget(self.card_empty_state)
-        self.card_search_more_btn = QPushButton("See more")
+        self.card_search_more_btn = AnimatedButton("See more")
         self.card_search_more_btn.clicked.connect(self._show_more_cards)
         self.card_search_more_btn.hide()
         cards_layout.addWidget(self.card_search_more_btn, 0, Qt.AlignHCenter)
@@ -670,11 +681,11 @@ class StudyTab(QWidget):
         left_layout.setSpacing(12)
 
         actions = QHBoxLayout()
-        actions.addStretch(1)
-        self.start_btn = QPushButton("Start")
+        self.start_btn = AnimatedButton("Start")
         self.start_btn.clicked.connect(self._open_start_dialog)
-        self.refresh_study_btn = QPushButton("Refresh")
+        self.refresh_study_btn = AnimatedButton("Refresh")
         self.refresh_study_btn.clicked.connect(self.reload_cards)
+        actions.addStretch(1)
         actions.addWidget(self.start_btn)
         actions.addWidget(self.refresh_study_btn)
         left_layout.addLayout(actions)
@@ -693,7 +704,7 @@ class StudyTab(QWidget):
         self.answer_input.setMinimumHeight(180)
 
         hint_row = QHBoxLayout()
-        self.hint_btn = QPushButton("Show hint")
+        self.hint_btn = AnimatedButton("Show hint")
         self.hint_btn.clicked.connect(self._show_hint)
         self.hint_status = QLabel("Hints stay hidden until you press Show hint.")
         self.hint_status.setObjectName("SmallMeta")
@@ -706,12 +717,15 @@ class StudyTab(QWidget):
         self.hints_text.setPlaceholderText("Hints will appear one by one.")
 
         button_row = QHBoxLayout()
-        self.idk_btn = QPushButton("I don't know")
+        self.prev_card_btn = AnimatedButton("Back")
+        self.prev_card_btn.clicked.connect(self._previous_card)
+        self.idk_btn = AnimatedButton("I don't know")
         self.idk_btn.clicked.connect(self._ask_i_dont_know)
-        self.grade_btn = QPushButton("Grade")
+        self.grade_btn = AnimatedButton("Grade")
         self.grade_btn.clicked.connect(self._grade)
-        self.next_btn = QPushButton("Next")
+        self.next_btn = AnimatedButton("Next")
         self.next_btn.clicked.connect(self._next_card)
+        button_row.addWidget(self.prev_card_btn)
         button_row.addWidget(self.idk_btn)
         button_row.addWidget(self.grade_btn)
         button_row.addWidget(self.next_btn)
@@ -744,7 +758,7 @@ class StudyTab(QWidget):
         self.followup_input.setMinimumHeight(120)
         self.followup_input.submitted.connect(self._run_followup)
         self.followup_input.hide()
-        self.followup_btn = QPushButton("Ask follow up")
+        self.followup_btn = AnimatedButton("Ask follow up")
         self.followup_btn.clicked.connect(self._run_followup)
         self.followup_btn.hide()
 
@@ -762,6 +776,133 @@ class StudyTab(QWidget):
         self.mode_stack.setCurrentIndex(index)
         self.cards_sub_btn.setChecked(index == 0)
         self.study_sub_btn.setChecked(index == 1)
+
+    def _current_history_entry(self) -> dict | None:
+        if 0 <= self.current_history_index < len(self.session_history):
+            return self.session_history[self.current_history_index]
+        return None
+
+    def _history_entry(self, index: int) -> dict | None:
+        if 0 <= index < len(self.session_history):
+            return self.session_history[index]
+        return None
+
+    def _has_pending_background_grading(self) -> bool:
+        return self.queued_grade_worker is not None or bool(self.queued_grade_indexes)
+
+    def _sync_current_entry_snapshot(self) -> None:
+        entry = self._current_history_entry()
+        if entry is None:
+            return
+        entry["answer_text"] = self.answer_input.toPlainText()
+        entry["hints_used"] = self.revealed_hints
+
+    def _format_review_markdown(self, report: dict) -> str:
+        score = float(report.get("marks_out_of_10", 0) or 0)
+        state = str(report.get("state", "wrong")).title()
+        parts: list[str] = []
+        preview = str(report.get("preview_markdown", "")).strip()
+        if preview:
+            parts.append(preview)
+        parts.append(f"### Final score: {score:.1f}/10 | {state}")
+        good = str(report.get("what_went_good", "")).strip()
+        bad = str(report.get("what_went_bad", "")).strip()
+        improve = str(report.get("what_to_improve", "")).strip()
+        if good:
+            parts.append(f"- Good: {good}")
+        if bad:
+            parts.append(f"- Bad: {bad}")
+        if improve:
+            parts.append(f"- Improve: {improve}")
+        if score >= 9:
+            parts.append("- Coach: Great work. You got the core meaning right, and that matters most.")
+        elif score <= 5:
+            parts.append("- Coach: Keep going. Use the follow up feature to ask more questions and work through it step by step.")
+        return "\n\n".join(part for part in parts if part)
+
+    def _set_hint_button_state(self, *, allow_editing: bool) -> None:
+        if not self.current_card or not allow_editing:
+            self.hint_btn.setEnabled(False)
+            return
+        hints = self.current_card.get("hints", [])
+        has_more = self.revealed_hints < len(hints)
+        self.hint_btn.setEnabled(has_more and self.hint_cooldown <= 0)
+
+    def _update_study_controls(self) -> None:
+        entry = self._current_history_entry()
+        is_latest = self.current_history_index == len(self.session_history) - 1
+        pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
+        editable = bool(entry) and is_latest and not pending_current and self.grade_worker is None
+        self.prev_card_btn.setEnabled(self.current_history_index > 0)
+        self.answer_input.setEnabled(editable)
+        self.idk_btn.setEnabled(editable)
+        self.next_btn.setEnabled(self.current_card is not None and self.grade_worker is None)
+        self.grade_btn.setEnabled(editable and not self._has_pending_background_grading())
+        self._set_hint_button_state(allow_editing=editable)
+
+    def _show_history_entry(self, index: int) -> None:
+        entry = self._history_entry(index)
+        if entry is None:
+            return
+        self.current_history_index = index
+        self.current_card = entry["card"]
+        self.last_grade_report = entry.get("grade_report")
+        self.current_attempt_logged = bool(entry.get("attempt_logged", False))
+        self.revealed_hints = int(entry.get("hints_used", 0))
+        self.hint_cooldown = 0
+        self.cooldown_timer.stop()
+
+        card = entry["card"]
+        title = card.get("title", "Untitled")
+        if card.get("temporary"):
+            title = f"{title} [TEMP]"
+        self.session_title.setText(title)
+        self.session_meta.setText(
+            f"{card.get('subject', 'General')}  |  {card.get('category', 'All')}  |  Difficulty {card.get('natural_difficulty', 5)}/10"
+        )
+        self.session_question.setText(card.get("question", ""))
+        self.answer_input.setPlainText(str(entry.get("answer_text", "")))
+        visible_hints = card.get("hints", [])[: self.revealed_hints]
+        self.hints_text.setPlainText("\n".join(f"{idx + 1}. {hint}" for idx, hint in enumerate(visible_hints)))
+        if self.revealed_hints <= 0:
+            self.hint_status.setText("Hints stay hidden until you press Show hint.")
+        elif self.revealed_hints >= len(card.get("hints", [])):
+            self.hint_status.setText("All hints revealed.")
+        else:
+            self.hint_status.setText("Previously revealed hints are shown here.")
+
+        status = str(entry.get("status", "fresh"))
+        if status == "done" and entry.get("grade_report"):
+            report = entry["grade_report"]
+            score = float(report.get("marks_out_of_10", 0) or 0)
+            state = str(report.get("state", "wrong")).title()
+            self.grade_summary.setText(f"Final score: {score:.1f}/10  |  {state}")
+            self.grade_feedback.setMarkdown(str(entry.get("review_markdown", "")))
+            self._set_followup_visible(True)
+        elif status in {"queued", "grading"}:
+            label = "Queued for grading..." if status == "queued" else "Grading in background..."
+            self.grade_summary.setText(label)
+            self.grade_feedback.setMarkdown("### Review pending\nYour answer was saved and is waiting for grading.")
+            self._set_followup_visible(False)
+        elif status == "error":
+            self.grade_summary.setText("Grading failed.")
+            self.grade_feedback.setMarkdown(str(entry.get("review_markdown", "### Grading failed")))
+            self._set_followup_visible(False)
+        elif status == "skipped":
+            self.grade_summary.setText("Skipped")
+            self.grade_feedback.setMarkdown("### Skipped\nThis card was skipped without grading.")
+            self._set_followup_visible(False)
+        else:
+            self.grade_summary.setText("AI grader")
+            self.grade_feedback.clear()
+            self._set_followup_visible(False)
+        self._update_study_controls()
+
+    def _previous_card(self) -> None:
+        self._sync_current_entry_snapshot()
+        if self.current_history_index <= 0:
+            return
+        self._show_history_entry(self.current_history_index - 1)
 
     def _toggle_sidebar(self) -> None:
         self.sidebar_expanded = not self.sidebar_expanded
@@ -785,10 +926,13 @@ class StudyTab(QWidget):
         y_pos = max(0, int((self.card_search_input.height() - self.card_search_btn.height()) / 2))
         self.card_search_btn.move(x_pos, y_pos)
 
+    def _set_card_search_dropdown_visible(self, visible: bool) -> None:
+        fade_widget_visibility(self.card_search_dropdown, visible)
+
     def reload_cards(self) -> None:
         self.cards = self.datastore.list_all_cards()
         self._refresh_global_recommendations()
-        self.card_search_dropdown.setVisible(False)
+        self._set_card_search_dropdown_visible(False)
         self._reset_card_render_limit()
         self._refresh_subjects(self._card_counts_from_cards(self.cards))
         self._render_cards()
@@ -850,7 +994,7 @@ class StudyTab(QWidget):
         self.current_subject = payload["subject"]
         self.current_category = payload["category"]
         self.current_subtopic = payload.get("subtopic", "All")
-        self.card_search_dropdown.setVisible(False)
+        self._set_card_search_dropdown_visible(False)
         self._reset_card_render_limit()
         self._render_cards()
 
@@ -882,7 +1026,7 @@ class StudyTab(QWidget):
     def _queue_card_search(self, text: str) -> None:
         self.card_search_query = text
         self.card_search_has_executed = False if not text.strip() else self.card_search_has_executed
-        self.card_search_dropdown.setVisible(False)
+        self._set_card_search_dropdown_visible(False)
         self.card_search_suggestions = []
         if not text.strip():
             self.card_search_full_results = []
@@ -900,7 +1044,7 @@ class StudyTab(QWidget):
             return
         cards = self._filtered_cards()
         if not cards:
-            self.card_search_dropdown.setVisible(False)
+            self._set_card_search_dropdown_visible(False)
             return
         suggestions = self._fast_card_suggestions(query, cards, limit=5)
         self._on_card_suggestions_ready(self.card_search_request_id, query, suggestions)
@@ -926,11 +1070,11 @@ class StudyTab(QWidget):
             self.card_search_list.addItem(row)
         self._sync_card_search_list_height()
         has_items = self.card_search_list.count() > 0 and bool(query)
-        self.card_search_dropdown.setVisible(has_items)
+        self._set_card_search_dropdown_visible(has_items)
 
     def _card_search_suggestion_clicked(self, item: QListWidgetItem) -> None:
         self.card_search_timer.stop()
-        self.card_search_dropdown.setVisible(False)
+        self._set_card_search_dropdown_visible(False)
         card = item.data(Qt.UserRole) or {}
         title = str(card.get("title", "")).strip()
         if title:
@@ -951,7 +1095,7 @@ class StudyTab(QWidget):
     def _execute_card_search(self) -> None:
         query = self.card_search_input.text().strip()
         self.card_search_timer.stop()
-        self.card_search_dropdown.setVisible(False)
+        self._set_card_search_dropdown_visible(False)
         if not query:
             self.card_search_query = ""
             self.card_search_has_executed = False
@@ -1303,21 +1447,12 @@ class StudyTab(QWidget):
         end_pos = tile.pos()
         start_pos = QPoint(end_pos.x(), end_pos.y() + 16)
         tile.move(start_pos)
-        effect = QGraphicsOpacityEffect(tile)
-        effect.setOpacity(0.0)
-        tile.setGraphicsEffect(effect)
-        opacity = QPropertyAnimation(effect, b"opacity", tile)
-        opacity.setDuration(240)
-        opacity.setStartValue(0.0)
-        opacity.setEndValue(1.0)
-        opacity.setEasingCurve(QEasingCurve.OutCubic)
         pop = QPropertyAnimation(tile, b"pos", tile)
         pop.setDuration(280)
         pop.setStartValue(start_pos)
         pop.setEndValue(end_pos)
         pop.setEasingCurve(QEasingCurve.OutBack)
         group = QParallelAnimationGroup(tile)
-        group.addAnimation(opacity)
         group.addAnimation(pop)
         self._card_search_animations.append(group)
         QTimer.singleShot(index * 38, group.start)
@@ -1380,6 +1515,11 @@ class StudyTab(QWidget):
         self.session_cards = list(cards)
         self.session_scores = []
         self.session_temp_batches = {}
+        self.session_history = []
+        self.current_history_index = -1
+        self.queued_grade_indexes = []
+        self.active_queue_entry_index = -1
+        self.session_end_requested = False
         self.session_prep_remaining_cards = []
         self._switch_mode(1)
         seed_cards: list[dict] = []
@@ -1403,45 +1543,52 @@ class StudyTab(QWidget):
             self._start_session_prep(cards, seed_cards)
 
     def _advance_session(self) -> None:
+        self._sync_current_entry_snapshot()
+        if self.current_history_index < len(self.session_history) - 1:
+            self._show_history_entry(self.current_history_index + 1)
+            return
         if self.study_state and self.study_state.nna_enabled:
             card = next_card_for_session(self.study_state, self.embedding_service)
             if card is None:
+                if self._has_pending_background_grading():
+                    self.session_end_requested = True
+                    self.grade_summary.setText("Finishing session...")
+                    self.grade_feedback.setMarkdown("### Finalizing\nWaiting for queued grading to finish.")
+                    self._set_followup_visible(False)
+                    self._update_study_controls()
+                    return
                 self._finish_session()
                 return
             self._start_session(card)
             return
         if not self.session_queue:
+            if self._has_pending_background_grading():
+                self.session_end_requested = True
+                self.grade_summary.setText("Finishing session...")
+                self.grade_feedback.setMarkdown("### Finalizing\nWaiting for queued grading to finish.")
+                self._set_followup_visible(False)
+                self._update_study_controls()
+                return
             self._finish_session()
             return
         self._start_session(self.session_queue.pop(0))
 
     def _start_session(self, card: dict) -> None:
-        self.current_card = card
-        self.revealed_hints = 0
-        self.hint_cooldown = 0
-        self.last_grade_report = None
-        self.current_attempt_logged = False
-        self._silent_grade_mode = False
-        self._advance_after_grade = False
-        self.cooldown_timer.stop()
-        self.answer_input.setEnabled(True)
-        self.answer_input.clear()
-        self.hints_text.clear()
-        self.grade_feedback.clear()
-        self.grade_summary.setText("AI grader")
-        title = card.get("title", "Untitled")
-        if card.get("temporary"):
-            title = f"{title} [TEMP]"
-        self.session_title.setText(title)
-        self.session_meta.setText(
-            f"{card.get('subject', 'General')}  |  {card.get('category', 'All')}  |  Difficulty {card.get('natural_difficulty', 5)}/10"
-        )
-        self.session_question.setText(card.get("question", ""))
-        self.hint_status.setText("Hints stay hidden until you press Show hint.")
-        self.hint_btn.setEnabled(True)
-        self._set_followup_visible(False)
-        if self.study_state and self.study_state.nna_enabled:
-            self.study_state.shown_entries.append(SessionCardEntry(card=card))
+        session_entry = SessionCardEntry(card=card) if self.study_state and self.study_state.nna_enabled else None
+        if session_entry is not None:
+            self.study_state.shown_entries.append(session_entry)
+        entry = {
+            "card": card,
+            "answer_text": "",
+            "hints_used": 0,
+            "grade_report": None,
+            "review_markdown": "",
+            "status": "fresh",
+            "attempt_logged": False,
+            "session_entry": session_entry,
+        }
+        self.session_history.append(entry)
+        self._show_history_entry(len(self.session_history) - 1)
 
     def _cancel_session_prep(self) -> None:
         if self.session_prep_worker and self.session_prep_worker.isRunning():
@@ -1694,33 +1841,41 @@ class StudyTab(QWidget):
         self.hint_cooldown -= 1
         self.hint_status.setText(f"Next hint in {self.hint_cooldown}s.")
 
-    def _save_attempt(self, graded: bool, grade_payload: dict | None = None) -> None:
-        if not self.current_card:
+    def _save_attempt_for_entry(self, entry: dict, graded: bool, grade_payload: dict | None = None) -> None:
+        card = entry.get("card")
+        if not isinstance(card, dict):
             return
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "session_id": self.session_id,
-            "card_id": self.current_card.get("id"),
-            "subject": self.current_card.get("subject"),
-            "category": self.current_card.get("category"),
-            "subtopic": self.current_card.get("subtopic"),
-            "question": self.current_card.get("question"),
-            "answer_text": self.answer_input.toPlainText().strip(),
-            "hints_used": self.revealed_hints,
+            "card_id": card.get("id"),
+            "subject": card.get("subject"),
+            "category": card.get("category"),
+            "subtopic": card.get("subtopic"),
+            "question": card.get("question"),
+            "answer_text": str(entry.get("answer_text", "")).strip(),
+            "hints_used": int(entry.get("hints_used", 0)),
             "graded": graded,
-            "temporary": bool(self.current_card.get("temporary", False)),
+            "temporary": bool(card.get("temporary", False)),
         }
         if self.study_state:
-            payload["topic_cluster_key"] = card_cluster_key(self.study_state, self.current_card)
+            payload["topic_cluster_key"] = card_cluster_key(self.study_state, card)
         if grade_payload:
             payload.update(grade_payload)
         if payload.get("temporary"):
-            self._record_temp_attempt(payload)
+            self._record_temp_attempt(card, payload)
             return
         self.datastore.save_attempt(payload)
 
-    def _record_temp_attempt(self, payload: dict) -> None:
-        batch_id = str(self.current_card.get("temp_batch_id", "")).strip()
+    def _save_attempt(self, graded: bool, grade_payload: dict | None = None) -> None:
+        entry = self._current_history_entry()
+        if entry is None:
+            return
+        self._sync_current_entry_snapshot()
+        self._save_attempt_for_entry(entry, graded, grade_payload)
+
+    def _record_temp_attempt(self, card: dict, payload: dict) -> None:
+        batch_id = str(card.get("temp_batch_id", "")).strip()
         if not batch_id:
             self.datastore.save_attempt(payload)
             return
@@ -1759,25 +1914,94 @@ class StudyTab(QWidget):
         return not GradeWorker._is_inappropriate_or_garbage(text)
 
     def _set_grading_busy_state(self, busy: bool) -> None:
-        self.grade_btn.setEnabled(not busy)
-        self.next_btn.setEnabled(not busy)
         self.answer_input.setEnabled(not busy)
+        self.idk_btn.setEnabled(not busy)
+        self.next_btn.setEnabled(not busy)
 
-    def _start_grade_request(self, *, show_feedback: bool, advance_after: bool) -> bool:
-        if not self.current_card:
+    def _queue_grade_entry(self, entry_index: int) -> None:
+        entry = self._history_entry(entry_index)
+        if entry is None:
+            return
+        if entry.get("status") in {"queued", "grading", "done"}:
+            return
+        entry["status"] = "queued"
+        if entry_index not in self.queued_grade_indexes:
+            self.queued_grade_indexes.append(entry_index)
+        if self.current_history_index == entry_index:
+            self._show_history_entry(entry_index)
+        self._process_grade_queue()
+
+    def _process_grade_queue(self) -> None:
+        if self.queued_grade_worker is not None:
+            return
+        while self.queued_grade_indexes:
+            entry_index = self.queued_grade_indexes.pop(0)
+            entry = self._history_entry(entry_index)
+            if entry is None:
+                continue
+            if str(entry.get("status", "")) not in {"queued", "grading"}:
+                continue
+            card = entry.get("card")
+            if not isinstance(card, dict):
+                continue
+            entry["status"] = "grading"
+            self.active_queue_entry_index = entry_index
+            worker = GradeWorker(
+                question=card.get("question", ""),
+                expected_answer=card.get("answer", ""),
+                user_answer=str(entry.get("answer_text", "")).strip(),
+                difficulty=int(card.get("natural_difficulty", 5)),
+                ollama=self.ollama,
+                profile_context=self.datastore.load_profile(),
+                stream_preview=False,
+            )
+            self.queued_grade_worker = worker
+            worker.status.connect(lambda _message: self._refresh_pending_entry(entry_index))
+            worker.finished.connect(lambda report, idx=entry_index: self._on_queued_grade_done(idx, report))
+            worker.failed.connect(lambda message, idx=entry_index: self._on_queued_grade_failed(idx, message))
+            worker.finished.connect(worker.deleteLater)
+            worker.failed.connect(worker.deleteLater)
+            worker.start()
+            if self.current_history_index == entry_index:
+                self._show_history_entry(entry_index)
+            self._update_study_controls()
+            return
+        self.active_queue_entry_index = -1
+        if self.session_end_requested:
+            self.session_end_requested = False
+            self._finish_session()
+            return
+        self._update_study_controls()
+
+    def _refresh_pending_entry(self, entry_index: int) -> None:
+        entry = self._history_entry(entry_index)
+        if entry is None:
+            return
+        if entry.get("status") == "queued":
+            entry["status"] = "grading"
+        if self.current_history_index == entry_index:
+            self._show_history_entry(entry_index)
+        else:
+            self._update_study_controls()
+
+    def _start_grade_request(self) -> bool:
+        entry = self._current_history_entry()
+        if entry is None or not self.current_card:
             return False
-        user_answer = self.answer_input.toPlainText().strip()
+        self._sync_current_entry_snapshot()
+        user_answer = str(entry.get("answer_text", "")).strip()
         if not user_answer:
             return False
         if self.grade_worker and self.grade_worker.isRunning():
             return False
+        if self._has_pending_background_grading():
+            return False
 
-        self._silent_grade_mode = not show_feedback
-        self._advance_after_grade = advance_after
+        entry["status"] = "grading"
         self._set_grading_busy_state(True)
         self._set_followup_visible(False)
         self.grade_feedback.clear()
-        self.grade_summary.setText("Grading..." if show_feedback else "Loading next card...")
+        self.grade_summary.setText("Grading...")
 
         worker = GradeWorker(
             question=self.current_card.get("question", ""),
@@ -1786,13 +2010,13 @@ class StudyTab(QWidget):
             difficulty=int(self.current_card.get("natural_difficulty", 5)),
             ollama=self.ollama,
             profile_context=self.datastore.load_profile(),
-            stream_preview=show_feedback,
+            stream_preview=True,
         )
         self.grade_worker = worker
         worker.stream.connect(self._on_grade_stream)
         worker.status.connect(self.grade_summary.setText)
-        worker.finished.connect(self._on_grade_done)
-        worker.failed.connect(self._on_grade_failed)
+        worker.finished.connect(lambda report, idx=self.current_history_index: self._on_grade_done(idx, report))
+        worker.failed.connect(lambda message, idx=self.current_history_index: self._on_grade_failed(idx, message))
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         worker.start()
@@ -1806,56 +2030,48 @@ class StudyTab(QWidget):
         if not user_answer:
             QMessageBox.warning(self, "Missing answer", "Write an answer before grading.")
             return
-        self._start_grade_request(show_feedback=True, advance_after=False)
+        self._start_grade_request()
 
     def _on_grade_stream(self, markdown_text: str) -> None:
         self.grade_feedback.setMarkdown(markdown_text)
 
-    def _on_grade_done(self, report: dict) -> None:
-        self.grade_worker = None
+    def _apply_grade_result(self, entry: dict, report: dict) -> None:
         score = float(report.get("marks_out_of_10", 0) or 0)
+        entry["grade_report"] = report
+        entry["review_markdown"] = self._format_review_markdown(report)
+        entry["status"] = "done"
+        entry["attempt_logged"] = True
         self.last_grade_report = report
-        state = str(report.get("state", "wrong")).title()
-        self._save_attempt(graded=True, grade_payload=report)
-        self._refresh_global_recommendations()
-        self.current_attempt_logged = True
         self.session_scores.append(score)
-        if self.study_state and self.current_card:
-            result = register_grade_result(self.study_state, self.current_card, report)
-            if self.study_state.shown_entries:
-                self.study_state.shown_entries[-1].grade_report = report
-            mark_card_completed(self.study_state, self.current_card)
-            if result["weak"]:
-                enqueue_similar_cards(self.study_state, self.current_card, self.embedding_service)
-            if result["trigger_reinforcement"]:
-                self._ask_reinforcement_permission(result["cluster_key"])
-        advance_after = self._advance_after_grade
-        silent_mode = self._silent_grade_mode
-        self._advance_after_grade = False
-        self._silent_grade_mode = False
-        self._set_grading_busy_state(False)
-        if silent_mode:
-            self.grade_summary.setText("AI grader")
-            self.grade_feedback.clear()
-            self._set_followup_visible(False)
-            if advance_after:
-                self._advance_session()
-            return
+        self._save_attempt_for_entry(entry, graded=True, grade_payload=report)
+        self._refresh_global_recommendations()
+        if self.study_state:
+            card = entry.get("card")
+            session_entry = entry.get("session_entry")
+            if isinstance(card, dict):
+                result = register_grade_result(self.study_state, card, report)
+                if isinstance(session_entry, SessionCardEntry):
+                    session_entry.grade_report = report
+                mark_card_completed(self.study_state, card)
+                if result["weak"]:
+                    enqueue_similar_cards(self.study_state, card, self.embedding_service)
+                if result["trigger_reinforcement"] and card == self.current_card:
+                    self._ask_reinforcement_permission(result["cluster_key"])
 
-        self.grade_summary.setText(f"Final score: {score:.1f}/10  |  {state}")
-        extra = [
-            f"Good: {report.get('what_went_good', '')}",
-            f"Bad: {report.get('what_went_bad', '')}",
-        ]
-        if report.get("what_to_improve"):
-            extra.append(f"Improve: {report.get('what_to_improve')}")
-        if float(score) >= 9:
-            extra.append("Coach: Great work. You got the core meaning right, and that matters most.")
-        elif float(score) <= 5:
-            extra.append("Coach: Keep going. Use the follow up feature to ask more questions and work through it step by step.")
-        self.grade_feedback.append("<hr>")
-        self.grade_feedback.append("<br>".join(extra))
-        self._set_followup_visible(True)
+    def _mark_entry_grade_failed(self, entry: dict, message: str, *, save_ungraded: bool) -> None:
+        entry["status"] = "error"
+        entry["review_markdown"] = f"### Grading failed\n{message}"
+        if save_ungraded and not entry.get("attempt_logged", False):
+            self._save_attempt_for_entry(entry, graded=False, grade_payload={"marks_out_of_10": None, "how_good": None})
+            entry["attempt_logged"] = True
+
+    def _on_grade_done(self, entry_index: int, report: dict) -> None:
+        self.grade_worker = None
+        entry = self._history_entry(entry_index)
+        self._set_grading_busy_state(False)
+        if entry is not None:
+            self._apply_grade_result(entry, report)
+        self._show_history_entry(entry_index if entry is not None else self.current_history_index)
 
     def _ask_reinforcement_permission(self, cluster_key: str) -> None:
         if not self.current_card or self.reinforcement_worker is not None:
@@ -1988,27 +2204,36 @@ class StudyTab(QWidget):
             if card_cluster_key(self.study_state, card) == cluster_key and str(card.get("id", "")) != str(self.current_card.get("id", ""))
         ]
 
-    def _on_grade_failed(self, message: str) -> None:
+    def _on_queued_grade_done(self, entry_index: int, report: dict) -> None:
+        self.queued_grade_worker = None
+        self.active_queue_entry_index = -1
+        entry = self._history_entry(entry_index)
+        if entry is not None:
+            self._apply_grade_result(entry, report)
+            if self.current_history_index == entry_index:
+                self._show_history_entry(entry_index)
+        self._process_grade_queue()
+
+    def _on_queued_grade_failed(self, entry_index: int, message: str) -> None:
+        self.queued_grade_worker = None
+        self.active_queue_entry_index = -1
+        entry = self._history_entry(entry_index)
+        if entry is not None:
+            self._mark_entry_grade_failed(entry, message, save_ungraded=True)
+            if self.current_history_index == entry_index:
+                self._show_history_entry(entry_index)
+        self._process_grade_queue()
+
+    def _on_grade_failed(self, entry_index: int, message: str) -> None:
         self.grade_worker = None
-        advance_after = self._advance_after_grade
-        silent_mode = self._silent_grade_mode
-        self._advance_after_grade = False
-        self._silent_grade_mode = False
         self._set_grading_busy_state(False)
-        if silent_mode:
-            if self.current_card and self.answer_input.toPlainText().strip() and not self.current_attempt_logged:
-                self._save_attempt(graded=False, grade_payload={"marks_out_of_10": None, "how_good": None})
-                self.current_attempt_logged = True
-                if self.study_state:
-                    mark_card_completed(self.study_state, self.current_card)
-            self.grade_summary.setText("AI grader")
-            self.grade_feedback.clear()
-            self._set_followup_visible(False)
-            if advance_after:
-                self._advance_session()
-            return
+        entry = self._history_entry(entry_index)
+        if entry is not None:
+            entry["status"] = "fresh"
         self.grade_summary.setText("Grading failed.")
         self.grade_feedback.setPlainText(message)
+        self._set_followup_visible(False)
+        self._update_study_controls()
 
     def _run_followup(self, auto_prompt: str | None = None) -> None:
         if self.followup_worker and self.followup_worker.isRunning():
@@ -2044,11 +2269,21 @@ class StudyTab(QWidget):
     def _next_card(self) -> None:
         if self.grade_worker and self.grade_worker.isRunning():
             return
-        if self.current_card and not self.current_attempt_logged:
-            answer_text = self.answer_input.toPlainText().strip()
+        if self.current_history_index < len(self.session_history) - 1:
+            self._advance_session()
+            return
+        entry = self._current_history_entry()
+        if self.current_card and entry is not None and not entry.get("attempt_logged", False):
+            self._sync_current_entry_snapshot()
+            answer_text = str(entry.get("answer_text", "")).strip()
             if self._should_grade_answer_on_next(answer_text):
-                if self._start_grade_request(show_feedback=False, advance_after=True):
-                    return
+                if self.study_state:
+                    mark_card_completed(self.study_state, self.current_card)
+                self._queue_grade_entry(self.current_history_index)
+                self._advance_session()
+                return
+            entry["status"] = "skipped"
+            entry["attempt_logged"] = True
             if self.study_state:
                 mark_card_completed(self.study_state, self.current_card)
         self._advance_session()
@@ -2074,6 +2309,11 @@ class StudyTab(QWidget):
         self.session_queue = []
         self.session_cards = []
         self.session_scores = []
+        self.session_history = []
+        self.current_history_index = -1
+        self.queued_grade_indexes = []
+        self.active_queue_entry_index = -1
+        self.session_end_requested = False
         self.session_temp_batches = {}
         self.session_title.setText("Pick a card to start")
         self.session_meta.setText("")
@@ -2084,6 +2324,10 @@ class StudyTab(QWidget):
         self.grade_feedback.clear()
         self.grade_summary.setText("AI grader")
         self._set_followup_visible(False)
+        self.prev_card_btn.setEnabled(False)
+        self.grade_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        self.idk_btn.setEnabled(False)
 
     def _remove_card_from_session(self, card: dict) -> None:
         card_id = str(card.get("id", ""))
