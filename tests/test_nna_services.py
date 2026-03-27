@@ -11,6 +11,7 @@ from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
 from studymate.services.recommendation_service import build_global_recommendations
 from studymate.services.study_intelligence import build_session_state, enqueue_similar_cards, refresh_topic_clusters, register_grade_result
+from studymate.ui.study_tab import StudyTab
 from studymate.utils.paths import AppPaths
 
 
@@ -216,6 +217,12 @@ class NnaServiceTests(unittest.TestCase):
         )
 
         self.assertEqual([], recommendations)
+
+    def test_next_only_silent_grades_real_answers(self) -> None:
+        self.assertTrue(StudyTab._should_grade_answer_on_next("Photosynthesis converts light energy into chemical energy."))
+        self.assertFalse(StudyTab._should_grade_answer_on_next("   "))
+        self.assertFalse(StudyTab._should_grade_answer_on_next("....."))
+        self.assertFalse(StudyTab._should_grade_answer_on_next("asdfghjkl"))
 
 
 if __name__ == "__main__":
