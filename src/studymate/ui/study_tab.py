@@ -392,6 +392,8 @@ class CardSearchWorker(QThread):
 
 
 class StudyTab(QWidget):
+    CARD_RENDER_BATCH_SIZE = 24
+
     def __init__(self, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
         super().__init__()
         self.datastore = datastore
@@ -428,6 +430,7 @@ class StudyTab(QWidget):
         self.card_search_suggestions: list[dict] = []
         self.card_search_full_results: list[dict] = []
         self.card_search_result_limit = 8
+        self.card_render_limit = self.CARD_RENDER_BATCH_SIZE
         self.card_search_last_scores: list[float] = []
         self.card_search_has_executed = False
         self.card_search_request_id = 0
@@ -435,6 +438,8 @@ class StudyTab(QWidget):
         self.global_recommendations: list[RecommendedCard] = []
         self._card_search_animations: list[QParallelAnimationGroup] = []
         self._card_search_workers: list[CardSearchWorker] = []
+        self._silent_grade_mode = False
+        self._advance_after_grade = False
 
         self.cooldown_timer = QTimer(self)
         self.cooldown_timer.timeout.connect(self._tick_hint_cooldown)
@@ -634,7 +639,7 @@ class StudyTab(QWidget):
         self.card_empty_state.hide()
         cards_layout.addWidget(self.card_empty_state)
         self.card_search_more_btn = QPushButton("See more")
-        self.card_search_more_btn.clicked.connect(self._show_more_search_results)
+        self.card_search_more_btn.clicked.connect(self._show_more_cards)
         self.card_search_more_btn.hide()
         cards_layout.addWidget(self.card_search_more_btn, 0, Qt.AlignHCenter)
         layout.addWidget(self.cards_surface, 1)
@@ -784,11 +789,21 @@ class StudyTab(QWidget):
         self.cards = self.datastore.list_all_cards()
         self._refresh_global_recommendations()
         self.card_search_dropdown.setVisible(False)
-        self._refresh_subjects()
+        self._reset_card_render_limit()
+        self._refresh_subjects(self._card_counts_from_cards(self.cards))
         self._render_cards()
 
-    def _refresh_subjects(self) -> None:
-        counts = self.datastore.card_counts_by_subject()
+    @staticmethod
+    def _card_counts_from_cards(cards: list[dict]) -> dict[str, int]:
+        counts: dict[str, int] = {subject: 0 for subject in SUBJECT_TAXONOMY}
+        for card in cards:
+            subject = str(card.get("subject", "")).strip()
+            if subject in counts:
+                counts[subject] += 1
+        return counts
+
+    def _refresh_subjects(self, counts: dict[str, int] | None = None) -> None:
+        counts = counts or self._card_counts_from_cards(self.cards)
         self.subject_tree.clear()
 
         all_item = QTreeWidgetItem(["All Subjects"])
@@ -836,6 +851,7 @@ class StudyTab(QWidget):
         self.current_category = payload["category"]
         self.current_subtopic = payload.get("subtopic", "All")
         self.card_search_dropdown.setVisible(False)
+        self._reset_card_render_limit()
         self._render_cards()
 
     def _clear_grid(self) -> None:
@@ -872,6 +888,7 @@ class StudyTab(QWidget):
             self.card_search_full_results = []
             self.card_search_last_scores = []
             self.card_search_no_close_match = False
+            self._reset_card_render_limit()
             self.card_search_more_btn.hide()
             self._render_cards()
             return
@@ -964,9 +981,15 @@ class StudyTab(QWidget):
         self.card_search_no_close_match = not bool(scored_items)
         self._render_cards(animate_search_results=True)
 
-    def _show_more_search_results(self) -> None:
-        self.card_search_result_limit += 8
+    def _show_more_cards(self) -> None:
+        if self.card_search_has_executed:
+            self.card_search_result_limit += 8
+        else:
+            self.card_render_limit += self.CARD_RENDER_BATCH_SIZE
         self._render_cards()
+
+    def _reset_card_render_limit(self) -> None:
+        self.card_render_limit = self.CARD_RENDER_BATCH_SIZE
 
     def _cleanup_card_search_worker(self, worker: CardSearchWorker) -> None:
         if worker in self._card_search_workers:
@@ -1214,9 +1237,11 @@ class StudyTab(QWidget):
         self.card_empty_state.hide()
         self.card_search_more_btn.hide()
         if self.card_search_has_executed:
-            cards = self.card_search_full_results[: self.card_search_result_limit]
+            all_cards = list(self.card_search_full_results)
+            cards = all_cards[: self.card_search_result_limit]
         else:
-            cards = self._filtered_cards()
+            all_cards = self._filtered_cards()
+            cards = all_cards[: self.card_render_limit]
 
         if not cards:
             if self.card_search_has_executed:
@@ -1252,7 +1277,11 @@ class StudyTab(QWidget):
             self.card_grid.addWidget(tile, row, col)
             if animate_search_results:
                 self._animate_card_tile(tile, idx)
-        if self.card_search_has_executed and len(self.card_search_full_results) > len(cards):
+        if len(all_cards) > len(cards):
+            if self.card_search_has_executed:
+                self.card_search_more_btn.setText(f"See more results ({len(cards)}/{len(all_cards)})")
+            else:
+                self.card_search_more_btn.setText(f"Load more cards ({len(cards)}/{len(all_cards)})")
             self.card_search_more_btn.show()
 
     def _show_card_empty_state(self) -> None:
@@ -1392,7 +1421,10 @@ class StudyTab(QWidget):
         self.hint_cooldown = 0
         self.last_grade_report = None
         self.current_attempt_logged = False
+        self._silent_grade_mode = False
+        self._advance_after_grade = False
         self.cooldown_timer.stop()
+        self.answer_input.setEnabled(True)
         self.answer_input.clear()
         self.hints_text.clear()
         self.grade_feedback.clear()
@@ -1719,6 +1751,53 @@ class StudyTab(QWidget):
             self.datastore.save_attempt(weak_attempts[0])
         del self.session_temp_batches[batch_id]
 
+    @staticmethod
+    def _should_grade_answer_on_next(answer_text: str) -> bool:
+        text = answer_text.strip()
+        if not text:
+            return False
+        return not GradeWorker._is_inappropriate_or_garbage(text)
+
+    def _set_grading_busy_state(self, busy: bool) -> None:
+        self.grade_btn.setEnabled(not busy)
+        self.next_btn.setEnabled(not busy)
+        self.answer_input.setEnabled(not busy)
+
+    def _start_grade_request(self, *, show_feedback: bool, advance_after: bool) -> bool:
+        if not self.current_card:
+            return False
+        user_answer = self.answer_input.toPlainText().strip()
+        if not user_answer:
+            return False
+        if self.grade_worker and self.grade_worker.isRunning():
+            return False
+
+        self._silent_grade_mode = not show_feedback
+        self._advance_after_grade = advance_after
+        self._set_grading_busy_state(True)
+        self._set_followup_visible(False)
+        self.grade_feedback.clear()
+        self.grade_summary.setText("Grading..." if show_feedback else "Loading next card...")
+
+        worker = GradeWorker(
+            question=self.current_card.get("question", ""),
+            expected_answer=self.current_card.get("answer", ""),
+            user_answer=user_answer,
+            difficulty=int(self.current_card.get("natural_difficulty", 5)),
+            ollama=self.ollama,
+            profile_context=self.datastore.load_profile(),
+            stream_preview=show_feedback,
+        )
+        self.grade_worker = worker
+        worker.stream.connect(self._on_grade_stream)
+        worker.status.connect(self.grade_summary.setText)
+        worker.finished.connect(self._on_grade_done)
+        worker.failed.connect(self._on_grade_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.start()
+        return True
+
     def _grade(self) -> None:
         if not self.current_card:
             QMessageBox.information(self, "No card", "Start a card first.")
@@ -1727,37 +1806,16 @@ class StudyTab(QWidget):
         if not user_answer:
             QMessageBox.warning(self, "Missing answer", "Write an answer before grading.")
             return
-        if self.grade_worker and self.grade_worker.isRunning():
-            return
-
-        self.grade_btn.setEnabled(False)
-        self.next_btn.setEnabled(False)
-        self.grade_summary.setText("Grading...")
-        self.grade_feedback.clear()
-        self._set_followup_visible(False)
-
-        self.grade_worker = GradeWorker(
-            question=self.current_card.get("question", ""),
-            expected_answer=self.current_card.get("answer", ""),
-            user_answer=user_answer,
-            difficulty=int(self.current_card.get("natural_difficulty", 5)),
-            ollama=self.ollama,
-            profile_context=self.datastore.load_profile(),
-        )
-        self.grade_worker.stream.connect(self._on_grade_stream)
-        self.grade_worker.status.connect(self.grade_summary.setText)
-        self.grade_worker.finished.connect(self._on_grade_done)
-        self.grade_worker.failed.connect(self._on_grade_failed)
-        self.grade_worker.start()
+        self._start_grade_request(show_feedback=True, advance_after=False)
 
     def _on_grade_stream(self, markdown_text: str) -> None:
         self.grade_feedback.setMarkdown(markdown_text)
 
     def _on_grade_done(self, report: dict) -> None:
+        self.grade_worker = None
         score = float(report.get("marks_out_of_10", 0) or 0)
         self.last_grade_report = report
         state = str(report.get("state", "wrong")).title()
-        self.grade_summary.setText(f"Final score: {score:.1f}/10  |  {state}")
         self._save_attempt(graded=True, grade_payload=report)
         self._refresh_global_recommendations()
         self.current_attempt_logged = True
@@ -1771,6 +1829,20 @@ class StudyTab(QWidget):
                 enqueue_similar_cards(self.study_state, self.current_card, self.embedding_service)
             if result["trigger_reinforcement"]:
                 self._ask_reinforcement_permission(result["cluster_key"])
+        advance_after = self._advance_after_grade
+        silent_mode = self._silent_grade_mode
+        self._advance_after_grade = False
+        self._silent_grade_mode = False
+        self._set_grading_busy_state(False)
+        if silent_mode:
+            self.grade_summary.setText("AI grader")
+            self.grade_feedback.clear()
+            self._set_followup_visible(False)
+            if advance_after:
+                self._advance_session()
+            return
+
+        self.grade_summary.setText(f"Final score: {score:.1f}/10  |  {state}")
         extra = [
             f"Good: {report.get('what_went_good', '')}",
             f"Bad: {report.get('what_went_bad', '')}",
@@ -1784,8 +1856,6 @@ class StudyTab(QWidget):
         self.grade_feedback.append("<hr>")
         self.grade_feedback.append("<br>".join(extra))
         self._set_followup_visible(True)
-        self.grade_btn.setEnabled(True)
-        self.next_btn.setEnabled(True)
 
     def _ask_reinforcement_permission(self, cluster_key: str) -> None:
         if not self.current_card or self.reinforcement_worker is not None:
@@ -1919,10 +1989,26 @@ class StudyTab(QWidget):
         ]
 
     def _on_grade_failed(self, message: str) -> None:
+        self.grade_worker = None
+        advance_after = self._advance_after_grade
+        silent_mode = self._silent_grade_mode
+        self._advance_after_grade = False
+        self._silent_grade_mode = False
+        self._set_grading_busy_state(False)
+        if silent_mode:
+            if self.current_card and self.answer_input.toPlainText().strip() and not self.current_attempt_logged:
+                self._save_attempt(graded=False, grade_payload={"marks_out_of_10": None, "how_good": None})
+                self.current_attempt_logged = True
+                if self.study_state:
+                    mark_card_completed(self.study_state, self.current_card)
+            self.grade_summary.setText("AI grader")
+            self.grade_feedback.clear()
+            self._set_followup_visible(False)
+            if advance_after:
+                self._advance_session()
+            return
         self.grade_summary.setText("Grading failed.")
         self.grade_feedback.setPlainText(message)
-        self.grade_btn.setEnabled(True)
-        self.next_btn.setEnabled(True)
 
     def _run_followup(self, auto_prompt: str | None = None) -> None:
         if self.followup_worker and self.followup_worker.isRunning():
@@ -1956,10 +2042,14 @@ class StudyTab(QWidget):
         self.grade_feedback.append(message)
 
     def _next_card(self) -> None:
-        if self.current_card and self.answer_input.toPlainText().strip() and not self.current_attempt_logged:
-            self._save_attempt(graded=False, grade_payload={"marks_out_of_10": None, "how_good": None})
-            self.current_attempt_logged = True
-            if self.study_state and self.current_card:
+        if self.grade_worker and self.grade_worker.isRunning():
+            return
+        if self.current_card and not self.current_attempt_logged:
+            answer_text = self.answer_input.toPlainText().strip()
+            if self._should_grade_answer_on_next(answer_text):
+                if self._start_grade_request(show_feedback=False, advance_after=True):
+                    return
+            if self.study_state:
                 mark_card_completed(self.study_state, self.current_card)
         self._advance_session()
 
@@ -1988,6 +2078,7 @@ class StudyTab(QWidget):
         self.session_title.setText("Pick a card to start")
         self.session_meta.setText("")
         self.session_question.setText("Use the Cards subtab or press Start for the current section.")
+        self.answer_input.setEnabled(True)
         self.answer_input.clear()
         self.hints_text.clear()
         self.grade_feedback.clear()

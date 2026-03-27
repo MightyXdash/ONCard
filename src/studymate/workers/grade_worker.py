@@ -25,6 +25,7 @@ class GradeWorker(QThread):
         ollama: OllamaService,
         model: str = "gemma3:4b",
         profile_context: dict | None = None,
+        stream_preview: bool = True,
     ) -> None:
         super().__init__()
         self.question = question
@@ -34,6 +35,7 @@ class GradeWorker(QThread):
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.stream_preview = stream_preview
 
     @staticmethod
     def _is_inappropriate_or_garbage(text: str) -> bool:
@@ -94,39 +96,40 @@ class GradeWorker(QThread):
             self.finished.emit(self._strict_rejection_report())
             return
 
-        preview_prompt = (
-            "You are a strict but fair teacher speaking directly to the student. "
-            "Be calm and professional, not soft. "
-            "Reward correct or mostly correct answers strongly, including 10/10 when the core meaning is clearly right for the student's level. "
-            "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still earn 10/10. "
-            "In that case, you may omit criticism entirely instead of forcing a what-is-wrong section. "
-            "Be strict on wrong, off-topic, vague, spammy, or low-effort answers. "
-            "If an answer is inappropriate, hateful, abusive, nonsense, or does not attempt the question, say that clearly and do not praise it. "
-            "Stream concise feedback in markdown."
-        )
-        user_preview_prompt = (
-            f"Student age: {self.profile_context.get('age', '')}\n"
-            f"Student grade: {self.profile_context.get('grade', '')}\n\n"
-            f"Question:\n{self.question}\n\n"
-            f"Expected answer:\n{self.expected_answer}\n\n"
-            f"Student answer:\n{self.user_answer}\n\n"
-            "Give quick feedback with sections: What is right, What is wrong, Next step. "
-            "Do not include any numeric score in this streaming feedback."
-        )
         preview_text = ""
-        self.status.emit("Streaming grading feedback...")
-        try:
-            for chunk in self.ollama.stream_chat(
-                model=self.model,
-                system_prompt=preview_prompt,
-                user_prompt=user_preview_prompt,
-                temperature=0.2,
-            ):
-                preview_text += chunk
+        if self.stream_preview:
+            preview_prompt = (
+                "You are a strict but fair teacher speaking directly to the student. "
+                "Be calm and professional, not soft. "
+                "Reward correct or mostly correct answers strongly, including 10/10 when the core meaning is clearly right for the student's level. "
+                "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still earn 10/10. "
+                "In that case, you may omit criticism entirely instead of forcing a what-is-wrong section. "
+                "Be strict on wrong, off-topic, vague, spammy, or low-effort answers. "
+                "If an answer is inappropriate, hateful, abusive, nonsense, or does not attempt the question, say that clearly and do not praise it. "
+                "Stream concise feedback in markdown."
+            )
+            user_preview_prompt = (
+                f"Student age: {self.profile_context.get('age', '')}\n"
+                f"Student grade: {self.profile_context.get('grade', '')}\n\n"
+                f"Question:\n{self.question}\n\n"
+                f"Expected answer:\n{self.expected_answer}\n\n"
+                f"Student answer:\n{self.user_answer}\n\n"
+                "Give quick feedback with sections: What is right, What is wrong, Next step. "
+                "Do not include any numeric score in this streaming feedback."
+            )
+            self.status.emit("Streaming grading feedback...")
+            try:
+                for chunk in self.ollama.stream_chat(
+                    model=self.model,
+                    system_prompt=preview_prompt,
+                    user_prompt=user_preview_prompt,
+                    temperature=0.2,
+                ):
+                    preview_text += chunk
+                    self.stream.emit(preview_text)
+            except OllamaError:
+                preview_text = "### Feedback\n- Could not stream from Ollama right now.\n- Please try again."
                 self.stream.emit(preview_text)
-        except OllamaError:
-            preview_text = "### Feedback\n- Could not stream from Ollama right now.\n- Please try again."
-            self.stream.emit(preview_text)
 
         self.status.emit("Creating structured grade report...")
         structured_prompt = (
