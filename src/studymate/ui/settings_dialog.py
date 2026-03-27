@@ -4,15 +4,12 @@ import shutil
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QTabWidget,
@@ -24,6 +21,7 @@ from PySide6.QtWidgets import (
 from studymate.services.data_store import DataStore
 from studymate.services.model_registry import MODELS, ModelSpec
 from studymate.services.ollama_service import OllamaError, OllamaService
+from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
 from studymate.workers.install_worker import ModelInstallWorker
 
 
@@ -66,8 +64,8 @@ class SettingsDialog(QDialog):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
-        self.cancel_btn = QPushButton("Cancel")
-        self.save_btn = QPushButton("Save")
+        self.cancel_btn = AnimatedButton("Cancel")
+        self.save_btn = AnimatedButton("Save")
         self.save_btn.setObjectName("PrimaryButton")
         self.cancel_btn.clicked.connect(self.reject)
         self.save_btn.clicked.connect(self._save)
@@ -91,6 +89,7 @@ class SettingsDialog(QDialog):
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         form = QFormLayout(surface)
         form.setContentsMargins(20, 20, 20, 20)
         form.setHorizontalSpacing(16)
@@ -98,11 +97,11 @@ class SettingsDialog(QDialog):
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         form.setFormAlignment(Qt.AlignTop)
 
-        self.name_edit = QLineEdit()
+        self.name_edit = AnimatedLineEdit()
         self.age_spin = QSpinBox()
         self.age_spin.setRange(4, 99)
-        self.hobbies_edit = QLineEdit()
-        self.grade_combo = QComboBox()
+        self.hobbies_edit = AnimatedLineEdit()
+        self.grade_combo = AnimatedComboBox()
         self.grade_combo.setEditable(True)
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
 
@@ -127,6 +126,7 @@ class SettingsDialog(QDialog):
 
         runtime_surface = QFrame()
         runtime_surface.setObjectName("Surface")
+        polish_surface(runtime_surface)
         runtime_layout = QVBoxLayout(runtime_surface)
         runtime_layout.setContentsMargins(20, 20, 20, 20)
         runtime_layout.setSpacing(8)
@@ -139,7 +139,7 @@ class SettingsDialog(QDialog):
         self.ollama_hint = QLabel("")
         self.ollama_hint.setObjectName("SmallMeta")
         self.ollama_hint.setWordWrap(True)
-        self.refresh_models_btn = QPushButton("Refresh model status")
+        self.refresh_models_btn = AnimatedButton("Refresh model status")
         self.refresh_models_btn.clicked.connect(self._refresh_model_status)
         runtime_layout.addWidget(runtime_title)
         runtime_layout.addWidget(self.ollama_status)
@@ -149,6 +149,7 @@ class SettingsDialog(QDialog):
 
         models_surface = QFrame()
         models_surface.setObjectName("Surface")
+        polish_surface(models_surface)
         models_layout = QVBoxLayout(models_surface)
         models_layout.setContentsMargins(20, 20, 20, 20)
         models_layout.setSpacing(12)
@@ -176,6 +177,7 @@ class SettingsDialog(QDialog):
 
         ai_surface = QFrame()
         ai_surface.setObjectName("Surface")
+        polish_surface(ai_surface)
         ai_layout = QVBoxLayout(ai_surface)
         ai_layout.setContentsMargins(20, 20, 20, 20)
         ai_layout.setSpacing(12)
@@ -223,6 +225,7 @@ class SettingsDialog(QDialog):
     def _build_model_row(self, spec: ModelSpec) -> dict[str, object]:
         container = QFrame()
         container.setObjectName("QueueRow")
+        polish_surface(container)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
@@ -257,7 +260,7 @@ class SettingsDialog(QDialog):
         side_col.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         status_label = QLabel("Checking...")
         status_label.setObjectName("CardMetaPill")
-        button = QPushButton("Install")
+        button = AnimatedButton("Install")
         button.clicked.connect(lambda _checked=False, key=spec.key: self._install_model(key))
         side_col.addWidget(status_label, 0, Qt.AlignRight)
         side_col.addWidget(button, 0, Qt.AlignRight)

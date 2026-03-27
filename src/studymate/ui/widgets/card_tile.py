@@ -6,11 +6,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QPushButton,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
 )
+
+from studymate.ui.animated import AnimatedToolButton, CardHoverChrome
 
 
 class CardTile(QFrame):
@@ -29,6 +29,7 @@ class CardTile(QFrame):
         self.setMaximumWidth(self._max_tile_width)
         self.setFixedHeight(238)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._hover_chrome = CardHoverChrome(self)
 
         self.title_display = QLabel(card.get("title", "Untitled"))
         self.title_display.setObjectName("CardTitleLabel")
@@ -44,9 +45,9 @@ class CardTile(QFrame):
         subject_label = QLabel(card.get("subject", "General"))
         subject_label.setObjectName("SmallMeta")
 
-        options_button = QToolButton()
+        options_button = AnimatedToolButton()
         options_button.setText("More")
-        options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_button.setPopupMode(AnimatedToolButton.ToolButtonPopupMode.InstantPopup)
         options_button.setObjectName("CardOptionsButton")
         options_menu = QMenu(options_button)
         options_menu.setObjectName("CardOptionsMenu")
@@ -105,3 +106,11 @@ class CardTile(QFrame):
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
             self.selected.emit(self.card)
+
+    def enterEvent(self, event) -> None:
+        self._hover_chrome.set_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_chrome.set_hovered(False)
+        super().leaveEvent(event)

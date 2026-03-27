@@ -7,19 +7,15 @@ import webbrowser
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QPushButton,
     QProgressBar,
     QSlider,
     QSpinBox,
-    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -29,6 +25,8 @@ import psutil
 from studymate.services.data_store import DataStore
 from studymate.services.model_registry import MODELS, recommended_models_for_ram, required_models_for_ram, total_selected_size_gb
 from studymate.services.ollama_service import OllamaService
+from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, AnimatedStackedWidget, polish_surface
+from studymate.ui.audio import UiSoundBank
 from studymate.ui.banner_widget import BannerWidget
 from studymate.ui.icon_helper import IconHelper
 from studymate.workers.install_worker import ModelInstallWorker
@@ -94,16 +92,19 @@ class FieldBlock(QWidget):
 
 
 class ProfilePage(OnboardingPage):
-    def __init__(self, banners_root: Path) -> None:
+    def __init__(self, banners_root: Path, sounds: UiSoundBank | None = None) -> None:
         super().__init__(
             title="Welcome to ONCard",
             body="Let us shape the app around how you study, with clean controls and less clutter from the start.",
             banner_path=banners_root / "onboarding_profile_banner_16x9.png",
             banner_name="onboarding_profile_banner_16x9.png",
         )
+        self.sounds = sounds
+        self._last_attention_value = 5
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         surface_layout = QVBoxLayout(surface)
         surface_layout.setContentsMargins(18, 18, 18, 18)
         surface_layout.setSpacing(12)
@@ -112,13 +113,13 @@ class ProfilePage(OnboardingPage):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
 
-        self.name_edit = QLineEdit()
+        self.name_edit = AnimatedLineEdit()
         self.age_spin = QSpinBox()
         self.age_spin.setRange(4, 99)
         self.age_spin.setValue(16)
-        self.grade_combo = QComboBox()
+        self.grade_combo = AnimatedComboBox()
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
-        self.hobbies_edit = QLineEdit()
+        self.hobbies_edit = AnimatedLineEdit()
 
         self.attention_slider = QSlider(Qt.Horizontal)
         self.attention_slider.setRange(1, 10)
@@ -147,6 +148,9 @@ class ProfilePage(OnboardingPage):
         self.body_layout().addStretch(1)
 
     def _on_attention_changed(self, value: int) -> None:
+        if value != self._last_attention_value and self.sounds is not None:
+            self.sounds.play("click")
+        self._last_attention_value = value
         self.attention_value.setText(f"Attention span per question: {value} min")
         self.changed.emit()
 
@@ -175,6 +179,7 @@ class AboutPage(OnboardingPage):
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         layout = QVBoxLayout(surface)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
@@ -212,6 +217,7 @@ class ModelInstallerPage(OnboardingPage):
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         layout = QVBoxLayout(surface)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
@@ -226,13 +232,13 @@ class ModelInstallerPage(OnboardingPage):
         self.ollama_label = QLabel("Ollama is not installed yet. Install it first, then come back here.")
         self.ollama_label.setObjectName("SmallMeta")
         self.ollama_label.setWordWrap(True)
-        self.ollama_button = QPushButton("Open Ollama website")
+        self.ollama_button = AnimatedButton("Open Ollama website")
         self.ollama_button.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
         if self.ollama_installed:
             self.ollama_label.hide()
             self.ollama_button.hide()
 
-        self.install_button = QPushButton("Install selected models")
+        self.install_button = AnimatedButton("Install selected models")
         self.install_button.setObjectName("PrimaryButton")
         self.install_button.clicked.connect(self._install_models)
         self.progress = QProgressBar()
@@ -373,11 +379,12 @@ class PerformancePage(OnboardingPage):
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         layout = QVBoxLayout(surface)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
-        self.run_button = QPushButton("Run 4-question TPS test")
+        self.run_button = AnimatedButton("Run 4-question TPS test")
         self.run_button.setObjectName("PrimaryButton")
         self.run_button.clicked.connect(self._run_benchmark)
         self.progress = QProgressBar()
@@ -468,6 +475,7 @@ class QuickStartPage(OnboardingPage):
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        polish_surface(surface)
         layout = QVBoxLayout(surface)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
@@ -515,6 +523,7 @@ class OnboardingWizard(QDialog):
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
+        self.sounds = UiSoundBank(self.paths.assets / "sfx")
         self.current_index = 0
 
         self.setWindowTitle("ONCard Setup")
@@ -526,8 +535,8 @@ class OnboardingWizard(QDialog):
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
 
-        self.stack = QStackedWidget()
-        self.profile_page = ProfilePage(self.paths.banners)
+        self.stack = AnimatedStackedWidget()
+        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
         self.about_page = AboutPage(self.paths.banners)
         self.model_page = ModelInstallerPage(self.paths.banners, self.icons, self.ollama)
         self.performance_page = PerformancePage(self.paths.banners, self.ollama)
@@ -546,12 +555,12 @@ class OnboardingWizard(QDialog):
 
         nav = QHBoxLayout()
         nav.addStretch(1)
-        self.back_btn = QPushButton("Back")
-        self.next_btn = QPushButton("Next")
+        self.back_btn = AnimatedButton("Back")
+        self.next_btn = AnimatedButton("Next")
         self.next_btn.setObjectName("PrimaryButton")
-        self.finish_btn = QPushButton("Finish")
+        self.finish_btn = AnimatedButton("Finish")
         self.finish_btn.setObjectName("PrimaryButton")
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = AnimatedButton("Cancel")
         self.back_btn.clicked.connect(self._go_back)
         self.next_btn.clicked.connect(self._go_next)
         self.finish_btn.clicked.connect(self.accept)
