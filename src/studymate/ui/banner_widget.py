@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 
@@ -15,25 +15,43 @@ class BannerWidget(QWidget):
         self.banner_height = height
         self.radius = radius
         self.banner_width = int(height * (16 / 9))
+        self._image = self._load_image()
         self.setFixedSize(self.banner_width, height)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    def _load_image(self) -> QImage:
+        if not self.banner_path.exists():
+            return QImage()
+        reader = QImageReader(str(self.banner_path))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        return image if not image.isNull() else QImage()
 
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.TextAntialiasing)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
             rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
             clip = QPainterPath()
             clip.addRoundedRect(rect, self.radius, self.radius)
             painter.setClipPath(clip)
 
-            pixmap = QPixmap(str(self.banner_path)) if self.banner_path.exists() else QPixmap()
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                x = max(0, (scaled.width() - self.width()) // 2)
-                y = max(0, (scaled.height() - self.height()) // 2)
-                painter.drawPixmap(self.rect(), scaled, QRect(x, y, self.width(), self.height()))
+            if not self._image.isNull():
+                dpr = max(1.0, self.devicePixelRatioF())
+                target_width = max(1, int(self.width() * dpr))
+                target_height = max(1, int(self.height() * dpr))
+                scaled = self._image.scaled(
+                    target_width,
+                    target_height,
+                    Qt.KeepAspectRatioByExpanding,
+                    Qt.SmoothTransformation,
+                )
+                x = max(0, (scaled.width() - target_width) // 2)
+                y = max(0, (scaled.height() - target_height) // 2)
+                painter.drawImage(self.rect(), scaled, QRect(x, y, target_width, target_height))
             else:
                 gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
                 gradient.setColorAt(0.0, QColor("#f7f7f7"))
