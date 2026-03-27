@@ -59,6 +59,7 @@ class ReinforcementWorker(QThread):
                     category_override=str(self.weak_card.get("category", "All")),
                     subtopic_override=str(self.weak_card.get("subtopic", "All")),
                     response_to_user="Reinforcement card ready.",
+                    extra_options={"num_ctx": self.context_length},
                 )
             except Exception as exc:
                 self.failed.emit(f"Reinforcement autofill failed: {exc}")
@@ -106,6 +107,7 @@ class ReinforcementWorker(QThread):
             user_prompt=user_prompt,
             schema=REINFORCEMENT_SCHEMA,
             temperature=0.1,
+            extra_options={"num_ctx": self.context_length},
         )
         raw_questions = payload.get("questions", [])
         if not isinstance(raw_questions, list) or len(raw_questions) < 4:

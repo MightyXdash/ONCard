@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import random
+import re
 import uuid
 
-from PySide6.QtCore import QEasingCurve, QEvent, QEventLoop, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
+from PySide6.QtCore import QEasingCurve, QEvent, QEventLoop, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QProgressDialog,
+    QSizePolicy,
     QScrollArea,
     QStackedWidget,
     QTextBrowser,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.constants import SUBJECT_TAXONOMY
+from studymate.constants import SEMANTIC_SEARCH_MIN_SCORE, SEMANTIC_SEARCH_SCORE_MARGIN
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
 from studymate.services.ollama_service import OllamaService
@@ -379,15 +382,12 @@ class CardSearchWorker(QThread):
         if not query:
             self.finished.emit(self.request_id, query, [])
             return
-        scored: list[dict] = []
-        try:
-            semantic = self.embedding_service.search_cards_by_text(query, self.cards, max_results=self.limit)
-            scored = [{"card": item.card, "score": float(item.score), "source": "semantic"} for item in semantic]
-        except Exception:
-            scored = []
-        if not scored:
-            fallback = StudyTab._fallback_text_search(query, self.cards)[: self.limit]
-            scored = [{"card": card, "score": 0.0, "source": "fallback"} for card in fallback]
+        scored = StudyTab._build_card_search_results(
+            query,
+            self.cards,
+            self.embedding_service,
+            limit=self.limit,
+        )
         self.finished.emit(self.request_id, query, scored)
 
 
@@ -427,13 +427,13 @@ class StudyTab(QWidget):
         self.card_search_query = ""
         self.card_search_suggestions: list[dict] = []
         self.card_search_full_results: list[dict] = []
-        self.card_search_result_limit = 20
+        self.card_search_result_limit = 8
         self.card_search_last_scores: list[float] = []
         self.card_search_has_executed = False
         self.card_search_request_id = 0
         self.card_search_no_close_match = False
         self.global_recommendations: list[RecommendedCard] = []
-        self._card_search_animations: list[QPropertyAnimation] = []
+        self._card_search_animations: list[QParallelAnimationGroup] = []
         self._card_search_workers: list[CardSearchWorker] = []
 
         self.cooldown_timer = QTimer(self)
@@ -558,6 +558,7 @@ class StudyTab(QWidget):
         self.card_search_label.setObjectName("SmallMeta")
         dropdown_layout.addWidget(self.card_search_label)
         self.card_search_list = QListWidget()
+        self.card_search_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.card_search_list.itemClicked.connect(self._card_search_suggestion_clicked)
         self.card_search_list.itemPressed.connect(self._card_search_suggestion_clicked)
         self.card_search_list.itemActivated.connect(self._card_search_suggestion_clicked)
@@ -610,6 +611,7 @@ class StudyTab(QWidget):
         self.card_scroll.setWidget(self.card_host)
         cards_layout.addWidget(self.card_scroll)
         self.card_empty_state = QWidget()
+        self.card_empty_state.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         empty_layout = QVBoxLayout(self.card_empty_state)
         empty_layout.setContentsMargins(56, 40, 56, 40)
         empty_layout.setSpacing(18)
@@ -903,19 +905,35 @@ class StudyTab(QWidget):
             row = QListWidgetItem(short_title)
             row.setToolTip(title)
             row.setData(Qt.UserRole, card)
+            row.setSizeHint(QSize(0, 40))
             self.card_search_list.addItem(row)
+        self._sync_card_search_list_height()
         has_items = self.card_search_list.count() > 0 and bool(query)
         self.card_search_dropdown.setVisible(has_items)
 
     def _card_search_suggestion_clicked(self, item: QListWidgetItem) -> None:
+        self.card_search_timer.stop()
+        self.card_search_dropdown.setVisible(False)
         card = item.data(Qt.UserRole) or {}
         title = str(card.get("title", "")).strip()
         if title:
             self.card_search_input.setText(title)
         self._execute_card_search()
 
+    def _sync_card_search_list_height(self) -> None:
+        count = min(5, self.card_search_list.count())
+        if count <= 0:
+            self.card_search_list.setMinimumHeight(0)
+            self.card_search_list.setMaximumHeight(16777215)
+            return
+        total_height = sum(max(self.card_search_list.sizeHintForRow(index), 40) for index in range(count))
+        total_height += self.card_search_list.frameWidth() * 2
+        self.card_search_list.setMinimumHeight(total_height)
+        self.card_search_list.setMaximumHeight(total_height)
+
     def _execute_card_search(self) -> None:
         query = self.card_search_input.text().strip()
+        self.card_search_timer.stop()
         self.card_search_dropdown.setVisible(False)
         if not query:
             self.card_search_query = ""
@@ -928,27 +946,26 @@ class StudyTab(QWidget):
             return
 
         cards = self._filtered_cards()
+        missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
+        if missing:
+            self._embed_remaining_cards_in_background(missing)
         self.card_search_query = query
         self.card_search_has_executed = True
-        self.card_search_result_limit = 20
-        scored_items: list[dict] = []
-        try:
-            semantic = self.embedding_service.search_cards_by_text(query, cards, max_results=max(20, len(cards)))
-            scored_items = [{"card": item.card, "score": float(item.score), "source": "semantic"} for item in semantic]
-        except Exception:
-            scored_items = []
-        if not scored_items:
-            fallback = self._fallback_text_search(query, cards)
-            scored_items = [{"card": card, "score": 0.0, "source": "fallback"} for card in fallback]
+        self.card_search_result_limit = 8
+        scored_items = self._build_card_search_results(
+            query,
+            cards,
+            self.embedding_service,
+            limit=max(8, len(cards)),
+        )
 
         self.card_search_full_results = [item["card"] for item in scored_items]
         self.card_search_last_scores = [float(item.get("score", 0.0)) for item in scored_items]
-        best_score = self.card_search_last_scores[0] if self.card_search_last_scores else 0.0
-        self.card_search_no_close_match = bool(cards) and best_score < 0.22
-        self._render_cards()
+        self.card_search_no_close_match = not bool(scored_items)
+        self._render_cards(animate_search_results=True)
 
     def _show_more_search_results(self) -> None:
-        self.card_search_result_limit += 20
+        self.card_search_result_limit += 8
         self._render_cards()
 
     def _cleanup_card_search_worker(self, worker: CardSearchWorker) -> None:
@@ -959,22 +976,148 @@ class StudyTab(QWidget):
 
     @staticmethod
     def _fallback_text_search(query: str, cards: list[dict]) -> list[dict]:
-        terms = [term for term in query.lower().split() if term]
-        if not terms:
+        normalized_query, terms = StudyTab._search_terms(query)
+        if not normalized_query:
             return []
 
-        def score(card: dict) -> tuple[int, int]:
-            haystack = " ".join(
-                [
-                    str(card.get("title", "")).lower(),
-                    str(card.get("question", "")).lower(),
-                    str(card.get("answer", "")).lower(),
-                ]
-            )
-            matches = sum(1 for term in terms if term in haystack)
-            return matches, len(haystack)
+        scored: list[tuple[tuple[float, int, int, int], dict]] = []
+        for card in cards:
+            lexical_score, matched = StudyTab._lexical_search_score(normalized_query, terms, card)
+            if not matched:
+                continue
+            title = str(card.get("title", "")).strip()
+            question = str(card.get("question", "")).strip()
+            scored.append(((lexical_score, -len(title), -len(question), -len(normalized_query)), card))
 
-        return sorted(cards, key=score, reverse=True)
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [card for _score, card in scored]
+
+    @staticmethod
+    def _search_terms(query: str) -> tuple[str, list[str]]:
+        raw_terms = re.findall(r"[a-z0-9]+", query.lower())
+        normalized_query = " ".join(raw_terms).strip()
+        if not normalized_query:
+            return "", []
+        stop_words = {
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "by",
+            "define",
+            "describe",
+            "did",
+            "do",
+            "does",
+            "explain",
+            "for",
+            "from",
+            "how",
+            "in",
+            "into",
+            "is",
+            "it",
+            "of",
+            "on",
+            "or",
+            "the",
+            "to",
+            "was",
+            "were",
+            "what",
+            "when",
+            "where",
+            "which",
+            "why",
+            "with",
+        }
+        filtered_terms = [term for term in raw_terms if len(term) > 2 and term not in stop_words]
+        if filtered_terms:
+            return normalized_query, filtered_terms
+        return normalized_query, raw_terms
+
+    @staticmethod
+    def _lexical_search_score(normalized_query: str, terms: list[str], card: dict) -> tuple[float, bool]:
+        title = " ".join(re.findall(r"[a-z0-9]+", str(card.get("title", "")).lower()))
+        question = " ".join(re.findall(r"[a-z0-9]+", str(card.get("question", "")).lower()))
+        answer = " ".join(re.findall(r"[a-z0-9]+", str(card.get("answer", "")).lower()))
+        search_terms = card.get("search_terms", [])
+        if not isinstance(search_terms, list):
+            search_terms = []
+        search_terms_text = " ".join(re.findall(r"[a-z0-9]+", " ".join(str(term) for term in search_terms).lower()))
+        title_exact = 1 if normalized_query and title == normalized_query else 0
+        title_phrase = 1 if normalized_query and normalized_query in title else 0
+        content_phrase = 1 if normalized_query and (normalized_query in question or normalized_query in answer or normalized_query in search_terms_text) else 0
+        title_hits = sum(1 for term in terms if term in title)
+        content_hits = sum(1 for term in terms if term in question or term in answer or term in search_terms_text)
+        full_title_term_match = 1 if terms and all(term in title for term in terms) else 0
+        full_content_term_match = 1 if terms and all(term in question or term in answer or term in search_terms_text for term in terms) else 0
+        matched = bool(
+            title_exact
+            or title_phrase
+            or content_phrase
+            or full_title_term_match
+            or full_content_term_match
+            or title_hits
+            or content_hits
+        )
+        if not matched:
+            return 0.0, False
+        term_count = max(1, len(terms))
+        score = (
+            (1.2 * title_exact)
+            + (0.95 * full_title_term_match)
+            + (0.7 * title_phrase)
+            + (0.45 * full_content_term_match)
+            + (0.4 * content_phrase)
+            + (0.32 * (title_hits / term_count))
+            + (0.18 * (content_hits / term_count))
+        )
+        return score, True
+
+    @classmethod
+    def _build_card_search_results(
+        cls,
+        query: str,
+        cards: list[dict],
+        embedding_service: EmbeddingService,
+        *,
+        limit: int,
+    ) -> list[dict]:
+        query = query.strip()
+        if not query:
+            return []
+
+        normalized_query, terms = cls._search_terms(query)
+        semantic_results: list[dict] = []
+        try:
+            semantic = embedding_service.search_cards_by_text(query, cards, max_results=max(limit, len(cards)))
+            best_score = float(semantic[0].score) if semantic else 0.0
+            if best_score >= SEMANTIC_SEARCH_MIN_SCORE:
+                score_floor = max(SEMANTIC_SEARCH_MIN_SCORE, best_score - SEMANTIC_SEARCH_SCORE_MARGIN)
+                ranked: list[tuple[tuple[float, float], dict]] = []
+                for item in semantic:
+                    score = float(item.score)
+                    if score < score_floor:
+                        continue
+                    lexical_score, _matched = cls._lexical_search_score(normalized_query, terms, item.card)
+                    ranked.append(((score + (lexical_score * 0.15), score), item.card))
+                ranked.sort(key=lambda item: item[0], reverse=True)
+                semantic_results = [
+                    {"card": card, "score": sort_key[1], "source": "semantic"}
+                    for sort_key, card in ranked[:limit]
+                ]
+        except Exception:
+            semantic_results = []
+
+        if semantic_results:
+            return semantic_results
+
+        fallback = cls._fallback_text_search(query, cards)[:limit]
+        return [{"card": card, "score": 0.0, "source": "fallback"} for card in fallback]
 
     @staticmethod
     def _fast_card_suggestions(query: str, cards: list[dict], limit: int = 5) -> list[dict]:
@@ -988,9 +1131,16 @@ class StudyTab(QWidget):
             title_lower = title.lower()
             question_lower = str(card.get("question", "")).lower()
             answer_lower = str(card.get("answer", "")).lower()
+            search_terms_lower = " ".join(
+                str(term).lower() for term in card.get("search_terms", []) if str(term).strip()
+            )
             prefix_hits = sum(1 for term in terms if title_lower.startswith(term))
             title_hits = sum(1 for term in terms if term in title_lower)
-            content_hits = sum(1 for term in terms if term in question_lower or term in answer_lower)
+            content_hits = sum(
+                1
+                for term in terms
+                if term in question_lower or term in answer_lower or term in search_terms_lower
+            )
             if prefix_hits == 0 and title_hits == 0 and content_hits == 0:
                 continue
             scored.append(((prefix_hits, title_hits, content_hits, -len(title_lower)), card))
@@ -1057,7 +1207,7 @@ class StudyTab(QWidget):
             self.recommendation_grid.addWidget(tile, row, col)
         self.recommendation_block.show()
 
-    def _render_cards(self) -> None:
+    def _render_cards(self, animate_search_results: bool = False) -> None:
         self._clear_grid()
         self._render_recommendations()
         self.card_scroll.show()
@@ -1068,11 +1218,11 @@ class StudyTab(QWidget):
         else:
             cards = self._filtered_cards()
 
-        if self.card_search_has_executed and self.card_search_no_close_match:
-            self._show_card_empty_state()
-            return
         if not cards:
-            empty_text = "No cards in this section yet." if not self.card_search_has_executed else "No matching cards found."
+            if self.card_search_has_executed:
+                self._show_card_empty_state()
+                return
+            empty_text = "No cards in this section yet."
             empty = QLabel(empty_text)
             empty.setObjectName("SectionText")
             empty.setAlignment(Qt.AlignCenter)
@@ -1100,7 +1250,7 @@ class StudyTab(QWidget):
             row = idx // columns
             col = idx % columns
             self.card_grid.addWidget(tile, row, col)
-            if self.card_search_has_executed:
+            if animate_search_results:
                 self._animate_card_tile(tile, idx)
         if self.card_search_has_executed and len(self.card_search_full_results) > len(cards):
             self.card_search_more_btn.show()
@@ -1108,7 +1258,8 @@ class StudyTab(QWidget):
     def _show_card_empty_state(self) -> None:
         image_path = self.datastore.paths.banners / "cards_search_empty_1x1.png"
         self.card_scroll.hide()
-        self.card_empty_state.setMinimumHeight(max(self.cards_surface.height() - 44, 520))
+        self.card_empty_state.setMinimumHeight(0)
+        self.card_empty_state.setMaximumHeight(16777215)
         if image_path.exists():
             pixmap = QPixmap(str(image_path))
             self.card_empty_image.setPixmap(pixmap.scaled(420, 420, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -1120,16 +1271,27 @@ class StudyTab(QWidget):
         self.card_empty_state.show()
 
     def _animate_card_tile(self, tile: QWidget, index: int) -> None:
+        end_pos = tile.pos()
+        start_pos = QPoint(end_pos.x(), end_pos.y() + 16)
+        tile.move(start_pos)
         effect = QGraphicsOpacityEffect(tile)
         effect.setOpacity(0.0)
         tile.setGraphicsEffect(effect)
-        animation = QPropertyAnimation(effect, b"opacity", tile)
-        animation.setDuration(760)
-        animation.setStartValue(0.0)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.OutQuart)
-        self._card_search_animations.append(animation)
-        QTimer.singleShot(index * 190, animation.start)
+        opacity = QPropertyAnimation(effect, b"opacity", tile)
+        opacity.setDuration(240)
+        opacity.setStartValue(0.0)
+        opacity.setEndValue(1.0)
+        opacity.setEasingCurve(QEasingCurve.OutCubic)
+        pop = QPropertyAnimation(tile, b"pos", tile)
+        pop.setDuration(280)
+        pop.setStartValue(start_pos)
+        pop.setEndValue(end_pos)
+        pop.setEasingCurve(QEasingCurve.OutBack)
+        group = QParallelAnimationGroup(tile)
+        group.addAnimation(opacity)
+        group.addAnimation(pop)
+        self._card_search_animations.append(group)
+        QTimer.singleShot(index * 38, group.start)
 
     def _move_card(self, card: dict) -> None:
         dialog = MoveCardDialog(card, self.datastore)
@@ -1429,9 +1591,10 @@ class StudyTab(QWidget):
         self.embedding_worker = None
         self._schedule_topic_cluster_refresh()
         self._refresh_global_recommendations()
+        if _cards and self.card_search_input.text().strip():
+            self._execute_card_search()
+            return
         self._render_cards()
-        if self.card_search_input.text().strip():
-            self.card_search_timer.start(10)
 
     def _set_followup_visible(self, visible: bool) -> None:
         self.followup_title.setVisible(visible)
@@ -1774,11 +1937,13 @@ class StudyTab(QWidget):
         self.followup_btn.setEnabled(False)
         if auto_prompt is None:
             self.followup_input.clear()
+        ai_settings = self.datastore.load_ai_settings()
         self.followup_worker = FollowUpWorker(
             ollama=self.ollama,
             model="gemma3:4b",
             prompt=prompt,
             context=context,
+            context_length=int(ai_settings.get("followup_context_length", 8192)),
         )
         self.followup_worker.chunk.connect(self.grade_feedback.setMarkdown)
         self.followup_worker.finished.connect(lambda: self.followup_btn.setEnabled(True))
