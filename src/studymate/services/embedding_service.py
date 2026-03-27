@@ -34,19 +34,25 @@ class EmbeddingService:
     @staticmethod
     def card_content_text(card: dict) -> str:
         hints = " | ".join(str(hint).strip() for hint in card.get("hints", []) if str(hint).strip())
+        search_terms = " | ".join(str(term).strip() for term in card.get("search_terms", []) if str(term).strip())
         parts = [
             str(card.get("title", "")).strip(),
             str(card.get("question", "")).strip(),
             hints,
+            search_terms,
             str(card.get("answer", "")).strip(),
-            str(card.get("subject", "")).strip(),
-            str(card.get("category", "")).strip(),
-            str(card.get("subtopic", "")).strip(),
         ]
         return "\n".join(part for part in parts if part)
 
+    def embedding_document_text(self, card: dict) -> str:
+        return f"search_document: {self.card_content_text(card)}"
+
+    @staticmethod
+    def embedding_query_text(query: str) -> str:
+        return f"search_query: {query.strip()}"
+
     def content_hash_for_card(self, card: dict) -> str:
-        text = self.card_content_text(card)
+        text = self.embedding_document_text(card)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def cache_key_for_card(self, card: dict) -> str:
@@ -77,7 +83,7 @@ class EmbeddingService:
         existing = self.get_card_record(card)
         if existing is not None:
             return existing
-        vector = self.ollama.embed_text(self.model_tag, self.card_content_text(card))
+        vector = self.ollama.embed_text(self.model_tag, self.embedding_document_text(card))
         record = EmbeddingRecord(
             cache_key=self.cache_key_for_card(card),
             card_id=str(card.get("id", "")),
@@ -141,7 +147,7 @@ class EmbeddingService:
     ) -> list[SimilarCard]:
         if not query.strip():
             return []
-        query_vector = self.ollama.embed_text(self.model_tag, query.strip())
+        query_vector = self.ollama.embed_text(self.model_tag, self.embedding_query_text(query))
         scored: list[SimilarCard] = []
         for card in cards:
             record = self.get_card_record(card)
