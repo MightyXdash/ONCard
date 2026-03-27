@@ -65,6 +65,21 @@ begin
   end;
 end;
 
+function IsSilentPatchFlow: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    if Uppercase(ParamStr(I)) = '/SILENTPATCH' then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
 function ShouldShowLaunchOption: Boolean;
 begin
   Result := not IsUpdateFlow;
@@ -72,5 +87,5 @@ end;
 
 function ShouldAutoLaunchAfterUpdate: Boolean;
 begin
-  Result := IsUpdateFlow;
+  Result := IsUpdateFlow and not IsSilentPatchFlow;
 end;

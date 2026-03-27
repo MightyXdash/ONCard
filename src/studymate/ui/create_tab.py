@@ -9,7 +9,6 @@ import uuid
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent, QPixmap, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -40,6 +38,7 @@ from studymate.services.files_to_cards_service import (
     files_to_cards_question_cap,
 )
 from studymate.services.ollama_service import OllamaService
+from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedToggle, polish_surface
 from studymate.ui.icon_helper import IconHelper
 from studymate.workers.autofill_worker import AutofillWorker
 from studymate.workers.embedding_worker import EmbeddingWorker
@@ -265,11 +264,11 @@ class SelectedFileRow(QWidget):
         actions_col.setContentsMargins(0, 0, 0, 0)
         actions_col.setSpacing(6)
 
-        self.preview_btn = QPushButton("Preview")
+        self.preview_btn = AnimatedButton("Preview")
         self.preview_btn.setObjectName("CompactGhostButton")
         self.preview_btn.setFixedSize(82, 28)
         self.preview_btn.clicked.connect(lambda: self.preview_requested.emit(self.path))
-        self.remove_btn = QPushButton("Remove")
+        self.remove_btn = AnimatedButton("Remove")
         self.remove_btn.setObjectName("CompactGhostButton")
         self.remove_btn.setFixedSize(82, 28)
         self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.path))
@@ -363,6 +362,7 @@ class CreateTab(QWidget):
     def _surface(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Surface")
+        polish_surface(frame)
         return frame
 
     def _build_ui(self) -> None:
@@ -391,7 +391,7 @@ class CreateTab(QWidget):
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
-        self.add_btn = QPushButton("Add question")
+        self.add_btn = AnimatedButton("Add question")
         self.add_btn.clicked.connect(self._enqueue_question)
         action_row.addWidget(self.add_btn)
         editor_layout.addLayout(action_row)
@@ -456,12 +456,12 @@ class CreateTab(QWidget):
 
         controls_row = QHBoxLayout()
         controls_row.setSpacing(12)
-        self.import_btn = QPushButton("Import files")
+        self.import_btn = AnimatedButton("Import files")
         self.import_btn.clicked.connect(self._browse_files)
         self.import_btn.setMinimumWidth(210)
         controls_row.addWidget(self.import_btn, 2)
 
-        self.mode_combo = QComboBox()
+        self.mode_combo = AnimatedComboBox()
         self.mode_combo.addItem("Standard", "standard")
         self.mode_combo.addItem("Force", "force")
         self.mode_combo.setItemData(
@@ -479,14 +479,14 @@ class CreateTab(QWidget):
         self.question_count.setMinimumWidth(120)
         controls_row.addWidget(self.question_count, 1)
 
-        self.generate_btn = QPushButton("Generate")
+        self.generate_btn = AnimatedButton("Generate")
         self.generate_btn.setObjectName("PrimaryButton")
         self.generate_btn.clicked.connect(self._start_files_to_cards)
         self.generate_btn.setEnabled(False)
         self.generate_btn.setMinimumWidth(180)
         controls_row.addWidget(self.generate_btn, 2)
 
-        self.stop_btn = QPushButton("Stop")
+        self.stop_btn = AnimatedButton("Stop")
         self.stop_btn.clicked.connect(self._stop_files_to_cards)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setMinimumWidth(140)
@@ -495,10 +495,13 @@ class CreateTab(QWidget):
         files_left.addWidget(controls_surface)
 
         toggle_row = QHBoxLayout()
-        toggle_row.setSpacing(12)
-        self.ocr_toggle = QPushButton("Use OCR (improves accuracy)")
-        self.ocr_toggle.setObjectName("FTCToggle")
-        self.ocr_toggle.setCheckable(True)
+        toggle_row.setSpacing(10)
+        self.ocr_label = QLabel("OCR")
+        self.ocr_label.setObjectName("SmallMeta")
+        toggle_row.addWidget(self.ocr_label, 0, Qt.AlignmentFlag.AlignLeft)
+        self.ocr_toggle = AnimatedToggle()
+        self.ocr_toggle.setObjectName("OcrSwitch")
+        self.ocr_toggle.setToolTip("OCR on")
         self.ocr_toggle.setChecked(True)
         self.ocr_toggle.toggled.connect(self._on_ocr_toggled)
         toggle_row.addWidget(self.ocr_toggle, 0, Qt.AlignmentFlag.AlignLeft)
@@ -528,11 +531,6 @@ class CreateTab(QWidget):
         self.instructions_edit.setMaximumHeight(84)
         self.instructions_edit.limited_text_changed.connect(self._on_instructions_changed)
         files_left.addWidget(self.instructions_edit)
-
-        instructions_note = QLabel("(Optional) Give me instructions on how the questions should be like. eg: questions should sound like if it was given by a strict teacher")
-        instructions_note.setObjectName("SmallMeta")
-        instructions_note.setWordWrap(True)
-        files_left.addWidget(instructions_note)
 
         files_sidebar = QFrame()
         files_sidebar.setObjectName("FTCControlsSurface")
@@ -829,6 +827,7 @@ class CreateTab(QWidget):
         self.import_btn.setEnabled(not locked)
         self.mode_combo.setEnabled(not locked)
         self.drop_zone.set_locked(locked)
+        self.ocr_label.setEnabled(not locked)
         self.ocr_toggle.setEnabled(not locked)
         self.ocr_toggle_hint.setEnabled(not locked)
         self.instructions_edit.setReadOnly(locked)
@@ -846,7 +845,7 @@ class CreateTab(QWidget):
 
     def _on_ocr_toggled(self, checked: bool) -> None:
         self.use_ocr = checked
-        self.ocr_toggle.setText("Use OCR (improves accuracy): On" if checked else "Use OCR (improves accuracy): Off")
+        self.ocr_toggle.setToolTip("OCR on" if checked else "OCR off")
         self.ocr_toggle_hint.setText(
             "Reads pages more literally, but can be slower."
             if checked
@@ -878,7 +877,7 @@ class CreateTab(QWidget):
         meta = QLabel(f"{source.path.name}\n{source.label}")
         meta.setObjectName("SmallMeta")
         meta.setWordWrap(True)
-        close_btn = QPushButton("Close")
+        close_btn = AnimatedButton("Close")
         close_btn.clicked.connect(dialog.accept)
 
         layout.addWidget(preview_area, 1)
@@ -899,6 +898,7 @@ class CreateTab(QWidget):
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
         self._refresh_files_to_cards_state()
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
+        self.use_ocr = bool(self.ocr_toggle.isChecked())
 
         job = FilesToCardsJob(
             run_id=run_id,
