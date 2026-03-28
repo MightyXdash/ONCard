@@ -39,7 +39,7 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
   Includes three levels of context awareness:  
   - **Global Awareness** – Uses predefined user data (e.g., name, age) to generate age-appropriate responses.  
   - **Self Attention** – Maintains short-term conversational context.  
-  - **Long-Term Short Memory (LTSM)** – Gradually learns user behavior over time to deliver more personalized interactions.
+  - **Long-Term Short Memories (LTSM)** – Gradually learns user behavior over time to deliver more personalized interactions.
 
 - **Memories**  
   Stores user-specific traits such as strengths, weaknesses, personality, and interests to enhance personalization.  
