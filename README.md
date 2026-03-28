@@ -26,7 +26,7 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
 - if you want help, just type a follow-up question and press enter for the teacher to explain it to you.
 
 <details>
-<summary><strong>🚀 Features for the Next Update</strong></summary>
+<summary><strong>🚀 Features for the Next Updates</strong></summary>
 
 > Ongoing improvements focused on introducing practical features and reducing overall application size for better performance and accessibility.
 
