@@ -5,12 +5,13 @@ import random
 import re
 import uuid
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize, QVariantAnimation
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGraphicsBlurEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -410,6 +411,8 @@ class StudyTab(QWidget):
     CARD_INITIAL_STREAM_BATCH = 8
     CARD_STREAM_BATCH_SIZE = 8
     CARD_SUGGESTION_DEBOUNCE_MS = 280
+    CARDS_TOOLBAR_CONTROL_HEIGHT = 40
+    CARDS_TOOLBAR_SHELL_HEIGHT = 50
 
     def __init__(
         self,
@@ -529,6 +532,7 @@ class StudyTab(QWidget):
         self.collapse_btn = AnimatedToolButton()
         self.collapse_btn.setObjectName("CollapseButton")
         self.collapse_btn.setText("<")
+        self.collapse_btn.setProperty("skipClickSfx", True)
         self.collapse_btn.clicked.connect(self._toggle_sidebar)
         side_head.addWidget(title)
         side_head.addStretch(1)
@@ -552,9 +556,11 @@ class StudyTab(QWidget):
         self.cards_sub_btn.setObjectName("TopNavButton")
         self.cards_sub_btn.setCheckable(True)
         self.cards_sub_btn.setChecked(True)
+        self.cards_sub_btn.setProperty("skipClickSfx", True)
         self.study_sub_btn = AnimatedButton("Study")
         self.study_sub_btn.setObjectName("TopNavButton")
         self.study_sub_btn.setCheckable(True)
+        self.study_sub_btn.setProperty("skipClickSfx", True)
         self.cards_sub_btn.clicked.connect(lambda: self._switch_mode(0))
         self.study_sub_btn.clicked.connect(lambda: self._switch_mode(1))
         subnav.addWidget(self.cards_sub_btn)
@@ -573,44 +579,73 @@ class StudyTab(QWidget):
 
     def _build_cards_view(self) -> QWidget:
         container = QWidget()
+        self.cards_view_overlay = container
+        self.cards_search_bar = None
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        search_bar = self._surface()
+        search_bar = QWidget()
+        self.cards_search_bar = search_bar
+        search_bar.setObjectName("CardsSearchRow")
         search_layout = QHBoxLayout(search_bar)
-        search_layout.setContentsMargins(14, 12, 14, 12)
+        search_layout.setContentsMargins(0, 0, 0, 0)
         search_layout.setSpacing(10)
 
+        self.card_search_shell = QFrame()
+        self.card_search_shell.setObjectName("SearchInputShell")
+        polish_surface(self.card_search_shell)
+        self.card_search_shell.setFixedHeight(self.CARDS_TOOLBAR_SHELL_HEIGHT)
+        search_shell_layout = QHBoxLayout(self.card_search_shell)
+        search_shell_layout.setContentsMargins(16, 5, 8, 5)
+        search_shell_layout.setSpacing(8)
+
         self.card_search_input = AnimatedLineEdit()
-        self.card_search_input.setObjectName("SearchInput")
-        self.card_search_input.setPlaceholderText("Search cards semantically...")
+        self.card_search_input.setObjectName("SearchInputField")
+        self.card_search_input.setPlaceholderText("Something like...")
         self.card_search_input.textChanged.connect(self._queue_card_search)
         self.card_search_input.returnPressed.connect(self._execute_card_search)
-        self.card_search_input.setTextMargins(0, 0, 36, 0)
+        self.card_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.card_search_input.installEventFilter(self)
-        self.card_search_btn = AnimatedToolButton(self.card_search_input)
+        self.card_search_btn = AnimatedToolButton()
+        self.card_search_btn.setObjectName("SearchInputButton")
         self.card_search_btn.setIcon(self._build_search_icon())
         self.card_search_btn.setIconSize(QSize(18, 18))
         self.card_search_btn.setCursor(Qt.PointingHandCursor)
-        self.card_search_btn.setStyleSheet("QToolButton { border: none; background: transparent; padding: 0px; }")
-        self.card_search_btn.setFixedSize(24, 24)
+        self.card_search_btn.setAutoRaise(True)
+        self.card_search_btn.setFixedSize(30, 30)
         self.card_search_btn.setToolTip("Search")
+        self.card_search_btn.setProperty("skipClickSfx", True)
         self.card_search_btn.clicked.connect(self._execute_card_search)
-        search_layout.addWidget(self.card_search_input, 1)
-        self._position_card_search_button()
+        search_shell_layout.addWidget(self.card_search_input, 1)
+        search_shell_layout.addWidget(self.card_search_btn, 0, Qt.AlignVCenter)
+        search_layout.addWidget(self.card_search_shell, 1)
+
+        actions_shell = QFrame()
+        actions_shell.setObjectName("CardsSearchActions")
+        polish_surface(actions_shell)
+        actions_shell.setFixedHeight(self.CARDS_TOOLBAR_SHELL_HEIGHT)
+        actions_shell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        actions_layout = QHBoxLayout(actions_shell)
+        actions_layout.setContentsMargins(5, 5, 5, 5)
+        actions_layout.setSpacing(6)
 
         self.start_cards_btn = AnimatedButton("Start")
+        self.start_cards_btn.setFixedHeight(self.CARDS_TOOLBAR_CONTROL_HEIGHT)
+        self.start_cards_btn.setProperty("skipClickSfx", True)
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
-        search_layout.addWidget(self.start_cards_btn)
+        actions_layout.addWidget(self.start_cards_btn)
         self.refresh_cards_btn = AnimatedButton("Refresh")
+        self.refresh_cards_btn.setFixedHeight(self.CARDS_TOOLBAR_CONTROL_HEIGHT)
         self.refresh_cards_btn.clicked.connect(lambda: self.reload_cards(force=True))
-        search_layout.addWidget(self.refresh_cards_btn)
+        actions_layout.addWidget(self.refresh_cards_btn)
+        search_layout.addWidget(actions_shell, 0)
         layout.addWidget(search_bar)
 
         self.card_search_dropdown = QFrame()
         self.card_search_dropdown.setObjectName("SearchSuggestionDropdown")
         polish_surface(self.card_search_dropdown)
+        self.card_search_dropdown.setParent(container)
         self.card_search_dropdown.setVisible(False)
         dropdown_layout = QVBoxLayout(self.card_search_dropdown)
         dropdown_layout.setContentsMargins(10, 10, 10, 10)
@@ -625,7 +660,6 @@ class StudyTab(QWidget):
         self.card_search_list.itemPressed.connect(self._card_search_suggestion_clicked)
         self.card_search_list.itemActivated.connect(self._card_search_suggestion_clicked)
         dropdown_layout.addWidget(self.card_search_list)
-        layout.addWidget(self.card_search_dropdown)
 
         self.cards_surface = self._surface()
         cards_layout = QVBoxLayout(self.cards_surface)
@@ -696,10 +730,12 @@ class StudyTab(QWidget):
         self.card_empty_state.hide()
         cards_layout.addWidget(self.card_empty_state)
         self.card_search_more_btn = AnimatedButton("See more")
+        self.card_search_more_btn.setProperty("skipClickSfx", True)
         self.card_search_more_btn.clicked.connect(self._show_more_cards)
         self.card_search_more_btn.hide()
         cards_layout.addWidget(self.card_search_more_btn, 0, Qt.AlignHCenter)
         layout.addWidget(self.cards_surface, 1)
+        self.cards_view_overlay.installEventFilter(self)
         return container
 
     def _build_search_icon(self) -> QIcon:
@@ -728,6 +764,7 @@ class StudyTab(QWidget):
 
         actions = QHBoxLayout()
         self.start_btn = AnimatedButton("Start")
+        self.start_btn.setProperty("skipClickSfx", True)
         self.start_btn.clicked.connect(self._open_start_dialog)
         self.refresh_study_btn = AnimatedButton("Refresh")
         self.refresh_study_btn.clicked.connect(lambda: self.reload_cards(force=True))
@@ -820,7 +857,7 @@ class StudyTab(QWidget):
 
     def _switch_mode(self, index: int) -> None:
         if self.mode_stack.currentIndex() != index:
-            self._play_sound("click")
+            self._play_sound("woosh")
         self.mode_stack.setCurrentIndex(index)
         self.cards_sub_btn.setChecked(index == 0)
         self.study_sub_btn.setChecked(index == 1)
@@ -964,8 +1001,19 @@ class StudyTab(QWidget):
     def eventFilter(self, watched, event) -> bool:
         if hasattr(self, "card_scroll") and watched is self.card_scroll.viewport() and event.type() == QEvent.Resize:
             self.card_layout_timer.start(60)
-        elif watched is self.card_search_input and event.type() == QEvent.Resize:
-            self._position_card_search_button()
+        elif (
+            hasattr(self, "cards_view_overlay")
+            and watched is self.cards_view_overlay
+            and event.type() in (QEvent.Resize, QEvent.Show)
+        ):
+            QTimer.singleShot(0, self._reposition_card_search_dropdown)
+        elif watched is self.card_search_input and event.type() in (QEvent.FocusIn, QEvent.FocusOut):
+            self.card_search_shell.setProperty("focusRing", event.type() == QEvent.FocusIn)
+            self.card_search_shell.style().unpolish(self.card_search_shell)
+            self.card_search_shell.style().polish(self.card_search_shell)
+            self.card_search_shell.update()
+            if event.type() == QEvent.FocusIn and self.card_search_list.count() > 0:
+                QTimer.singleShot(0, self._reposition_card_search_dropdown)
         return super().eventFilter(watched, event)
 
     def _rerender_cards_for_layout_change(self) -> None:
@@ -979,15 +1027,38 @@ class StudyTab(QWidget):
             return
         self._render_cards()
 
-    def _position_card_search_button(self) -> None:
-        if not hasattr(self, "card_search_btn") or not hasattr(self, "card_search_input"):
-            return
-        x_pos = self.card_search_input.width() - self.card_search_btn.width() - 10
-        y_pos = max(0, int((self.card_search_input.height() - self.card_search_btn.height()) / 2))
-        self.card_search_btn.move(x_pos, y_pos)
-
     def _set_card_search_dropdown_visible(self, visible: bool) -> None:
+        if visible:
+            self._reposition_card_search_dropdown()
+            self.card_search_dropdown.raise_()
+            if self.card_search_dropdown.isVisible():
+                self.card_search_dropdown.setMaximumHeight(16777215)
+                self.card_search_dropdown.updateGeometry()
+                self.card_search_dropdown.update()
+                return
+        elif not self.card_search_dropdown.isVisible():
+            return
         fade_widget_visibility(self.card_search_dropdown, visible)
+
+    def _reposition_card_search_dropdown(self) -> None:
+        if not hasattr(self, "cards_view_overlay") or self.cards_view_overlay is None:
+            return
+        search_bar = getattr(self, "cards_search_bar", None)
+        shell = getattr(self, "card_search_shell", None)
+        dropdown = getattr(self, "card_search_dropdown", None)
+        if search_bar is None or shell is None or dropdown is None:
+            return
+
+        top_left = search_bar.mapTo(self.cards_view_overlay, QPoint(shell.x(), shell.y() + shell.height() + 8))
+        width = max(shell.width(), 320)
+        max_width = max(320, self.cards_view_overlay.width() - top_left.x() - 4)
+        dropdown_width = min(width, max_width)
+        if dropdown_width <= 0:
+            return
+
+        dropdown.adjustSize()
+        dropdown_height = max(dropdown.sizeHint().height(), dropdown.minimumSizeHint().height())
+        dropdown.setGeometry(top_left.x(), top_left.y(), dropdown_width, dropdown_height)
 
     def activate_view(self) -> None:
         if not self.cards_loaded_once or self.cards_dirty:
@@ -1191,14 +1262,11 @@ class StudyTab(QWidget):
         if not scored_items:
             self._set_card_search_dropdown_visible(False)
             return
-        self._set_card_search_dropdown_visible(True)
         for index, item in enumerate(scored_items[:5]):
             if not isinstance(item, dict):
                 continue
-            QTimer.singleShot(
-                index * 38,
-                lambda payload=item, req=request_id, text=query: self._append_card_search_suggestion(req, text, payload),
-            )
+            self._append_card_search_suggestion(request_id, query, item)
+        self._set_card_search_dropdown_visible(self.card_search_list.count() > 0)
 
     def _append_card_search_suggestion(self, request_id: int, query: str, item: dict) -> None:
         if request_id != self.card_search_request_id or query != self.card_search_input.text().strip():
@@ -1212,7 +1280,7 @@ class StudyTab(QWidget):
         row.setSizeHint(QSize(0, 40))
         self.card_search_list.addItem(row)
         self._sync_card_search_list_height()
-        self._set_card_search_dropdown_visible(self.card_search_list.count() > 0)
+        self._reposition_card_search_dropdown()
 
     def _card_search_suggestion_clicked(self, item: QListWidgetItem) -> None:
         self.card_search_timer.stop()
@@ -1685,15 +1753,31 @@ class StudyTab(QWidget):
 
     def _animate_card_tile(self, tile: QWidget, index: int) -> None:
         end_pos = tile.pos()
-        start_pos = QPoint(end_pos.x(), end_pos.y() + 16)
+        start_pos = QPoint(end_pos.x(), end_pos.y() + 28)
         tile.move(start_pos)
+
+        blur = QGraphicsBlurEffect(tile)
+        blur.setBlurRadius(22.0)
+        blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
+        tile.setGraphicsEffect(blur)
+
         pop = QPropertyAnimation(tile, b"pos", tile)
         pop.setDuration(280)
         pop.setStartValue(start_pos)
         pop.setEndValue(end_pos)
-        pop.setEasingCurve(QEasingCurve.OutBack)
+        pop.setEasingCurve(QEasingCurve.OutCubic)
+
+        blur_anim = QVariantAnimation(tile)
+        blur_anim.setDuration(280)
+        blur_anim.setStartValue(22.0)
+        blur_anim.setEndValue(0.0)
+        blur_anim.setEasingCurve(QEasingCurve.OutCubic)
+        blur_anim.valueChanged.connect(lambda value, effect=blur: effect.setBlurRadius(float(value)))
+
         group = QParallelAnimationGroup(tile)
         group.addAnimation(pop)
+        group.addAnimation(blur_anim)
+        group.finished.connect(lambda current=tile, effect=blur: current.setGraphicsEffect(None) if current.graphicsEffect() is effect else None)
         self._card_search_animations.append(group)
         QTimer.singleShot(index * 38, group.start)
 
@@ -1742,7 +1826,7 @@ class StudyTab(QWidget):
             return
         dialog = StartStudyDialog(self._current_path_label(), len(pool))
         if dialog.exec():
-            self._play_sound("woosh")
+            self._play_sound("click")
             self._begin_session_pool(pool)
 
     def _begin_session_pool(self, pool: list[dict], first_card: dict | None = None) -> None:

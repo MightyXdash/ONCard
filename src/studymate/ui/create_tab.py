@@ -39,7 +39,7 @@ from studymate.services.files_to_cards_service import (
 )
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
-from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedToggle, polish_surface
+from studymate.ui.animated import AnimatedButton, AnimatedComboBox, polish_surface
 from studymate.ui.icon_helper import IconHelper
 from studymate.workers.autofill_worker import AutofillWorker
 from studymate.workers.embedding_worker import EmbeddingWorker
@@ -375,8 +375,6 @@ class CreateTab(QWidget):
         self._build_ui()
         ai_settings = self.datastore.load_ai_settings()
         self.use_ocr = bool(ai_settings.get("files_to_cards_ocr", True))
-        self.ocr_toggle.setChecked(self.use_ocr)
-        self._on_ocr_toggled(self.use_ocr)
 
     def _play_sound(self, name: str) -> None:
         parent = self.window()
@@ -417,6 +415,7 @@ class CreateTab(QWidget):
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         self.add_btn = AnimatedButton("Add question")
+        self.add_btn.setProperty("skipClickSfx", True)
         self.add_btn.clicked.connect(self._enqueue_question)
         action_row.addWidget(self.add_btn)
         editor_layout.addLayout(action_row)
@@ -506,6 +505,7 @@ class CreateTab(QWidget):
 
         self.generate_btn = AnimatedButton("Generate")
         self.generate_btn.setObjectName("PrimaryButton")
+        self.generate_btn.setProperty("skipClickSfx", True)
         self.generate_btn.clicked.connect(self._start_files_to_cards)
         self.generate_btn.setEnabled(False)
         self.generate_btn.setMinimumWidth(180)
@@ -518,23 +518,6 @@ class CreateTab(QWidget):
         controls_row.addWidget(self.stop_btn, 2)
         controls_layout.addLayout(controls_row)
         files_left.addWidget(controls_surface)
-
-        toggle_row = QHBoxLayout()
-        toggle_row.setSpacing(10)
-        self.ocr_label = QLabel("OCR")
-        self.ocr_label.setObjectName("SmallMeta")
-        toggle_row.addWidget(self.ocr_label, 0, Qt.AlignmentFlag.AlignLeft)
-        self.ocr_toggle = AnimatedToggle()
-        self.ocr_toggle.setObjectName("OcrSwitch")
-        self.ocr_toggle.setToolTip("OCR on")
-        self.ocr_toggle.setChecked(True)
-        self.ocr_toggle.toggled.connect(self._on_ocr_toggled)
-        toggle_row.addWidget(self.ocr_toggle, 0, Qt.AlignmentFlag.AlignLeft)
-        self.ocr_toggle_hint = QLabel("Reads pages more literally, but can be slower.")
-        self.ocr_toggle_hint.setObjectName("SmallMeta")
-        toggle_row.addWidget(self.ocr_toggle_hint)
-        toggle_row.addStretch(1)
-        files_left.addLayout(toggle_row)
 
         instructions_head = QHBoxLayout()
         instructions_head.setSpacing(10)
@@ -552,8 +535,8 @@ class CreateTab(QWidget):
 
         self.instructions_edit = LimitedTextEdit(180)
         self.instructions_edit.setPlaceholderText("Optional instructions")
-        self.instructions_edit.setMinimumHeight(68)
-        self.instructions_edit.setMaximumHeight(84)
+        self.instructions_edit.setMinimumHeight(96)
+        self.instructions_edit.setMaximumHeight(118)
         self.instructions_edit.limited_text_changed.connect(self._on_instructions_changed)
         files_left.addWidget(self.instructions_edit)
 
@@ -614,7 +597,6 @@ class CreateTab(QWidget):
         root.addWidget(editor_surface, 2)
         root.addWidget(queue_surface, 1)
 
-        self._on_ocr_toggled(self.ocr_toggle.isChecked())
         self._refresh_files_to_cards_state()
 
     def has_pending_work(self) -> bool:
@@ -855,9 +837,6 @@ class CreateTab(QWidget):
         self.import_btn.setEnabled(not locked)
         self.mode_combo.setEnabled(not locked)
         self.drop_zone.set_locked(locked)
-        self.ocr_label.setEnabled(not locked)
-        self.ocr_toggle.setEnabled(not locked)
-        self.ocr_toggle_hint.setEnabled(not locked)
         self.instructions_edit.setReadOnly(locked)
         self.instructions_edit.setEnabled(not locked)
         self.selected_files_list.setEnabled(not locked)
@@ -870,21 +849,6 @@ class CreateTab(QWidget):
 
     def _on_instructions_changed(self, text: str) -> None:
         self.instructions_count.setText(f"{len(text)} / 180")
-
-    def _on_ocr_toggled(self, checked: bool) -> None:
-        if self.ocr_toggle.isVisible() and self.ocr_toggle.isEnabled():
-            self._play_sound("click")
-        self.use_ocr = checked
-        self.ocr_toggle.setToolTip("OCR on" if checked else "OCR off")
-        self.ocr_toggle_hint.setText(
-            "Reads pages more literally, but can be slower."
-            if checked
-            else "OCR is off. Gemma will build the paper directly from the page visuals instead."
-        )
-        ai_settings = self.datastore.load_ai_settings()
-        if bool(ai_settings.get("files_to_cards_ocr", True)) != checked:
-            ai_settings["files_to_cards_ocr"] = checked
-            self.datastore.save_ai_settings(ai_settings)
 
     def _preview_source_file(self, path_str: str) -> None:
         source = next((item for item in self.selected_source_files if str(item.path) == path_str), None)
@@ -930,12 +894,12 @@ class CreateTab(QWidget):
         if total_units <= 0 or total_units > limit:
             return
 
-        self._play_sound("woosh")
+        self._play_sound("click")
         run_id = str(uuid.uuid4())
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
         self._refresh_files_to_cards_state()
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
-        self.use_ocr = bool(self.ocr_toggle.isChecked())
+        self.use_ocr = bool(self.datastore.load_ai_settings().get("files_to_cards_ocr", True))
         background_workers = max(1, min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)))
 
         job = FilesToCardsJob(

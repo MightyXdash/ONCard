@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QComboBox,
+    QGraphicsBlurEffect,
+    QLabel,
     QLineEdit,
     QListView,
     QPushButton,
@@ -41,6 +43,7 @@ def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) 
         widget.setVisible(visible)
         widget.setMaximumHeight(16777215)
         return
+
     animation = getattr(widget, "_height_animation", None)
     if animation is None:
         animation = QPropertyAnimation(widget, b"maximumHeight", widget)
@@ -60,11 +63,12 @@ def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) 
     widget._height_target_visible = visible  # type: ignore[attr-defined]
 
     if visible:
-        target_height = max(int(widget.sizeHint().height()), int(widget.height()), 1)
+        start_height = max(int(widget.height()), 0)
+        target_height = max(int(widget.sizeHint().height()), start_height, 1)
         widget._expanded_height = target_height  # type: ignore[attr-defined]
         widget.setVisible(True)
-        widget.setMaximumHeight(max(0, min(widget.maximumHeight(), target_height)))
-        animation.setStartValue(0 if widget.height() <= 0 else widget.height())
+        widget.setMaximumHeight(start_height)
+        animation.setStartValue(start_height)
         animation.setEndValue(target_height)
         animation.start()
         return
@@ -124,6 +128,7 @@ class AnimatedStackedWidget(QStackedWidget):
         super().__init__(*args, **kwargs)
         self._page_animation: QParallelAnimationGroup | None = None
         self._animating = False
+        self._transition_overlays: list[QLabel] = []
 
     def setCurrentIndex(self, index: int) -> None:
         current_index = self.currentIndex()
@@ -139,24 +144,67 @@ class AnimatedStackedWidget(QStackedWidget):
 
         direction = 1 if index > current_index else -1
         frame = self.rect()
-        current_rect = QRect(frame)
-        target_rect = QRect(frame.translated(direction * frame.width(), 0))
-        exit_rect = QRect(frame.translated(-direction * frame.width(), 0))
-
-        target.setGeometry(target_rect)
+        current.setGeometry(frame)
+        target.setGeometry(frame)
         target.show()
-        target.raise_()
+
+        current_pixmap = current.grab()
+        target_pixmap = target.grab()
+        target.hide()
+        current.raise_()
+
+        current_overlay = QLabel(self)
+        current_overlay.setPixmap(current_pixmap)
+        current_overlay.setScaledContents(True)
+        current_overlay.setGeometry(frame)
+        current_overlay.show()
+        current_overlay.raise_()
+
+        target_overlay = QLabel(self)
+        target_overlay.setPixmap(target_pixmap)
+        target_overlay.setScaledContents(True)
+        target_overlay.setGeometry(frame.translated(direction * frame.width(), 0))
+        target_overlay.show()
+        target_overlay.raise_()
+
+        current_blur = QGraphicsBlurEffect(current_overlay)
+        current_blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
+        current_blur.setBlurRadius(0.0)
+        current_overlay.setGraphicsEffect(current_blur)
+
+        target_blur = QGraphicsBlurEffect(target_overlay)
+        target_blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
+        target_blur.setBlurRadius(18.0)
+        target_overlay.setGraphicsEffect(target_blur)
+
+        self._transition_overlays = [current_overlay, target_overlay]
 
         group = QParallelAnimationGroup(self)
         for widget, start_rect, end_rect in (
-            (current, current_rect, exit_rect),
-            (target, target_rect, current_rect),
+            (current_overlay, QRect(frame), QRect(frame.translated(-direction * frame.width(), 0))),
+            (target_overlay, QRect(frame.translated(direction * frame.width(), 0)), QRect(frame)),
         ):
             animation = QPropertyAnimation(widget, b"geometry", self)
             animation.setDuration(180)
             animation.setEasingCurve(QEasingCurve.Type.OutCubic)
             animation.setStartValue(start_rect)
             animation.setEndValue(end_rect)
+            group.addAnimation(animation)
+
+        for overlay, effect, start_value, end_value in (
+            (current_overlay, current_blur, 0.0, 14.0),
+            (target_overlay, target_blur, 18.0, 0.0),
+        ):
+            animation = QVariantAnimation(self)
+            animation.setDuration(180)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            animation.setStartValue(start_value)
+            animation.setEndValue(end_value)
+            animation.valueChanged.connect(
+                lambda value, owner=overlay, blur_effect=effect: blur_effect.setBlurRadius(float(value))
+                if owner.graphicsEffect() is blur_effect
+                else None
+            )
             group.addAnimation(animation)
 
         self._page_animation = group
@@ -166,6 +214,10 @@ class AnimatedStackedWidget(QStackedWidget):
             super(AnimatedStackedWidget, self).setCurrentIndex(index)
             current.setGeometry(frame)
             target.setGeometry(frame)
+            for overlay in self._transition_overlays:
+                overlay.hide()
+                overlay.deleteLater()
+            self._transition_overlays = []
             self._animating = False
 
         group.finished.connect(_finish)

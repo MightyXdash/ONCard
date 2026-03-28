@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
-from studymate.ui.audio import UiSoundBank
+from studymate.ui.audio import ClickSoundFilter, UiSoundBank
 from studymate.ui.create_tab import CreateTab
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.settings_dialog import SettingsDialog
@@ -31,6 +31,10 @@ class MainWindow(QMainWindow):
         self.icons = icons
         self.preflight = preflight
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
+        self._click_sfx_filter = ClickSoundFilter(self.sounds, self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._click_sfx_filter)
         self._update_shutdown_requested = False
         self.setWindowTitle("ONCard")
         self._apply_initial_geometry()
@@ -68,12 +72,12 @@ class MainWindow(QMainWindow):
         self.create_btn.setObjectName("TopNavButton")
         self.create_btn.setCheckable(True)
         self.create_btn.setChecked(True)
-        self.create_btn.setIcon(self.icons.icon("create", "autofill_magic", "C"))
+        self.create_btn.setProperty("skipClickSfx", True)
 
         self.cards_btn = AnimatedButton("Cards")
         self.cards_btn.setObjectName("TopNavButton")
         self.cards_btn.setCheckable(True)
-        self.cards_btn.setIcon(self.icons.icon("study", "flashcard", "C"))
+        self.cards_btn.setProperty("skipClickSfx", True)
 
         self.create_btn.clicked.connect(lambda: self._play_and_switch(0))
         self.cards_btn.clicked.connect(lambda: self._play_and_switch(1))
@@ -91,11 +95,29 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(shell)
         self.statusBar().setSizeGripEnabled(False)
+        self._sync_nav_icons()
+
+    def _sync_nav_icons(self) -> None:
+        self.create_btn.setIcon(
+            self.icons.icon(
+                "create",
+                "autofill_magic_white" if self.create_btn.isChecked() else "autofill_magic",
+                "C",
+            )
+        )
+        self.cards_btn.setIcon(
+            self.icons.icon(
+                "study",
+                "flashcard_white" if self.cards_btn.isChecked() else "flashcard",
+                "C",
+            )
+        )
 
     def _switch_tab(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
         self.create_btn.setChecked(index == 0)
         self.cards_btn.setChecked(index == 1)
+        self._sync_nav_icons()
         if index == 1:
             self.study_tab.activate_view()
 
@@ -105,7 +127,6 @@ class MainWindow(QMainWindow):
         self._switch_tab(index)
 
     def _open_settings(self) -> None:
-        self.sounds.play("click")
         dialog = SettingsDialog(self.datastore, self.ollama, self.preflight, self)
         dialog.exec()
 

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import shutil
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractButton,
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -17,8 +15,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSlider,
     QSpinBox,
-    QTabBar,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -52,11 +50,11 @@ class SettingsDialog(QDialog):
         self._install_target_key = ""
         self._model_rows: dict[str, dict[str, object]] = {}
         self._sfx_ready = False
+        self._last_attention_value = 5
 
         self.setWindowTitle("Settings")
         self._apply_initial_geometry()
         self._build_ui()
-        self._install_click_sfx_hooks()
         self._load()
         self._sfx_ready = True
 
@@ -127,11 +125,26 @@ class SettingsDialog(QDialog):
         self.grade_combo = AnimatedComboBox()
         self.grade_combo.setEditable(True)
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
+        self.attention_slider = QSlider(Qt.Horizontal)
+        self.attention_slider.setRange(1, 10)
+        self.attention_slider.setSingleStep(1)
+        self.attention_slider.setPageStep(1)
+        self.attention_slider.setValue(5)
+        self.attention_slider.valueChanged.connect(self._on_attention_changed)
+        self.attention_value = QLabel("Attention span per question: 5 min")
+        self.attention_value.setObjectName("SectionText")
+        attention_shell = QWidget()
+        attention_layout = QVBoxLayout(attention_shell)
+        attention_layout.setContentsMargins(0, 0, 0, 0)
+        attention_layout.setSpacing(6)
+        attention_layout.addWidget(self.attention_value)
+        attention_layout.addWidget(self.attention_slider)
 
         form.addRow("Name", self.name_edit)
         form.addRow("Age", self.age_spin)
         form.addRow("Hobby/Interests", self.hobbies_edit)
         form.addRow("Grade", self.grade_combo)
+        form.addRow("Attention span", attention_shell)
 
         layout.addWidget(surface)
         layout.addStretch(1)
@@ -228,9 +241,11 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setRange(REINFORCEMENT_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
         self.reinforcement_ctx.setSingleStep(1024)
         self.reinforcement_ctx.setSuffix(" tokens")
+        self.ftc_ocr_checkbox = QCheckBox("Use OCR in Files To Cards")
 
         form.addRow("Follow-up context length", self.followup_ctx)
         form.addRow("Reinforcement context length", self.reinforcement_ctx)
+        form.addRow("Files To Cards OCR", self.ftc_ocr_checkbox)
         ai_layout.addLayout(form)
 
         minimum_note = QLabel(
@@ -354,12 +369,18 @@ class SettingsDialog(QDialog):
             self.grade_combo.addItem(grade)
         if grade:
             self.grade_combo.setCurrentText(grade)
+        attention_value = int(profile.get("attention_span_minutes", profile.get("question_focus_level", 5)) or 5)
+        attention_value = max(1, min(10, attention_value))
+        self.attention_slider.setValue(attention_value)
+        self._last_attention_value = attention_value
+        self._update_attention_label(attention_value)
 
         ai_settings = self.datastore.load_ai_settings()
         self.followup_ctx.setValue(max(FOLLOWUP_CONTEXT_MIN, int(ai_settings.get("followup_context_length", FOLLOWUP_CONTEXT_MIN))))
         self.reinforcement_ctx.setValue(
             max(REINFORCEMENT_CONTEXT_MIN, int(ai_settings.get("reinforcement_context_length", REINFORCEMENT_CONTEXT_MIN)))
         )
+        self.ftc_ocr_checkbox.setChecked(bool(ai_settings.get("files_to_cards_ocr", True)))
         setup = self.datastore.load_setup()
         performance = dict(setup.get("performance", {}))
         self.performance_mode.setCurrentIndex(0 if str(performance.get("mode", "auto")) == "auto" else 1)
@@ -376,11 +397,14 @@ class SettingsDialog(QDialog):
         profile["age"] = str(self.age_spin.value())
         profile["hobbies"] = self.hobbies_edit.text().strip()
         profile["grade"] = self.grade_combo.currentText().strip()
+        profile["attention_span_minutes"] = self.attention_slider.value()
+        profile["question_focus_level"] = self.attention_slider.value()
         self.datastore.save_profile(profile)
 
         ai_settings = self.datastore.load_ai_settings()
         ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
         ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
+        ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
         self.datastore.save_ai_settings(ai_settings)
 
         setup = self.datastore.load_setup()
@@ -394,37 +418,22 @@ class SettingsDialog(QDialog):
         self.datastore.save_setup(setup)
         self.accept()
 
-    def _install_click_sfx_hooks(self) -> None:
-        widgets = [self, *self.findChildren(QWidget)]
-        for widget in widgets:
-            if widget.property("_clickSfxHooked"):
-                continue
-            widget.setProperty("_clickSfxHooked", True)
-            widget.installEventFilter(self)
-
-    def _play_click_sound(self) -> None:
+    def _play_click_sound(self, *, volume_scale: float = 1.0) -> None:
         if not self._sfx_ready:
             return
         parent = self.parentWidget()
         sounds = getattr(parent, "sounds", None)
         if sounds is not None:
-            sounds.play("click")
+            sounds.play("click", volume_scale=volume_scale)
 
-    def eventFilter(self, watched, event) -> bool:
-        interactive = (
-            QAbstractButton,
-            QAbstractSpinBox,
-            QComboBox,
-            QLineEdit,
-            QTextEdit,
-            QTabBar,
-        )
-        if isinstance(watched, interactive):
-            if event.type() == QEvent.MouseButtonPress:
-                self._play_click_sound()
-            elif event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
-                self._play_click_sound()
-        return super().eventFilter(watched, event)
+    def _on_attention_changed(self, value: int) -> None:
+        if value != self._last_attention_value:
+            self._play_click_sound(volume_scale=1.25)
+        self._last_attention_value = value
+        self._update_attention_label(value)
+
+    def _update_attention_label(self, value: int) -> None:
+        self.attention_value.setText(f"Attention span per question: {value} min")
 
     def _refresh_model_status(self) -> None:
         snap = self.preflight.snapshot(force=True)

@@ -36,6 +36,20 @@ def app_stylesheet() -> str:
         border: 1px solid rgba(160, 176, 194, 0.48);
         border-radius: 18px;
     }
+    QFrame#CardsSearchActions {
+        background-color: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(167, 182, 199, 0.42);
+        border-radius: 19px;
+    }
+    QFrame#SearchInputShell {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(167, 182, 199, 0.42);
+        border-radius: 19px;
+    }
+    QFrame#SearchInputShell[focusRing="true"] {
+        border: 1px solid #7aa8dc;
+        background-color: #fcfeff;
+    }
     QFrame#SidebarSurface {
         background-color: rgba(247, 250, 252, 0.96);
         border: 1px solid rgba(167, 182, 199, 0.38);
@@ -597,12 +611,32 @@ def app_stylesheet() -> str:
         border-radius: 18px;
         padding: 12px;
     }
-    QLineEdit#SearchInput {
-        min-height: 48px;
-        padding: 12px 18px;
-        border-radius: 22px;
+    QLineEdit#SearchInputField {
+        min-height: 0px;
+        padding: 0px;
+        border: none;
+        border-radius: 0px;
+        background: transparent;
         font-size: 14px;
-        background-color: rgba(255, 255, 255, 0.98);
+        color: #16202b;
+    }
+    QLineEdit#SearchInputField:focus {
+        border: none;
+        background: transparent;
+    }
+    QToolButton#SearchInputButton {
+        background: transparent;
+        border: none;
+        border-radius: 15px;
+        padding: 0px;
+        min-width: 30px;
+        min-height: 30px;
+    }
+    QToolButton#SearchInputButton:hover {
+        background-color: rgba(235, 242, 248, 0.9);
+    }
+    QToolButton#SearchInputButton:pressed {
+        background-color: rgba(222, 232, 241, 0.95);
     }
     QScrollArea {
         background: transparent;
