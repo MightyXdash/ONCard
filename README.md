@@ -8,7 +8,7 @@ Elevate your learning experience.
 **Recomended Requirements (For an "okay" experience):**
 - i3 6100
 - 16GB DDR3
-- GTX 1070
+- RTX 2060 super
 
 ⚠️ _The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._ ⚠️
 # What is ONCards?
