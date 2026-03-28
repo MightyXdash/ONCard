@@ -5,9 +5,9 @@ Elevate your learning experience.
 
 
 
-**Recomended Requirements (For an "okay" experience):**
-- i3 6100
-- 16GB DDR3
+**Recomended Requirements (For a decent experience):**
+- i5 8100
+- 16GB DDR4
 - RTX 2060 super
 
 ⚠️ _The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._ ⚠️
@@ -34,9 +34,6 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
 
 ### 🔴 Important
 
-- **Neural Algorithm (NNA)**  
-  Replaces random question selection with an intelligent system. The study module will generate adaptive test samples and construct an optimized set of cards using a neural pipeline combining an LLM, embeddings, and heuristics.
-
 - **Discuss (AI Study Assistant)**  
   A dedicated AI assistant optimized for learning. Users can tag cards and ask follow-up questions for deeper understanding.  
   Includes three levels of context awareness:  
@@ -47,6 +44,8 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
 - **Memories**  
   Stores user-specific traits such as strengths, weaknesses, personality, and interests to enhance personalization.  
   *(Separate system from LTSM.)*
+  
+- Search bar commands such as ```/ai``` and ```/sett``` enable users to interact with the AI for assistance, system optimization, and configuration adjustments. Additional features and improvements will be introduced in future updates.
 
 
 
