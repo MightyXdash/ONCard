@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -99,31 +100,54 @@ def normalize_sources(
     source_family: str,
     run_dir: Path,
     on_status=None,
+    max_workers: int = 2,
 ) -> list[NormalizedPage]:
     rendered_dir = run_dir / "rendered"
     rendered_dir.mkdir(parents=True, exist_ok=True)
 
     pages: list[NormalizedPage] = []
     unit_index = 0
+    pool_workers = max(1, min(int(max_workers or 1), 4))
+
+    if source_family == "images":
+        jobs: list[tuple[int, Path, Path]] = []
+        for file_index, path in enumerate(files, start=1):
+            if on_status:
+                on_status(f"Preparing {path.name} ({file_index}/{len(files)})...")
+            unit_index += 1
+            output = rendered_dir / f"image_{unit_index:03d}.png"
+            jobs.append((unit_index, path, output))
+        with ThreadPoolExecutor(max_workers=pool_workers) as executor:
+            futures = [executor.submit(_normalize_image_file, path, output) for _index, path, output in jobs]
+            for future in futures:
+                future.result()
+        pages = [
+            NormalizedPage(
+                source_path=path,
+                family=source_family,
+                unit_index=index,
+                total_units=0,
+                label=path.name,
+                image_path=output,
+            )
+            for index, path, output in jobs
+        ]
+        total_units = len(pages)
+        return [
+            NormalizedPage(
+                source_path=page.source_path,
+                family=page.family,
+                unit_index=page.unit_index,
+                total_units=total_units,
+                label=page.label,
+                image_path=page.image_path,
+            )
+            for page in pages
+        ]
+
     for file_index, path in enumerate(files, start=1):
         if on_status:
             on_status(f"Preparing {path.name} ({file_index}/{len(files)})...")
-        if source_family == "images":
-            unit_index += 1
-            output = rendered_dir / f"image_{unit_index:03d}.png"
-            _normalize_image_file(path, output)
-            pages.append(
-                NormalizedPage(
-                    source_path=path,
-                    family=source_family,
-                    unit_index=unit_index,
-                    total_units=0,
-                    label=f"{path.name}",
-                    image_path=output,
-                )
-            )
-            continue
-
         if source_family == "pdf":
             document = QPdfDocument()
             if document.load(str(path)) != QPdfDocument.Error.None_:
@@ -145,20 +169,31 @@ def normalize_sources(
             continue
 
         slide_texts = _extract_pptx_slide_texts(path)
+        slide_jobs: list[tuple[int, int, str, Path]] = []
         for slide_number, slide_text in enumerate(slide_texts, start=1):
             unit_index += 1
             output = rendered_dir / f"pptx_{unit_index:03d}.png"
-            _render_slide_text_image(path.name, slide_number, slide_text, output)
-            pages.append(
+            slide_jobs.append((unit_index, slide_number, slide_text, output))
+        with ThreadPoolExecutor(max_workers=pool_workers) as executor:
+            futures = [
+                executor.submit(_render_slide_text_image, path.name, slide_number, slide_text, output)
+                for _index, slide_number, slide_text, output in slide_jobs
+            ]
+            for future in futures:
+                future.result()
+        pages.extend(
+            [
                 NormalizedPage(
                     source_path=path,
                     family=source_family,
-                    unit_index=unit_index,
+                    unit_index=index,
                     total_units=0,
                     label=f"{path.name} - slide {slide_number}",
                     image_path=output,
                 )
-            )
+                for index, slide_number, _slide_text, output in slide_jobs
+            ]
+        )
 
     total_units = len(pages)
     return [

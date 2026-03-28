@@ -52,6 +52,11 @@ class UpdateService:
             payload = response.json()
         except requests.RequestException as exc:
             raise UpdateError(f"Update check failed: {exc}") from exc
+        except ValueError as exc:
+            raise UpdateError(f"Update check failed: invalid release response: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            return None
 
         tag_name = str(payload.get("tag_name", "")).strip()
         if not tag_name:
@@ -79,14 +84,29 @@ class UpdateService:
 
     def _pick_installer_asset(self, assets: list[dict]) -> dict | None:
         for asset in assets:
-            name = str(asset.get("name", ""))
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name", "")).strip()
+            asset_url = str(asset.get("browser_download_url", "")).strip()
+            if not name or not self._is_valid_download_url(asset_url):
+                continue
             if name.lower().endswith(".exe") and INSTALLER_NAME_PREFIX.lower() in name.lower():
                 return asset
         for asset in assets:
-            name = str(asset.get("name", ""))
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name", "")).strip()
+            asset_url = str(asset.get("browser_download_url", "")).strip()
+            if not name or not self._is_valid_download_url(asset_url):
+                continue
             if name.lower().endswith(".exe"):
                 return asset
         return None
+
+    @staticmethod
+    def _is_valid_download_url(raw: str) -> bool:
+        parsed = urlparse(str(raw).strip())
+        return parsed.scheme == "https" and bool(parsed.netloc)
 
     def is_newer_version(self, current_version: str, latest_version: str) -> bool:
         try:
@@ -228,11 +248,14 @@ class UpdateService:
         return launcher_path
 
     def launch_helper(self, launcher_path: Path) -> None:
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher_path)],
-            cwd=str(launcher_path.parent),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher_path)],
+                cwd=str(launcher_path.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            raise UpdateError(f"Could not launch updater helper: {exc}") from exc
 
     def save_update_state(self, payload: dict) -> None:
         self.paths.update_state.parent.mkdir(parents=True, exist_ok=True)
@@ -259,9 +282,18 @@ class UpdateService:
             return {}
         latest_version = str(state.get("latest_version", ""))
         if not self.is_patch_update(current_version, latest_version):
+            self.clear_update_state()
             return {}
         installer_path = Path(str(state.get("installer_path", "")).strip()) if state.get("installer_path") else None
-        if installer_path is None or not installer_path.exists():
+        if installer_path is None or not installer_path.exists() or not self._is_managed_update_path(installer_path):
             self.clear_update_state()
             return {}
         return state
+
+    def _is_managed_update_path(self, path: Path) -> bool:
+        try:
+            return path.resolve().is_relative_to(self.paths.updates.resolve())
+        except AttributeError:
+            resolved = str(path.resolve())
+            prefix = str(self.paths.updates.resolve())
+            return resolved.startswith(prefix)

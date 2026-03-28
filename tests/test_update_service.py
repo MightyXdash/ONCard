@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from studymate.services.update_content import load_packaged_update_content
-from studymate.services.update_service import UpdateService
+from studymate.services.update_service import UpdateError, UpdateService
 from studymate.utils.paths import AppPaths
 
 
@@ -70,6 +70,24 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertEqual("- Point A\n- Point B", content.text2)
         self.assertTrue(content.banner1.exists())
         self.assertIsNotNone(content.banner2)
+
+    def test_load_ready_silent_patch_rejects_paths_outside_updates_dir(self) -> None:
+        rogue_installer = self.root / "rogue.exe"
+        rogue_installer.write_bytes(b"x")
+        self.service.save_update_state(
+            {
+                "pending_silent_install": True,
+                "latest_version": "1.0.1",
+                "installer_path": str(rogue_installer),
+            }
+        )
+        self.assertEqual({}, self.service.load_ready_silent_patch("1.0.0"))
+        self.assertEqual({}, self.service.load_update_state())
+
+    def test_launch_helper_raises_update_error_for_missing_script_parent(self) -> None:
+        launcher = self.root / "missing-dir" / "run_update.ps1"
+        with self.assertRaises(UpdateError):
+            self.service.launch_helper(launcher)
 
 
 if __name__ == "__main__":

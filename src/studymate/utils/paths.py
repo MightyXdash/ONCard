@@ -26,6 +26,7 @@ class AppPaths:
         self.assets = self.bundle_root / "assets"
         self.icons = self.assets / "icons"
         self.banners = self.assets / "banners"
+        self.startup_assets = self.assets / "startup"
         self.data = data_root or (root / "data")
         self.local_data = local_data_root or self.data
         self.config = self.data / "config"
@@ -39,7 +40,9 @@ class AppPaths:
         self.profile_config = self.config / "profile.json"
         self.ai_settings_config = self.config / "ai_settings.json"
         self.study_history_file = self.study_history / "attempts.json"
+        self.database_file = self.data / "oncard.sqlite"
         self.embedding_cache_file = self.runtime / "embedding_cache.json"
+        self.startup_video = self.startup_assets / "startup_loop.mp4"
         self.update_state = self.runtime / "update_state.json"
 
     @classmethod
@@ -96,6 +99,7 @@ class AppPaths:
                 self.icons / "study",
                 self.icons / "common",
                 self.banners,
+                self.startup_assets,
                 *paths_to_create,
             ]
 

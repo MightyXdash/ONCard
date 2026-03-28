@@ -44,6 +44,7 @@ class NnaServiceTests(unittest.TestCase):
         self.embedding_service = EmbeddingService(self.datastore, self.ollama)
 
     def tearDown(self) -> None:
+        self.datastore.close()
         self.tempdir.cleanup()
 
     def _card(self, card_id: str, topic: str) -> dict:

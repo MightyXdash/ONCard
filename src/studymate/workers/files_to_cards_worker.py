@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import time
 
 from PySide6.QtCore import QThread, Signal
 
@@ -30,6 +31,7 @@ class FilesToCardsJob:
     requested_questions: int
     custom_instructions: str
     use_ocr: bool
+    background_workers: int = 2
 
 
 class FilesToCardsWorker(QThread):
@@ -44,6 +46,7 @@ class FilesToCardsWorker(QThread):
         self.job = job
         self.ollama = ollama
         self.runtime_root = runtime_root
+        self._last_activity_emit_at: dict[str, float] = {}
 
     def run(self) -> None:
         try:
@@ -63,27 +66,24 @@ class FilesToCardsWorker(QThread):
             source_family=self.job.source_family,
             run_dir=run_dir,
             on_status=self._emit_status,
+            max_workers=self.job.background_workers,
         )
         self._ensure_running()
         if not normalized:
             raise RuntimeError("No usable pages or images were created from the selected files.")
 
         total_units = len(normalized)
-        source_text_parts: list[str] = []
         if self.job.use_ocr:
+            source_text_parts: list[str] = []
             self._emit_status("Gemma OCR is extracting page text...")
             for page in normalized:
                 self._ensure_running()
                 page_text = self._ocr_page(page)
                 source_text_parts.append(f"{page.label}\n{page_text}".strip())
+            paper = self._run_paper_stage(source_text_parts, total_units)
         else:
-            self._emit_status("OCR is off. Gemma Vision is reading the pages directly...")
-            for page in normalized:
-                self._ensure_running()
-                page_text = self._summarize_page_without_ocr(page)
-                source_text_parts.append(f"{page.label}\n{page_text}".strip())
-
-        paper = self._run_paper_stage(source_text_parts, total_units)
+            self._emit_status("OCR is off. Gemma Vision is building the paper directly from the pages...")
+            paper = self._run_vision_paper_stage(normalized)
         self._ensure_running()
         questions = self._run_gemma_stage(paper)
         self._ensure_running()
@@ -153,50 +153,177 @@ class FilesToCardsWorker(QThread):
             return "OCR this image to plaintext."
         return "OCR this document to plaintext."
 
-    def _summarize_page_without_ocr(self, page) -> str:
-        entry_key = f"{self.job.run_id}:vision:{page.unit_index}"
-        self._emit_status(f"Vision read {page.unit_index}/{page.total_units}: {page.label}")
-        parts: list[str] = []
-        for chunk in self.ollama.stream_chat(
-            model=MODELS["gemma3_4b"].primary_tag,
-            system_prompt=(
-                "You are reading study notes from an image without using strict OCR. "
-                "Describe only what is visibly present. "
-                "Write plain text notes that preserve headings, short formulas, definitions, and key facts. "
-                "Do not invent missing words or facts. "
-                "If something is unclear, say [unclear]."
-            ),
-            user_prompt=(
-                "Read this study page and turn it into plain text notes. "
-                "Keep it concise but capture the important visible content."
-            ),
-            image_paths=[str(page.image_path)],
-            temperature=0.1,
-            extra_options={
-                "num_ctx": 8192,
-                "repeat_last_n": 256,
-                "repeat_penalty": 1.2,
-            },
-            timeout=240,
-            should_stop=self.isInterruptionRequested,
-        ):
+    def _run_vision_paper_stage(self, pages: list[object]) -> str:
+        if not pages:
+            raise RuntimeError("No pages were available for the direct vision paper stage.")
+        batch_size = 4 if len(pages) <= 4 else 3
+        partial_papers: list[str] = []
+        total_batches = max(1, (len(pages) + batch_size - 1) // batch_size)
+        for batch_index, start in enumerate(range(0, len(pages), batch_size), start=1):
             self._ensure_running()
-            parts.append(chunk)
-            combined = "".join(parts)
-            self._emit_activity(
-                key=entry_key,
-                kind="reasoning",
-                title=f"Gemma Vision {page.unit_index}/{page.total_units}",
-                text=combined,
+            batch_pages = pages[start : start + batch_size]
+            partial_papers.append(
+                self._run_vision_paper_batch(
+                    batch_pages,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    total_units=len(pages),
+                )
             )
-        summary = cleanup_plain_text("".join(parts))
-        self._emit_activity(
-            key=f"{entry_key}:plain",
-            kind="markdown",
-            title=f"Vision Notes {page.unit_index}/{page.total_units}",
-            text=summary,
+        if len(partial_papers) == 1:
+            return partial_papers[0]
+        return self._merge_vision_papers(partial_papers, total_units=len(pages))
+
+    def _run_vision_paper_batch(
+        self,
+        pages: list[object],
+        *,
+        batch_index: int,
+        total_batches: int,
+        total_units: int,
+    ) -> str:
+        entry_key = f"{self.job.run_id}:vision-paper:{batch_index}"
+        batch_labels = "\n".join(f"- {page.label}" for page in pages)
+        image_paths = [str(page.image_path) for page in pages]
+        paper_buffer: list[str] = []
+        custom_block = self.job.custom_instructions.strip()
+        user_prompt = (
+            "Study the attached source pages directly and build revision material from what is visibly present.\n"
+            f"Batch: {batch_index}/{total_batches}\n"
+            f"Total inputs: {total_units}\n"
+            f"Mode: {self.job.mode}\n"
+            "OCR enabled: no\n"
+            "Return markdown with exactly these sections:\n"
+            "## Analysis\n"
+            "## Paper\n\n"
+            "The paper should be factual, cohesive, and useful for later flashcard generation.\n"
+            "Do not do literal OCR-style transcription. Summarize the visible study material directly.\n"
+            "If any text or diagram is hard to read, say [unclear] instead of inventing facts.\n"
+            "Attached page labels:\n"
+            f"{batch_labels}\n"
         )
-        return summary
+        if custom_block:
+            user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
+        self._emit_status(f"Gemma Vision is building paper section {batch_index}/{total_batches}...")
+
+        while True:
+            self._ensure_running()
+            paper_buffer.clear()
+            restart_requested = False
+            for chunk in self.ollama.stream_chat(
+                model=MODELS["gemma3_4b"].primary_tag,
+                system_prompt=(
+                    "You are an expert study-material synthesizer reading images directly. "
+                    "Use the visible content to write strong revision notes, not OCR transcripts. "
+                    "Do not loop or repeat the same word over and over. "
+                    "Use plain markdown headings only."
+                ),
+                user_prompt=user_prompt,
+                image_paths=image_paths,
+                temperature=0.15,
+                extra_options={
+                    "num_ctx": max(8192, paper_ctx_for_units(total_units)),
+                    "repeat_last_n": 256,
+                    "repeat_penalty": 1.2,
+                },
+                timeout=420,
+                should_stop=self.isInterruptionRequested,
+            ):
+                self._ensure_running()
+                paper_buffer.append(chunk)
+                combined = "".join(paper_buffer)
+                self._emit_activity(
+                    key=entry_key,
+                    kind="reasoning",
+                    title=f"Gemma Vision Paper {batch_index}/{total_batches}",
+                    text=combined,
+                )
+                if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
+                    restart_requested = True
+                    self._emit_status(f"Gemma repeated itself on vision batch {batch_index}. Restarting that batch...")
+                    break
+            if not restart_requested:
+                break
+
+        paper = _extract_paper("".join(paper_buffer))
+        if not paper.strip():
+            raise RuntimeError("Gemma did not return a paper section from the page visuals.")
+        self._emit_activity(
+            key=f"{entry_key}:paper",
+            kind="markdown",
+            title=f"Vision Paper {batch_index}/{total_batches}",
+            text=paper,
+        )
+        return paper
+
+    def _merge_vision_papers(self, partial_papers: list[str], *, total_units: int) -> str:
+        entry_key = f"{self.job.run_id}:vision-paper:merge"
+        merged_buffer: list[str] = []
+        custom_block = self.job.custom_instructions.strip()
+        sections = "\n\n".join(
+            f"### Vision batch {index}\n{paper}" for index, paper in enumerate(partial_papers, start=1)
+        )
+        user_prompt = (
+            "Combine the partial paper sections below into one final revision paper.\n"
+            f"Total inputs: {total_units}\n"
+            f"Mode: {self.job.mode}\n"
+            "OCR enabled: no\n"
+            "Return markdown with exactly these sections:\n"
+            "## Analysis\n"
+            "## Paper\n\n"
+            "The final paper must be between 750 and 2000 words, factual, cohesive, and helpful for later card generation.\n"
+            "If some content is ambiguous, say so briefly instead of inventing facts.\n"
+        )
+        if custom_block:
+            user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
+        user_prompt += f"\nPartial paper sections:\n{sections}\n"
+        self._emit_status("Merging direct-vision paper sections...")
+
+        while True:
+            self._ensure_running()
+            merged_buffer.clear()
+            restart_requested = False
+            for chunk in self.ollama.stream_chat(
+                model=MODELS["gemma3_4b"].primary_tag,
+                system_prompt=(
+                    "You are an expert study-material synthesizer. "
+                    "Merge overlapping study sections cleanly without losing key facts. "
+                    "Do not loop or repeat the same word over and over. "
+                    "Use plain markdown headings only."
+                ),
+                user_prompt=user_prompt,
+                temperature=0.2,
+                extra_options={"num_ctx": max(8192, paper_ctx_for_units(total_units))},
+                timeout=420,
+                should_stop=self.isInterruptionRequested,
+            ):
+                self._ensure_running()
+                merged_buffer.append(chunk)
+                combined = "".join(merged_buffer)
+                self._emit_activity(
+                    key=entry_key,
+                    kind="reasoning",
+                    title="Gemma Vision Paper Merge",
+                    text=combined,
+                )
+                if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
+                    restart_requested = True
+                    self._emit_status("Gemma repeated itself while merging the direct-vision paper. Restarting merge...")
+                    break
+            if not restart_requested:
+                break
+
+        paper = _extract_paper("".join(merged_buffer))
+        if not paper.strip():
+            raise RuntimeError("Gemma did not return a merged paper from the direct-vision batches.")
+        self._emit_activity(
+            key=f"{entry_key}:paper",
+            kind="markdown",
+            title="Vision Paper",
+            text=paper,
+        )
+        self._emit_status("Paper ready. Moving into question generation...")
+        return paper
 
     def _run_paper_stage(self, source_text_parts: list[str], total_units: int) -> str:
         paper_buffer: list[str] = []
@@ -357,6 +484,11 @@ class FilesToCardsWorker(QThread):
         self._emit_activity(kind="status", title="Files To Cards", text=text)
 
     def _emit_activity(self, *, kind: str, title: str, text: str, key: str | None = None) -> None:
+        throttle_key = key or f"{kind}:{title}"
+        now = time.monotonic()
+        if kind == "reasoning" and (now - self._last_activity_emit_at.get(throttle_key, 0.0)) < 0.12:
+            return
+        self._last_activity_emit_at[throttle_key] = now
         self.activity.emit(
             {
                 "run_id": self.job.run_id,
