@@ -16,10 +16,14 @@ def _bundle_dir() -> Path:
 
 
 def _find_inner_installer() -> Path | None:
-    candidates = sorted(_bundle_dir().glob("*.exe"))
-    if not candidates:
-        return None
-    return candidates[0]
+    bundle = _bundle_dir()
+    preferred = sorted(bundle.glob("ONCard-Installer-*.exe"))
+    if preferred:
+        return preferred[0]
+    candidates = sorted(bundle.glob("*.exe"))
+    if candidates:
+        return candidates[0]
+    return None
 
 
 def _show_error(message: str) -> None:
