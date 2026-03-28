@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import shutil
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSpinBox,
+    QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QScrollArea,
     QSpinBox,
+    QTabBar,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -19,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.services.data_store import DataStore
+from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.model_registry import MODELS, ModelSpec
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
@@ -35,18 +43,32 @@ MODEL_ROLE_COPY = {
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, datastore: DataStore, ollama: OllamaService, parent=None) -> None:
+    def __init__(self, datastore: DataStore, ollama: OllamaService, preflight: ModelPreflightService, parent=None) -> None:
         super().__init__(parent)
         self.datastore = datastore
         self.ollama = ollama
+        self.preflight = preflight
         self._install_worker: ModelInstallWorker | None = None
         self._install_target_key = ""
         self._model_rows: dict[str, dict[str, object]] = {}
+        self._sfx_ready = False
 
         self.setWindowTitle("Settings")
-        self.resize(860, 720)
+        self._apply_initial_geometry()
         self._build_ui()
+        self._install_click_sfx_hooks()
         self._load()
+        self._sfx_ready = True
+
+    def _apply_initial_geometry(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(860, 720)
+            return
+        available = screen.availableGeometry()
+        width = min(860, max(720, available.width() - 120))
+        height = min(720, max(560, available.height() - 120))
+        self.resize(width, height)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -60,6 +82,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_general_tab(), "General")
         self.tabs.addTab(self._build_ai_tab(), "AI")
+        self.tabs.addTab(self._build_performance_tab(), "Performance")
         root.addWidget(self.tabs, 1)
 
         actions = QHBoxLayout()
@@ -222,6 +245,53 @@ class SettingsDialog(QDialog):
         scroll.setWidget(host)
         return scroll
 
+    def _build_performance_tab(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        intro = QLabel("Control how aggressively ONCard warms caches, uses background workers, and handles motion.")
+        intro.setObjectName("SectionText")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        perf_surface = QFrame()
+        perf_surface.setObjectName("Surface")
+        polish_surface(perf_surface)
+        perf_layout = QFormLayout(perf_surface)
+        perf_layout.setContentsMargins(20, 20, 20, 20)
+        perf_layout.setHorizontalSpacing(16)
+        perf_layout.setVerticalSpacing(14)
+
+        self.performance_mode = AnimatedComboBox()
+        self.performance_mode.addItem("Auto", "auto")
+        self.performance_mode.addItem("Manual", "manual")
+        self.performance_mode.currentIndexChanged.connect(self._refresh_performance_mode)
+
+        self.startup_workers = QSpinBox()
+        self.startup_workers.setRange(1, 8)
+        self.background_workers = QSpinBox()
+        self.background_workers.setRange(1, 8)
+        self.warm_cache_checkbox = QCheckBox("Warm SQL, card, and vector caches during startup")
+        self.reduced_motion_checkbox = QCheckBox("Reduce motion and transition animations")
+
+        perf_layout.addRow("Mode", self.performance_mode)
+        perf_layout.addRow("Startup workers", self.startup_workers)
+        perf_layout.addRow("Background workers", self.background_workers)
+        perf_layout.addRow("Startup warmup", self.warm_cache_checkbox)
+        perf_layout.addRow("Reduced motion", self.reduced_motion_checkbox)
+
+        note = QLabel(
+            "Auto keeps ONCard on the recommended defaults. Manual lets you raise or lower the worker counts explicitly."
+        )
+        note.setObjectName("SmallMeta")
+        note.setWordWrap(True)
+        layout.addWidget(perf_surface)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return host
+
     def _build_model_row(self, spec: ModelSpec) -> dict[str, object]:
         container = QFrame()
         container.setObjectName("QueueRow")
@@ -290,6 +360,14 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setValue(
             max(REINFORCEMENT_CONTEXT_MIN, int(ai_settings.get("reinforcement_context_length", REINFORCEMENT_CONTEXT_MIN)))
         )
+        setup = self.datastore.load_setup()
+        performance = dict(setup.get("performance", {}))
+        self.performance_mode.setCurrentIndex(0 if str(performance.get("mode", "auto")) == "auto" else 1)
+        self.startup_workers.setValue(max(1, min(8, int(performance.get("startup_workers", 8) or 8))))
+        self.background_workers.setValue(max(1, min(8, int(performance.get("background_workers", 2) or 2))))
+        self.warm_cache_checkbox.setChecked(bool(performance.get("warm_cache_on_startup", True)))
+        self.reduced_motion_checkbox.setChecked(bool(performance.get("reduced_motion", False)))
+        self._refresh_performance_mode()
         self._refresh_model_status()
 
     def _save(self) -> None:
@@ -304,33 +382,60 @@ class SettingsDialog(QDialog):
         ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
         ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
         self.datastore.save_ai_settings(ai_settings)
+
+        setup = self.datastore.load_setup()
+        setup["performance"] = {
+            "mode": str(self.performance_mode.currentData() or "auto"),
+            "startup_workers": self.startup_workers.value(),
+            "background_workers": self.background_workers.value(),
+            "warm_cache_on_startup": self.warm_cache_checkbox.isChecked(),
+            "reduced_motion": self.reduced_motion_checkbox.isChecked(),
+        }
+        self.datastore.save_setup(setup)
         self.accept()
 
+    def _install_click_sfx_hooks(self) -> None:
+        widgets = [self, *self.findChildren(QWidget)]
+        for widget in widgets:
+            if widget.property("_clickSfxHooked"):
+                continue
+            widget.setProperty("_clickSfxHooked", True)
+            widget.installEventFilter(self)
+
+    def _play_click_sound(self) -> None:
+        if not self._sfx_ready:
+            return
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play("click")
+
+    def eventFilter(self, watched, event) -> bool:
+        interactive = (
+            QAbstractButton,
+            QAbstractSpinBox,
+            QComboBox,
+            QLineEdit,
+            QTextEdit,
+            QTabBar,
+        )
+        if isinstance(watched, interactive):
+            if event.type() == QEvent.MouseButtonPress:
+                self._play_click_sound()
+            elif event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+                self._play_click_sound()
+        return super().eventFilter(watched, event)
+
     def _refresh_model_status(self) -> None:
-        cli_installed = shutil.which("ollama") is not None
-        api_reachable = self.ollama.ping() if cli_installed else False
-        setup = self.datastore.load_setup()
-        saved_installed = dict(setup.get("installed_models", {}))
-
-        tag_lookup: set[str] | None = set()
-        error_text = ""
-        if cli_installed:
-            try:
-                tag_lookup = self.ollama.installed_tags()
-            except Exception as exc:
-                tag_lookup = None
-                error_text = str(exc)
-        else:
-            tag_lookup = None
-
-        if not cli_installed:
+        snap = self.preflight.snapshot(force=True)
+        if not snap.cli_available:
             self.ollama_status.setText("Ollama CLI was not found on this system.")
             self.ollama_hint.setText("Install Ollama first, then use this tab to install or refresh ONCard's models.")
-        elif tag_lookup is None:
+        elif snap.error and not snap.installed_tags:
             self.ollama_status.setText("Ollama is installed, but ONCard could not read live model tags right now.")
-            self.ollama_hint.setText(error_text or "Make sure Ollama is running, then refresh model status.")
+            self.ollama_hint.setText(snap.error or "Make sure Ollama is running, then refresh model status.")
         else:
-            api_text = "API reachable." if api_reachable else "API not responding yet."
+            api_text = "API reachable." if snap.api_reachable else "API not responding yet."
             self.ollama_status.setText(f"Ollama is installed. {api_text}")
             self.ollama_hint.setText("Model status below comes from the live Ollama tag list.")
 
@@ -339,19 +444,14 @@ class SettingsDialog(QDialog):
             row = self._model_rows[key]
             button = row["button"]
             status_label = row["status"]
-            is_installed = False
-            if tag_lookup is not None:
-                is_installed = any(tag in tag_lookup for tag in [spec.primary_tag, *spec.candidate_tags, spec.primary_tag.split(":")[0]])
-            else:
-                is_installed = bool(saved_installed.get(key, False))
-
-            if tag_lookup is None and cli_installed:
+            is_installed = snap.has_model(key)
+            if snap.error and not snap.installed_tags and snap.cli_available:
                 status_text = "Saved installed" if is_installed else "Status unavailable"
             else:
                 status_text = "Installed" if is_installed else "Not installed"
             status_label.setText(status_text)
             button.setText("Reinstall" if is_installed else "Install")
-            button.setEnabled(cli_installed and not installing)
+            button.setEnabled(snap.cli_available and not installing)
 
     def _install_model(self, model_key: str) -> None:
         if self._install_worker and self._install_worker.isRunning():
@@ -396,6 +496,7 @@ class SettingsDialog(QDialog):
         updated_setup["installed_models"] = installed_models
         updated_setup["selected_models"] = selected_models
         self.datastore.save_setup(updated_setup)
+        self.preflight.invalidate()
 
         self._install_worker = None
         self._set_install_buttons_enabled(True)
@@ -420,6 +521,11 @@ class SettingsDialog(QDialog):
             button = row["button"]
             button.setEnabled(enabled and cli_installed)
         self.refresh_models_btn.setEnabled(enabled)
+
+    def _refresh_performance_mode(self) -> None:
+        manual = str(self.performance_mode.currentData() or "auto") == "manual"
+        self.startup_workers.setEnabled(manual)
+        self.background_workers.setEnabled(manual)
 
     def reject(self) -> None:
         if self._install_worker and self._install_worker.isRunning():

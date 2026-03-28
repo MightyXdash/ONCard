@@ -10,12 +10,19 @@ from PySide6.QtWidgets import QApplication, QStyle
 class IconHelper:
     def __init__(self, icons_root: Path) -> None:
         self.icons_root = icons_root
+        self._cache: dict[tuple[str, str, str], QIcon] = {}
 
     def icon(self, group: str, name: str, fallback_text: str = "?") -> QIcon:
+        cache_key = (group, name, fallback_text[:1].upper())
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         path = self.icons_root / group / f"{name}.png"
         if path.exists():
-            return QIcon(str(path))
-        return self._generated_icon(fallback_text[:1].upper())
+            icon = QIcon(str(path))
+        else:
+            icon = self._generated_icon(fallback_text[:1].upper())
+        self._cache[cache_key] = icon
+        return icon
 
     @staticmethod
     def std_icon(name: QStyle.StandardPixmap) -> QIcon:

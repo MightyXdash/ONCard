@@ -60,8 +60,7 @@ class EmbeddingService:
         return f"{card_id}:{self.content_hash_for_card(card)}:{self.model_tag}"
 
     def get_card_record(self, card: dict) -> EmbeddingRecord | None:
-        cache = self.datastore.load_embedding_cache()
-        record = cache.get(self.cache_key_for_card(card))
+        record = self.datastore.get_embedding_cache_record(self.cache_key_for_card(card))
         if not isinstance(record, dict):
             return None
         vector = record.get("vector")
@@ -77,7 +76,7 @@ class EmbeddingService:
         )
 
     def is_card_cached(self, card: dict) -> bool:
-        return self.get_card_record(card) is not None
+        return self.datastore.has_embedding_cache_record(self.cache_key_for_card(card))
 
     def ensure_card_embedding(self, card: dict) -> EmbeddingRecord:
         existing = self.get_card_record(card)

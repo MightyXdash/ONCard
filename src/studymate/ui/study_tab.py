@@ -5,7 +5,7 @@ import random
 import re
 import uuid
 
-from PySide6.QtCore import QEasingCurve, QEvent, QEventLoop, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QProgressBar,
-    QProgressDialog,
     QSizePolicy,
     QScrollArea,
     QStackedWidget,
@@ -34,6 +33,7 @@ from studymate.constants import SUBJECT_TAXONOMY
 from studymate.constants import SEMANTIC_SEARCH_MIN_SCORE, SEMANTIC_SEARCH_SCORE_MARGIN
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
+from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.services.recommendation_service import (
     RecommendedCard,
@@ -328,13 +328,12 @@ class SessionPrepWorker(QThread):
                     self.progress.emit(
                         self.session_id,
                         "seed",
-                        f"Embedding seed cards... ({index}/{total_seed}) {label}",
-                        index,
-                        total_seed,
-                        False,
-                    )
-                    self.embedding_service.ensure_card_embedding(card)
-                    self.msleep(25)
+                    f"Embedding seed cards... ({index}/{total_seed}) {label}",
+                    index,
+                    total_seed,
+                    False,
+                )
+                self.embedding_service.ensure_card_embedding(card)
                 self.progress.emit(self.session_id, "seed", "Seed cards are ready.", total_seed, total_seed, True)
 
             if self.isInterruptionRequested():
@@ -373,13 +372,23 @@ class TopicClusterWorker(QThread):
 class CardSearchWorker(QThread):
     finished = Signal(int, str, object)
 
-    def __init__(self, *, request_id: int, query: str, cards: list[dict], embedding_service: EmbeddingService, limit: int) -> None:
+    def __init__(
+        self,
+        *,
+        request_id: int,
+        query: str,
+        cards: list[dict],
+        embedding_service: EmbeddingService,
+        limit: int,
+        allow_semantic: bool,
+    ) -> None:
         super().__init__()
         self.request_id = request_id
         self.query = query
         self.cards = list(cards)
         self.embedding_service = embedding_service
         self.limit = limit
+        self.allow_semantic = allow_semantic
 
     def run(self) -> None:
         query = self.query.strip()
@@ -391,18 +400,29 @@ class CardSearchWorker(QThread):
             self.cards,
             self.embedding_service,
             limit=self.limit,
+            allow_semantic=self.allow_semantic,
         )
         self.finished.emit(self.request_id, query, scored)
 
 
 class StudyTab(QWidget):
     CARD_RENDER_BATCH_SIZE = 24
+    CARD_INITIAL_STREAM_BATCH = 8
+    CARD_STREAM_BATCH_SIZE = 8
+    CARD_SUGGESTION_DEBOUNCE_MS = 280
 
-    def __init__(self, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
+    def __init__(
+        self,
+        datastore: DataStore,
+        ollama: OllamaService,
+        icons: IconHelper,
+        preflight: ModelPreflightService | None = None,
+    ) -> None:
         super().__init__()
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
+        self.preflight = preflight or ModelPreflightService(datastore, ollama)
         self.current_subject = "All Subjects"
         self.current_category = "All"
         self.current_subtopic = "All"
@@ -426,10 +446,14 @@ class StudyTab(QWidget):
         self.followup_worker: FollowUpWorker | None = None
         self.embedding_worker: EmbeddingWorker | None = None
         self.reinforcement_worker: ReinforcementWorker | None = None
+        self.reinforcement_embedding_worker: EmbeddingWorker | None = None
         self.session_prep_worker: SessionPrepWorker | None = None
         self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
         self.session_prep_dialog: SessionPrepDialog | None = None
+        self.reinforcement_dialog: ReinforcementProgressDialog | None = None
+        self.pending_reinforcement_cards: list[dict] = []
+        self.pending_reinforcement_cluster_key = ""
         self.session_prep_remaining_cards: list[dict] = []
         self.pending_cluster_refresh = False
         self.last_grade_report: dict | None = None
@@ -444,10 +468,21 @@ class StudyTab(QWidget):
         self.card_search_request_id = 0
         self.card_search_no_close_match = False
         self.global_recommendations: list[RecommendedCard] = []
+        self._recommendation_signature: tuple[int, int] | None = None
         self._card_search_animations: list[QParallelAnimationGroup] = []
         self._card_search_workers: list[CardSearchWorker] = []
         self.queued_grade_indexes: list[int] = []
         self.active_queue_entry_index = -1
+        self.cards_dirty = True
+        self.cards_loaded_once = False
+        self._card_stream_generation = 0
+        self._card_stream_cards: list[dict] = []
+        self._card_stream_columns = 1
+        self._card_stream_tile_width = 336
+        self._card_stream_next_index = 0
+        self._card_stream_animate = False
+        self._last_render_layout_signature: tuple[int, int] | None = None
+        self._post_reload_generation = 0
 
         self.cooldown_timer = QTimer(self)
         self.cooldown_timer.timeout.connect(self._tick_hint_cooldown)
@@ -456,10 +491,19 @@ class StudyTab(QWidget):
         self.card_search_timer.timeout.connect(self._request_card_suggestions)
         self.card_layout_timer = QTimer(self)
         self.card_layout_timer.setSingleShot(True)
-        self.card_layout_timer.timeout.connect(self._render_cards)
+        self.card_layout_timer.timeout.connect(self._rerender_cards_for_layout_change)
+        self.card_stream_timer = QTimer(self)
+        self.card_stream_timer.setSingleShot(True)
+        self.card_stream_timer.timeout.connect(self._render_next_card_batch)
 
         self._build_ui()
         self.reload_cards()
+
+    def _play_sound(self, name: str) -> None:
+        parent = self.window()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play(name)
 
     def _surface(self, sidebar: bool = False) -> QFrame:
         frame = QFrame()
@@ -560,12 +604,13 @@ class StudyTab(QWidget):
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
         search_layout.addWidget(self.start_cards_btn)
         self.refresh_cards_btn = AnimatedButton("Refresh")
-        self.refresh_cards_btn.clicked.connect(self.reload_cards)
+        self.refresh_cards_btn.clicked.connect(lambda: self.reload_cards(force=True))
         search_layout.addWidget(self.refresh_cards_btn)
         layout.addWidget(search_bar)
 
         self.card_search_dropdown = QFrame()
-        self.card_search_dropdown.setObjectName("Surface")
+        self.card_search_dropdown.setObjectName("SearchSuggestionDropdown")
+        polish_surface(self.card_search_dropdown)
         self.card_search_dropdown.setVisible(False)
         dropdown_layout = QVBoxLayout(self.card_search_dropdown)
         dropdown_layout.setContentsMargins(10, 10, 10, 10)
@@ -574,6 +619,7 @@ class StudyTab(QWidget):
         self.card_search_label.setObjectName("SmallMeta")
         dropdown_layout.addWidget(self.card_search_label)
         self.card_search_list = QListWidget()
+        self.card_search_list.setObjectName("SearchSuggestionList")
         self.card_search_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.card_search_list.itemClicked.connect(self._card_search_suggestion_clicked)
         self.card_search_list.itemPressed.connect(self._card_search_suggestion_clicked)
@@ -684,7 +730,7 @@ class StudyTab(QWidget):
         self.start_btn = AnimatedButton("Start")
         self.start_btn.clicked.connect(self._open_start_dialog)
         self.refresh_study_btn = AnimatedButton("Refresh")
-        self.refresh_study_btn.clicked.connect(self.reload_cards)
+        self.refresh_study_btn.clicked.connect(lambda: self.reload_cards(force=True))
         actions.addStretch(1)
         actions.addWidget(self.start_btn)
         actions.addWidget(self.refresh_study_btn)
@@ -773,6 +819,8 @@ class StudyTab(QWidget):
         return container
 
     def _switch_mode(self, index: int) -> None:
+        if self.mode_stack.currentIndex() != index:
+            self._play_sound("click")
         self.mode_stack.setCurrentIndex(index)
         self.cards_sub_btn.setChecked(index == 0)
         self.study_sub_btn.setChecked(index == 1)
@@ -905,6 +953,7 @@ class StudyTab(QWidget):
         self._show_history_entry(self.current_history_index - 1)
 
     def _toggle_sidebar(self) -> None:
+        self._play_sound("click")
         self.sidebar_expanded = not self.sidebar_expanded
         width = 280 if self.sidebar_expanded else 88
         self.sidebar.setMinimumWidth(width)
@@ -919,6 +968,17 @@ class StudyTab(QWidget):
             self._position_card_search_button()
         return super().eventFilter(watched, event)
 
+    def _rerender_cards_for_layout_change(self) -> None:
+        if not self.cards_loaded_once:
+            return
+        metrics = self._compute_card_grid_metrics()
+        if metrics is None:
+            return
+        layout_signature = (metrics[0], metrics[1])
+        if layout_signature == self._last_render_layout_signature:
+            return
+        self._render_cards()
+
     def _position_card_search_button(self) -> None:
         if not hasattr(self, "card_search_btn") or not hasattr(self, "card_search_input"):
             return
@@ -929,13 +989,40 @@ class StudyTab(QWidget):
     def _set_card_search_dropdown_visible(self, visible: bool) -> None:
         fade_widget_visibility(self.card_search_dropdown, visible)
 
-    def reload_cards(self) -> None:
+    def activate_view(self) -> None:
+        if not self.cards_loaded_once or self.cards_dirty:
+            self.reload_cards(force=True)
+            return
+        if self.mode_stack.currentIndex() == 0 and self.card_grid.count() == 0 and self.cards:
+            self._render_cards()
+
+    def mark_cards_dirty(self) -> None:
+        self.cards_dirty = True
+        if self.isVisible():
+            QTimer.singleShot(0, lambda: self.reload_cards(force=True))
+
+    def reload_cards(self, force: bool = False) -> None:
+        if self.cards_loaded_once and not (force or self.cards_dirty):
+            return
         self.cards = self.datastore.list_all_cards()
-        self._refresh_global_recommendations()
+        self.cards_loaded_once = True
+        self.cards_dirty = False
         self._set_card_search_dropdown_visible(False)
         self._reset_card_render_limit()
-        self._refresh_subjects(self._card_counts_from_cards(self.cards))
+        self._refresh_subjects(self.datastore.card_counts_by_subject())
         self._render_cards()
+        self._post_reload_generation += 1
+        generation = self._post_reload_generation
+        QTimer.singleShot(120, lambda gen=generation: self._run_post_reload_tasks(gen))
+
+    def _run_post_reload_tasks(self, generation: int) -> None:
+        if generation != self._post_reload_generation or self.cards_dirty:
+            return
+        if self.preflight.semantic_search_available():
+            self._embed_remaining_cards_in_background(self.cards)
+        self._refresh_global_recommendations()
+        if self.mode_stack.currentIndex() == 0:
+            self._render_recommendations()
 
     @staticmethod
     def _card_counts_from_cards(cards: list[dict]) -> dict[str, int]:
@@ -977,7 +1064,42 @@ class StudyTab(QWidget):
                     )
                     category_item.addChild(subtopic_item)
         self.subject_tree.collapseAll()
-        self.subject_tree.setCurrentItem(all_item)
+        selected = self._find_subject_tree_item(
+            self.current_subject,
+            self.current_category,
+            self.current_subtopic,
+        )
+        self.subject_tree.setCurrentItem(selected or all_item)
+
+    def _find_subject_tree_item(self, subject: str, category: str, subtopic: str) -> QTreeWidgetItem | None:
+        for top_index in range(self.subject_tree.topLevelItemCount()):
+            item = self.subject_tree.topLevelItem(top_index)
+            match = self._match_subject_tree_item(item, subject, category, subtopic)
+            if match is not None:
+                return match
+        return None
+
+    def _match_subject_tree_item(
+        self,
+        item: QTreeWidgetItem | None,
+        subject: str,
+        category: str,
+        subtopic: str,
+    ) -> QTreeWidgetItem | None:
+        if item is None:
+            return None
+        payload = item.data(0, Qt.UserRole) or {}
+        if (
+            payload.get("subject", "All Subjects") == subject
+            and payload.get("category", "All") == category
+            and payload.get("subtopic", "All") == subtopic
+        ):
+            return item
+        for child_index in range(item.childCount()):
+            match = self._match_subject_tree_item(item.child(child_index), subject, category, subtopic)
+            if match is not None:
+                return match
+        return None
 
     def _current_path_label(self) -> str:
         parts = []
@@ -990,6 +1112,7 @@ class StudyTab(QWidget):
         return " / ".join(parts) if parts else "All Subjects"
 
     def _subject_clicked(self, item: QTreeWidgetItem) -> None:
+        self._play_sound("click")
         payload = item.data(0, Qt.UserRole) or {"subject": "All Subjects", "category": "All", "subtopic": "All"}
         self.current_subject = payload["subject"]
         self.current_category = payload["category"]
@@ -1024,6 +1147,7 @@ class StudyTab(QWidget):
         return filtered
 
     def _queue_card_search(self, text: str) -> None:
+        self.card_search_request_id += 1
         self.card_search_query = text
         self.card_search_has_executed = False if not text.strip() else self.card_search_has_executed
         self._set_card_search_dropdown_visible(False)
@@ -1036,17 +1160,24 @@ class StudyTab(QWidget):
             self.card_search_more_btn.hide()
             self._render_cards()
             return
-        self.card_search_timer.start(1000)
+        if len(text.strip()) < 2 or not self.card_search_input.hasFocus():
+            return
+        self.card_search_timer.start(self.CARD_SUGGESTION_DEBOUNCE_MS)
 
     def _request_card_suggestions(self) -> None:
         query = self.card_search_input.text().strip()
-        if not query:
+        if len(query) < 2 or not self.card_search_input.hasFocus():
             return
         cards = self._filtered_cards()
         if not cards:
             self._set_card_search_dropdown_visible(False)
             return
-        suggestions = self._fast_card_suggestions(query, cards, limit=5)
+        filters = self._search_scope_filters()
+        candidates = self.datastore.search_cards_fts(query, limit=16, **filters)
+        suggestions = self._fast_card_suggestions(query, candidates or cards, limit=5)
+        if self._should_hide_card_suggestions(query, suggestions):
+            self._set_card_search_dropdown_visible(False)
+            return
         self._on_card_suggestions_ready(self.card_search_request_id, query, suggestions)
 
     def _on_card_suggestions_ready(self, request_id: int, query: str, scored: object) -> None:
@@ -1057,20 +1188,31 @@ class StudyTab(QWidget):
         scored_items = scored if isinstance(scored, list) else []
         self.card_search_suggestions = [item.get("card", {}) for item in scored_items if isinstance(item, dict)]
         self.card_search_list.clear()
-        for item in scored_items[:5]:
+        if not scored_items:
+            self._set_card_search_dropdown_visible(False)
+            return
+        self._set_card_search_dropdown_visible(True)
+        for index, item in enumerate(scored_items[:5]):
             if not isinstance(item, dict):
                 continue
-            card = item.get("card", {})
-            title = str(card.get("title", "Untitled")).strip() or "Untitled"
-            short_title = title if len(title) <= 200 else f"{title[:197]}..."
-            row = QListWidgetItem(short_title)
-            row.setToolTip(title)
-            row.setData(Qt.UserRole, card)
-            row.setSizeHint(QSize(0, 40))
-            self.card_search_list.addItem(row)
+            QTimer.singleShot(
+                index * 38,
+                lambda payload=item, req=request_id, text=query: self._append_card_search_suggestion(req, text, payload),
+            )
+
+    def _append_card_search_suggestion(self, request_id: int, query: str, item: dict) -> None:
+        if request_id != self.card_search_request_id or query != self.card_search_input.text().strip():
+            return
+        card = item.get("card", {})
+        title = str(card.get("title", "Untitled")).strip() or "Untitled"
+        short_title = title if len(title) <= 200 else f"{title[:197]}..."
+        row = QListWidgetItem(short_title)
+        row.setToolTip(title)
+        row.setData(Qt.UserRole, card)
+        row.setSizeHint(QSize(0, 40))
+        self.card_search_list.addItem(row)
         self._sync_card_search_list_height()
-        has_items = self.card_search_list.count() > 0 and bool(query)
-        self._set_card_search_dropdown_visible(has_items)
+        self._set_card_search_dropdown_visible(self.card_search_list.count() > 0)
 
     def _card_search_suggestion_clicked(self, item: QListWidgetItem) -> None:
         self.card_search_timer.stop()
@@ -1079,6 +1221,7 @@ class StudyTab(QWidget):
         title = str(card.get("title", "")).strip()
         if title:
             self.card_search_input.setText(title)
+        self._play_sound("click")
         self._execute_card_search()
 
     def _sync_card_search_list_height(self) -> None:
@@ -1092,7 +1235,30 @@ class StudyTab(QWidget):
         self.card_search_list.setMinimumHeight(total_height)
         self.card_search_list.setMaximumHeight(total_height)
 
+    def _search_scope_filters(self) -> dict[str, str | None]:
+        return {
+            "subject": None if self.current_subject == "All Subjects" else self.current_subject,
+            "category": None if self.current_category == "All" else self.current_category,
+            "subtopic": None if self.current_subtopic == "All" else self.current_subtopic,
+        }
+
+    def _should_hide_card_suggestions(self, query: str, suggestions: list[dict]) -> bool:
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return True
+        if self.card_search_has_executed and query_lower == self.card_search_query.lower().strip():
+            return True
+        titles = [str(item.get("card", {}).get("title", "")).strip().lower() for item in suggestions if isinstance(item, dict)]
+        if any(title == query_lower for title in titles):
+            return True
+        if titles:
+            top_title = titles[0]
+            if len(query_lower) >= 5 and top_title.startswith(query_lower) and len(top_title) <= max(len(query_lower) + 6, int(len(query_lower) * 1.35)):
+                return True
+        return False
+
     def _execute_card_search(self) -> None:
+        self._play_sound("click")
         query = self.card_search_input.text().strip()
         self.card_search_timer.stop()
         self._set_card_search_dropdown_visible(False)
@@ -1107,25 +1273,42 @@ class StudyTab(QWidget):
             return
 
         cards = self._filtered_cards()
+        semantic_enabled = self.preflight.semantic_search_available()
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
-        if missing:
+        if semantic_enabled and missing:
             self._embed_remaining_cards_in_background(missing)
         self.card_search_query = query
         self.card_search_has_executed = True
         self.card_search_result_limit = 8
-        scored_items = self._build_card_search_results(
-            query,
-            cards,
-            self.embedding_service,
+        self.card_search_request_id += 1
+        worker = CardSearchWorker(
+            request_id=self.card_search_request_id,
+            query=query,
+            cards=cards,
+            embedding_service=self.embedding_service,
             limit=max(8, len(cards)),
+            allow_semantic=semantic_enabled,
         )
+        self.card_search_worker = worker
+        self._card_search_workers.append(worker)
+        worker.finished.connect(self._on_card_search_finished)
+        worker.finished.connect(lambda _req, _query, _scored, current=worker: self._cleanup_card_search_worker(current))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
-        self.card_search_full_results = [item["card"] for item in scored_items]
-        self.card_search_last_scores = [float(item.get("score", 0.0)) for item in scored_items]
+    def _on_card_search_finished(self, request_id: int, query: str, scored: object) -> None:
+        if request_id != self.card_search_request_id:
+            return
+        if query != self.card_search_input.text().strip():
+            return
+        scored_items = scored if isinstance(scored, list) else []
+        self.card_search_full_results = [item["card"] for item in scored_items if isinstance(item, dict) and isinstance(item.get("card"), dict)]
+        self.card_search_last_scores = [float(item.get("score", 0.0)) for item in scored_items if isinstance(item, dict)]
         self.card_search_no_close_match = not bool(scored_items)
         self._render_cards(animate_search_results=True)
 
     def _show_more_cards(self) -> None:
+        self._play_sound("click")
         if self.card_search_has_executed:
             self.card_search_result_limit += 8
         else:
@@ -1253,6 +1436,7 @@ class StudyTab(QWidget):
         embedding_service: EmbeddingService,
         *,
         limit: int,
+        allow_semantic: bool = True,
     ) -> list[dict]:
         query = query.strip()
         if not query:
@@ -1261,6 +1445,8 @@ class StudyTab(QWidget):
         normalized_query, terms = cls._search_terms(query)
         semantic_results: list[dict] = []
         try:
+            if not allow_semantic:
+                raise RuntimeError("semantic-disabled")
             semantic = embedding_service.search_cards_by_text(query, cards, max_results=max(limit, len(cards)))
             best_score = float(semantic[0].score) if semantic else 0.0
             if best_score >= SEMANTIC_SEARCH_MIN_SCORE:
@@ -1323,10 +1509,14 @@ class StudyTab(QWidget):
         )
 
     def _refresh_global_recommendations(self) -> None:
-        if len(self.cards) <= 60:
+        attempts = self.datastore.load_attempts()
+        signature = (len(self.cards), len(attempts))
+        if signature == self._recommendation_signature:
+            return
+        self._recommendation_signature = signature
+        if len(self.cards) <= 60 or not self.preflight.semantic_search_available():
             self.global_recommendations = []
             return
-        attempts = self.datastore.load_attempts()
         self.global_recommendations = build_global_recommendations(
             self.cards,
             attempts,
@@ -1374,7 +1564,56 @@ class StudyTab(QWidget):
             self.recommendation_grid.addWidget(tile, row, col)
         self.recommendation_block.show()
 
+    def _compute_card_grid_metrics(self) -> tuple[int, int] | None:
+        if not hasattr(self, "card_scroll"):
+            return None
+        available_width = max(self.card_scroll.viewport().width() - 8, 300)
+        min_width = 320
+        max_width = 460
+        spacing = self.card_grid.horizontalSpacing() or 18
+        columns = max(1, min(4, available_width // min_width))
+        tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        while tile_width < min_width and columns > 1:
+            columns -= 1
+            tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
+        tile_width = max(min_width, min(max_width, tile_width))
+        return columns, tile_width
+
+    def _add_card_tile(self, card: dict, index: int, *, columns: int, tile_width: int, animate: bool) -> None:
+        tile = CardTile(card)
+        tile.set_tile_width(tile_width)
+        tile.selected.connect(self._card_selected)
+        tile.move_requested.connect(self._move_card)
+        tile.remove_requested.connect(self._remove_card)
+        row = index // columns
+        col = index % columns
+        self.card_grid.addWidget(tile, row, col)
+        if animate:
+            self._animate_card_tile(tile, index)
+
+    def _render_next_card_batch(self) -> None:
+        if not self._card_stream_cards:
+            return
+        generation = self._card_stream_generation
+        start = self._card_stream_next_index
+        end = min(start + self.CARD_STREAM_BATCH_SIZE, len(self._card_stream_cards))
+        for index in range(start, end):
+            self._add_card_tile(
+                self._card_stream_cards[index],
+                index,
+                columns=self._card_stream_columns,
+                tile_width=self._card_stream_tile_width,
+                animate=self._card_stream_animate,
+            )
+        self._card_stream_next_index = end
+        if generation != self._card_stream_generation:
+            return
+        if self._card_stream_next_index < len(self._card_stream_cards):
+            self.card_stream_timer.start(0)
+
     def _render_cards(self, animate_search_results: bool = False) -> None:
+        self.card_stream_timer.stop()
+        self._card_stream_generation += 1
         self._clear_grid()
         self._render_recommendations()
         self.card_scroll.show()
@@ -1398,29 +1637,30 @@ class StudyTab(QWidget):
             self.card_grid.addWidget(empty, 0, 0, 1, 4)
             return
 
-        available_width = max(self.card_scroll.viewport().width() - 8, 300)
-        min_width = 320
-        max_width = 460
-        spacing = self.card_grid.horizontalSpacing() or 18
-        columns = max(1, min(4, available_width // min_width))
-        tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
-        while tile_width < min_width and columns > 1:
-            columns -= 1
-            tile_width = int((available_width - (spacing * max(columns - 1, 0))) / columns)
-        tile_width = max(min_width, min(max_width, tile_width))
+        metrics = self._compute_card_grid_metrics()
+        if metrics is None:
+            return
+        columns, tile_width = metrics
+        self._last_render_layout_signature = (columns, tile_width)
 
         self._card_search_animations = []
-        for idx, card in enumerate(cards):
-            tile = CardTile(card)
-            tile.set_tile_width(tile_width)
-            tile.selected.connect(self._card_selected)
-            tile.move_requested.connect(self._move_card)
-            tile.remove_requested.connect(self._remove_card)
-            row = idx // columns
-            col = idx % columns
-            self.card_grid.addWidget(tile, row, col)
-            if animate_search_results:
-                self._animate_card_tile(tile, idx)
+        self._card_stream_cards = list(cards)
+        self._card_stream_columns = columns
+        self._card_stream_tile_width = tile_width
+        self._card_stream_next_index = 0
+        self._card_stream_animate = animate_search_results
+        initial_batch = min(len(self._card_stream_cards), self.CARD_INITIAL_STREAM_BATCH)
+        for idx in range(initial_batch):
+            self._add_card_tile(
+                self._card_stream_cards[idx],
+                idx,
+                columns=columns,
+                tile_width=tile_width,
+                animate=animate_search_results,
+            )
+        self._card_stream_next_index = initial_batch
+        if self._card_stream_next_index < len(self._card_stream_cards):
+            self.card_stream_timer.start(0)
         if len(all_cards) > len(cards):
             if self.card_search_has_executed:
                 self.card_search_more_btn.setText(f"See more results ({len(cards)}/{len(all_cards)})")
@@ -1458,11 +1698,13 @@ class StudyTab(QWidget):
         QTimer.singleShot(index * 38, group.start)
 
     def _move_card(self, card: dict) -> None:
+        self._play_sound("click")
         dialog = MoveCardDialog(card, self.datastore)
         if dialog.exec():
-            self.reload_cards()
+            self.reload_cards(force=True)
 
     def _remove_card(self, card: dict) -> None:
+        self._play_sound("click")
         answer = QMessageBox.question(
             self,
             "Remove card",
@@ -1480,9 +1722,10 @@ class StudyTab(QWidget):
             QMessageBox.warning(self, "Remove failed", "Could not remove that card.")
             return
         self._remove_card_from_session(card)
-        self.reload_cards()
+        self.reload_cards(force=True)
 
     def _card_selected(self, card: dict) -> None:
+        self._play_sound("click")
         answer = QMessageBox.question(
             self,
             "Start from here",
@@ -1493,11 +1736,13 @@ class StudyTab(QWidget):
             self._begin_session_pool(self._filtered_cards(), first_card=card)
 
     def _open_start_dialog(self) -> None:
+        self._play_sound("click")
         pool = self._filtered_cards()
         if not pool:
             return
         dialog = StartStudyDialog(self._current_path_label(), len(pool))
         if dialog.exec():
+            self._play_sound("woosh")
             self._begin_session_pool(pool)
 
     def _begin_session_pool(self, pool: list[dict], first_card: dict | None = None) -> None:
@@ -1525,8 +1770,10 @@ class StudyTab(QWidget):
         seed_cards: list[dict] = []
         should_prepare_async = False
         if len(cards) > 5:
-            should_prepare_async = True
             self.study_state = build_session_state(cards, self._current_path_label())
+            if not self.preflight.semantic_search_available():
+                self.study_state.nna_enabled = False
+            should_prepare_async = bool(self.study_state.nna_enabled)
             seed_cards = [self.study_state.card_lookup[card_id] for card_id in self.study_state.seed_ids if card_id in self.study_state.card_lookup]
             if first_card is not None:
                 first_id = str(first_card.get("id", ""))
@@ -1721,6 +1968,10 @@ class StudyTab(QWidget):
             self._schedule_topic_cluster_refresh()
 
     def _ensure_seed_embeddings(self, cards: list[dict], dialog: SessionPrepDialog | None = None) -> bool:
+        if not self.preflight.semantic_search_available():
+            if dialog is not None:
+                dialog.update_step("seed", "Semantic warmup skipped because the embedding model is not installed.", True)
+            return True
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
         if not missing:
             if dialog is not None:
@@ -1728,33 +1979,22 @@ class StudyTab(QWidget):
                 QApplication.processEvents()
             return True
 
-        loop = QEventLoop(self)
-        result = {"ok": True}
-        worker = EmbeddingWorker(cards=missing, embedding_service=self.embedding_service)
-        self.embedding_worker = worker
-
-        def on_progress(label: str, index: int, total: int) -> None:
-            if dialog is not None:
-                dialog.update_step("seed", f"Embedding seed cards... ({index}/{total}) {label}", False)
-                QApplication.processEvents()
-
-        def on_finished(_cards: list[dict]) -> None:
-            loop.quit()
-
-        def on_failed(message: str) -> None:
-            result["ok"] = False
-            QMessageBox.warning(self, "Embedding unavailable", message)
-            loop.quit()
-
-        worker.progress.connect(on_progress)
-        worker.finished.connect(on_finished)
-        worker.failed.connect(on_failed)
-        worker.start()
-        loop.exec()
-        self.embedding_worker = None
-        return bool(result["ok"])
+        total = len(missing)
+        try:
+            for index, card in enumerate(missing, start=1):
+                label = str(card.get("title") or card.get("question") or "Card").strip() or "Card"
+                if dialog is not None:
+                    dialog.update_step("seed", f"Embedding seed cards... ({index}/{total}) {label}", False)
+                    QApplication.processEvents()
+                self.embedding_service.ensure_card_embedding(card)
+        except Exception as exc:
+            QMessageBox.warning(self, "Embedding unavailable", str(exc))
+            return False
+        return True
 
     def _embed_remaining_cards_in_background(self, cards: list[dict]) -> None:
+        if not self.preflight.semantic_search_available():
+            return
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
         if not missing:
             self._schedule_topic_cluster_refresh()
@@ -1988,6 +2228,8 @@ class StudyTab(QWidget):
         entry = self._current_history_entry()
         if entry is None or not self.current_card:
             return False
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Grading"):
+            return False
         self._sync_current_entry_snapshot()
         user_answer = str(entry.get("answer_text", "")).strip()
         if not user_answer:
@@ -2090,6 +2332,8 @@ class StudyTab(QWidget):
     def _run_reinforcement(self, cluster_key: str) -> None:
         if not self.current_card or not self.study_state:
             return
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Reinforcement"):
+            return
         related_cards = self._cluster_cards(cluster_key)
         recent_incorrect = [
             attempt
@@ -2101,11 +2345,10 @@ class StudyTab(QWidget):
         ]
         ai_settings = self.datastore.load_ai_settings()
         dialog = ReinforcementProgressDialog(self.icons)
+        self.reinforcement_dialog = dialog
         dialog.show()
         QApplication.processEvents()
 
-        loop = QEventLoop(self)
-        result: dict[str, list[dict] | str] = {"cards": []}
         worker = ReinforcementWorker(
             ollama=self.ollama,
             weak_card=self.current_card,
@@ -2117,83 +2360,89 @@ class StudyTab(QWidget):
         )
         self.reinforcement_worker = worker
 
-        def on_progress(step_key: str, message: str, done: bool) -> None:
-            dialog.update_step(step_key, message, done)
-
-        def on_finished(cards: list[dict]) -> None:
-            result["cards"] = cards
-            loop.quit()
-
-        def on_failed(message: str) -> None:
-            result["error"] = message
-            loop.quit()
-
-        worker.progress.connect(on_progress)
-        worker.finished.connect(on_finished)
-        worker.failed.connect(on_failed)
+        worker.progress.connect(self._on_reinforcement_progress)
+        worker.finished.connect(self._on_reinforcement_finished)
+        worker.failed.connect(self._on_reinforcement_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
         worker.start()
-        loop.exec()
+        self.pending_reinforcement_cluster_key = cluster_key
+
+    def _on_reinforcement_progress(self, step_key: str, message: str, done: bool) -> None:
+        if self.reinforcement_dialog is not None:
+            self.reinforcement_dialog.update_step(step_key, message, done)
+
+    def _on_reinforcement_finished(self, cards: list[dict]) -> None:
         self.reinforcement_worker = None
-
-        if result.get("error"):
-            dialog.close()
-            QMessageBox.warning(self, "Reinforcement failed", str(result.get("error")))
+        temp_cards = list(cards or [])
+        self.pending_reinforcement_cards = temp_cards
+        if self.reinforcement_dialog is not None:
+            self.reinforcement_dialog.update_step("embedding", "Embedding temporary cards...", False)
+        if not temp_cards or not self.preflight.semantic_search_available():
+            self._finalize_reinforcement_cards()
             return
-
-        temp_cards = list(result.get("cards", []))
-        dialog.update_step("embedding", "Embedding temporary cards...", False)
-        if temp_cards and not self._ensure_temp_embeddings(temp_cards):
-            dialog.close()
-            return
-        dialog.update_step("embedding", "Embedding temporary cards...", True)
-
-        dialog.update_step("adding", "Adding to session...", False)
-        batch_id = str(uuid.uuid4())
-        for card in temp_cards:
-            card["temp_batch_id"] = batch_id
-        self.session_temp_batches[batch_id] = {"expected_count": len(temp_cards), "attempts": [], "card_ids": set()}
-        self.session_cards.extend(temp_cards)
-        queue_reinforcement_cards(self.study_state, temp_cards, cluster_key)
-        self._schedule_topic_cluster_refresh()
-        dialog.update_step("adding", "Adding to session...", True)
-        dialog.close()
-
-    def _ensure_temp_embeddings(self, cards: list[dict]) -> bool:
-        missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
+        missing = [card for card in temp_cards if not self.embedding_service.is_card_cached(card)]
         if not missing:
-            return True
-        progress = QProgressDialog("Embedding temporary cards...", None, 0, len(missing), self)
-        progress.setWindowTitle("Preparing reinforcement")
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)
-        progress.setValue(0)
-        progress.show()
-
-        loop = QEventLoop(self)
-        result = {"ok": True}
+            self._finalize_reinforcement_cards()
+            return
         worker = EmbeddingWorker(cards=missing, embedding_service=self.embedding_service)
-
-        def on_progress(label: str, index: int, total: int) -> None:
-            progress.setMaximum(total)
-            progress.setValue(index - 1)
-            progress.setLabelText(f"Embedding temporary cards... ({index}/{total})\n{label}")
-
-        def on_finished(_cards: list[dict]) -> None:
-            progress.setValue(progress.maximum())
-            loop.quit()
-
-        def on_failed(message: str) -> None:
-            result["ok"] = False
-            QMessageBox.warning(self, "Embedding unavailable", message)
-            loop.quit()
-
-        worker.progress.connect(on_progress)
-        worker.finished.connect(on_finished)
-        worker.failed.connect(on_failed)
+        self.reinforcement_embedding_worker = worker
+        worker.progress.connect(self._on_reinforcement_embedding_progress)
+        worker.finished.connect(self._on_reinforcement_embedding_finished)
+        worker.failed.connect(self._on_reinforcement_embedding_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
         worker.start()
-        loop.exec()
-        progress.close()
-        return bool(result["ok"])
+
+    def _on_reinforcement_failed(self, message: str) -> None:
+        self.reinforcement_worker = None
+        self.pending_reinforcement_cards = []
+        self.pending_reinforcement_cluster_key = ""
+        self._close_reinforcement_dialog()
+        QMessageBox.warning(self, "Reinforcement failed", message)
+
+    def _on_reinforcement_embedding_progress(self, label: str, index: int, total: int) -> None:
+        if self.reinforcement_dialog is not None:
+            self.reinforcement_dialog.update_step("embedding", f"Embedding temporary cards... ({index}/{total}) {label}", False)
+
+    def _on_reinforcement_embedding_finished(self, _cards: list[dict]) -> None:
+        self.reinforcement_embedding_worker = None
+        self._finalize_reinforcement_cards()
+
+    def _on_reinforcement_embedding_failed(self, message: str) -> None:
+        self.reinforcement_embedding_worker = None
+        self.pending_reinforcement_cards = []
+        self.pending_reinforcement_cluster_key = ""
+        self._close_reinforcement_dialog()
+        QMessageBox.warning(self, "Embedding unavailable", message)
+
+    def _finalize_reinforcement_cards(self) -> None:
+        dialog = self.reinforcement_dialog
+        if dialog is not None:
+            dialog.update_step("embedding", "Embedding temporary cards...", True)
+            dialog.update_step("adding", "Adding to session...", False)
+        temp_cards = list(self.pending_reinforcement_cards)
+        cluster_key = self.pending_reinforcement_cluster_key
+        self.pending_reinforcement_cards = []
+        self.pending_reinforcement_cluster_key = ""
+        if temp_cards and self.study_state is not None:
+            batch_id = str(uuid.uuid4())
+            for card in temp_cards:
+                card["temp_batch_id"] = batch_id
+            self.session_temp_batches[batch_id] = {"expected_count": len(temp_cards), "attempts": [], "card_ids": set()}
+            self.session_cards.extend(temp_cards)
+            queue_reinforcement_cards(self.study_state, temp_cards, cluster_key)
+            self._schedule_topic_cluster_refresh()
+        if dialog is not None:
+            dialog.update_step("adding", "Adding to session...", True)
+        self._close_reinforcement_dialog()
+
+    def _close_reinforcement_dialog(self) -> None:
+        if self.reinforcement_dialog is None:
+            return
+        self.reinforcement_dialog.close()
+        self.reinforcement_dialog.deleteLater()
+        self.reinforcement_dialog = None
 
     def _cluster_cards(self, cluster_key: str) -> list[dict]:
         if not self.study_state:
@@ -2239,6 +2488,8 @@ class StudyTab(QWidget):
         if self.followup_worker and self.followup_worker.isRunning():
             return
         if not self.current_card:
+            return
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Follow-up help"):
             return
         prompt = (auto_prompt or self.followup_input.toPlainText()).strip()
         if not prompt:

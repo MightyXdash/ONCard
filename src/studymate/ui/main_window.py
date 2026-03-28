@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from studymate.services.data_store import DataStore
+from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
 from studymate.ui.audio import UiSoundBank
@@ -14,17 +16,35 @@ from studymate.ui.study_tab import StudyTab
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, paths, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
+    def __init__(
+        self,
+        paths,
+        datastore: DataStore,
+        ollama: OllamaService,
+        icons: IconHelper,
+        preflight: ModelPreflightService,
+    ) -> None:
         super().__init__()
         self.paths = paths
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
+        self.preflight = preflight
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
         self._update_shutdown_requested = False
         self.setWindowTitle("ONCard")
-        self.resize(1600, 980)
+        self._apply_initial_geometry()
         self._build_ui()
+
+    def _apply_initial_geometry(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1600, 980)
+            return
+        available = screen.availableGeometry()
+        width = min(1600, max(980, available.width() - 64))
+        height = min(980, max(720, available.height() - 72))
+        self.resize(width, height)
 
     def _build_ui(self) -> None:
         shell = QWidget()
@@ -62,9 +82,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(nav)
 
         self.stack = AnimatedStackedWidget()
-        self.create_tab = CreateTab(self.datastore, self.ollama, self.icons)
-        self.study_tab = StudyTab(self.datastore, self.ollama, self.icons)
-        self.create_tab.card_saved.connect(self.study_tab.reload_cards)
+        self.create_tab = CreateTab(self.datastore, self.ollama, self.icons, self.preflight)
+        self.study_tab = StudyTab(self.datastore, self.ollama, self.icons, self.preflight)
+        self.create_tab.card_saved.connect(self.study_tab.mark_cards_dirty)
         self.stack.addWidget(self.create_tab)
         self.stack.addWidget(self.study_tab)
         layout.addWidget(self.stack, 1)
@@ -77,7 +97,7 @@ class MainWindow(QMainWindow):
         self.create_btn.setChecked(index == 0)
         self.cards_btn.setChecked(index == 1)
         if index == 1:
-            self.study_tab.reload_cards()
+            self.study_tab.activate_view()
 
     def _play_and_switch(self, index: int) -> None:
         if self.stack.currentIndex() != index:
@@ -85,7 +105,8 @@ class MainWindow(QMainWindow):
         self._switch_tab(index)
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.datastore, self.ollama, self)
+        self.sounds.play("click")
+        dialog = SettingsDialog(self.datastore, self.ollama, self.preflight, self)
         dialog.exec()
 
     def begin_update_shutdown(self) -> None:

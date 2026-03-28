@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import shutil
+import threading
+import time
+
+from PySide6.QtWidgets import QMessageBox, QWidget
+
+from studymate.services.data_store import DataStore
+from studymate.services.model_registry import MODELS
+from studymate.services.ollama_service import OllamaService
+
+
+@dataclass(frozen=True)
+class ModelPreflightSnapshot:
+    checked_at: str
+    cli_available: bool
+    api_reachable: bool
+    installed_tags: set[str]
+    installed_models: dict[str, bool]
+    error: str = ""
+
+    def has_model(self, model_key: str) -> bool:
+        spec = MODELS.get(model_key)
+        if spec is None:
+            return False
+        if any(tag in self.installed_tags for tag in [spec.primary_tag, *spec.candidate_tags, spec.primary_tag.split(":")[0]]):
+            return True
+        return bool(self.installed_models.get(model_key, False))
+
+
+class ModelPreflightService:
+    def __init__(self, datastore: DataStore, ollama: OllamaService, *, ttl_seconds: float = 6.0) -> None:
+        self.datastore = datastore
+        self.ollama = ollama
+        self.ttl_seconds = ttl_seconds
+        self._lock = threading.RLock()
+        self._cached_snapshot: ModelPreflightSnapshot | None = None
+        self._cached_at = 0.0
+
+    def snapshot(self, *, force: bool = False) -> ModelPreflightSnapshot:
+        with self._lock:
+            if not force and self._cached_snapshot is not None and (time.monotonic() - self._cached_at) <= self.ttl_seconds:
+                return self._cached_snapshot
+
+            cli_available = shutil.which("ollama") is not None
+            api_reachable = False
+            installed_tags: set[str] = set()
+            error = ""
+            if cli_available:
+                api_reachable = self.ollama.ping()
+                try:
+                    installed_tags = self.ollama.installed_tags()
+                except Exception as exc:
+                    error = str(exc)
+
+            setup = self.datastore.load_setup()
+            installed_models = dict(setup.get("installed_models", {}))
+            for key, spec in MODELS.items():
+                installed_models[key] = installed_models.get(key, False) or any(
+                    tag in installed_tags for tag in [spec.primary_tag, *spec.candidate_tags, spec.primary_tag.split(":")[0]]
+                )
+
+            if installed_models != dict(setup.get("installed_models", {})):
+                setup["installed_models"] = installed_models
+                self.datastore.save_setup(setup)
+
+            snapshot = ModelPreflightSnapshot(
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                cli_available=cli_available,
+                api_reachable=api_reachable,
+                installed_tags=installed_tags,
+                installed_models=installed_models,
+                error=error,
+            )
+            self._cached_snapshot = snapshot
+            self._cached_at = time.monotonic()
+            return snapshot
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cached_snapshot = None
+            self._cached_at = 0.0
+
+    def has_model(self, model_key: str, *, force: bool = False) -> bool:
+        return self.snapshot(force=force).has_model(model_key)
+
+    def semantic_search_available(self, *, force: bool = False) -> bool:
+        return self.has_model("nomic_embed_text_v2_moe", force=force)
+
+    def gemma_available(self, *, force: bool = False) -> bool:
+        return self.has_model("gemma3_4b", force=force)
+
+    def require_model(self, model_key: str, *, parent: QWidget | None, feature_name: str, force: bool = False) -> bool:
+        snap = self.snapshot(force=force)
+        if snap.has_model(model_key):
+            return True
+        spec = MODELS.get(model_key)
+        tag = spec.primary_tag if spec is not None else model_key
+        title = "Model required"
+        if not snap.cli_available:
+            message = (
+                f"{feature_name} needs Ollama and the `{tag}` model.\n\n"
+                "Install Ollama first, then open Settings > AI to install the model."
+            )
+        elif not snap.api_reachable and not snap.installed_tags:
+            message = (
+                f"{feature_name} needs the `{tag}` model, but ONCard could not reach Ollama right now.\n\n"
+                "Start Ollama, then open Settings > AI to install or refresh models."
+            )
+        else:
+            message = (
+                f"{feature_name} needs the `{tag}` model.\n\n"
+                "Open Settings > AI and install it before using this feature."
+            )
+        QMessageBox.information(parent, title, message)
+        return False

@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import uuid
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QMouseEvent, QPixmap, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QDialog,
@@ -37,6 +37,7 @@ from studymate.services.files_to_cards_service import (
     files_to_cards_limit,
     files_to_cards_question_cap,
 )
+from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedToggle, polish_surface
 from studymate.ui.icon_helper import IconHelper
@@ -293,6 +294,9 @@ class ActivityLogBrowser(QTextBrowser):
         super().__init__()
         self.entries: list[dict] = []
         self.setOpenExternalLinks(False)
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render)
 
     def add_entry(self, *, kind: str, title: str, text: str, key: str = "") -> None:
         if key:
@@ -301,14 +305,18 @@ class ActivityLogBrowser(QTextBrowser):
                     entry["kind"] = kind
                     entry["title"] = title
                     entry["text"] = text
-                    self._render()
+                    self._schedule_render()
                     return
         self.entries.append({"key": key, "kind": kind, "title": title, "text": text})
-        self._render()
+        self._schedule_render()
 
     def clear_log(self) -> None:
         self.entries = []
         self.clear()
+
+    def _schedule_render(self) -> None:
+        if not self._render_timer.isActive():
+            self._render_timer.start(60)
 
     def _render(self) -> None:
         blocks: list[str] = []
@@ -338,12 +346,19 @@ class ActivityLogBrowser(QTextBrowser):
 class CreateTab(QWidget):
     card_saved = Signal()
 
-    def __init__(self, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
+    def __init__(
+        self,
+        datastore: DataStore,
+        ollama: OllamaService,
+        icons: IconHelper,
+        preflight: ModelPreflightService | None = None,
+    ) -> None:
         super().__init__()
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
         self.embedding_service = EmbeddingService(datastore, ollama)
+        self.preflight = preflight or ModelPreflightService(datastore, ollama)
 
         self.autofill_worker: AutofillWorker | None = None
         self.pending_jobs: list[dict] = []
@@ -358,6 +373,16 @@ class CreateTab(QWidget):
         self._last_ftc_mode = "standard"
 
         self._build_ui()
+        ai_settings = self.datastore.load_ai_settings()
+        self.use_ocr = bool(ai_settings.get("files_to_cards_ocr", True))
+        self.ocr_toggle.setChecked(self.use_ocr)
+        self._on_ocr_toggled(self.use_ocr)
+
+    def _play_sound(self, name: str) -> None:
+        parent = self.window()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play(name)
 
     def _surface(self) -> QFrame:
         frame = QFrame()
@@ -603,6 +628,7 @@ class CreateTab(QWidget):
         question = self.question_input.toPlainText().strip()
         if not question:
             return
+        self._play_sound("click")
         item = QListWidgetItem(f"Queued  |  {self._short_label(question)}")
         item.setData(Qt.ItemDataRole.UserRole, {"run_id": "", "source": "manual"})
         self.queue_list.addItem(item)
@@ -613,6 +639,8 @@ class CreateTab(QWidget):
 
     def _process_next_question(self) -> None:
         if self.active_job is not None or not self.pending_jobs:
+            return
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Card generation"):
             return
 
         self.active_job = self.pending_jobs.pop(0)
@@ -844,13 +872,19 @@ class CreateTab(QWidget):
         self.instructions_count.setText(f"{len(text)} / 180")
 
     def _on_ocr_toggled(self, checked: bool) -> None:
+        if self.ocr_toggle.isVisible() and self.ocr_toggle.isEnabled():
+            self._play_sound("click")
         self.use_ocr = checked
         self.ocr_toggle.setToolTip("OCR on" if checked else "OCR off")
         self.ocr_toggle_hint.setText(
             "Reads pages more literally, but can be slower."
             if checked
-            else "OCR is off. Gemma will read the page visually instead."
+            else "OCR is off. Gemma will build the paper directly from the page visuals instead."
         )
+        ai_settings = self.datastore.load_ai_settings()
+        if bool(ai_settings.get("files_to_cards_ocr", True)) != checked:
+            ai_settings["files_to_cards_ocr"] = checked
+            self.datastore.save_ai_settings(ai_settings)
 
     def _preview_source_file(self, path_str: str) -> None:
         source = next((item for item in self.selected_source_files if str(item.path) == path_str), None)
@@ -888,17 +922,21 @@ class CreateTab(QWidget):
     def _start_files_to_cards(self) -> None:
         if not self.selected_source_files or self.ftc_run is not None:
             return
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Files To Cards"):
+            return
 
         total_units = sum(source.unit_count for source in self.selected_source_files)
         limit = files_to_cards_limit(self._current_mode())
         if total_units <= 0 or total_units > limit:
             return
 
+        self._play_sound("woosh")
         run_id = str(uuid.uuid4())
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
         self._refresh_files_to_cards_state()
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
         self.use_ocr = bool(self.ocr_toggle.isChecked())
+        background_workers = max(1, min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)))
 
         job = FilesToCardsJob(
             run_id=run_id,
@@ -908,6 +946,7 @@ class CreateTab(QWidget):
             requested_questions=self.question_count.value(),
             custom_instructions=self.instructions_edit.toPlainText().strip(),
             use_ocr=self.use_ocr,
+            background_workers=background_workers,
         )
         self.ftc_worker = FilesToCardsWorker(
             job=job,
@@ -1100,8 +1139,17 @@ class CreateTab(QWidget):
     def _start_embedding_worker(self) -> None:
         if self.embedding_worker is not None or not self.pending_embedding_cards:
             return
-        card = self.pending_embedding_cards.pop(0)
-        self.embedding_worker = EmbeddingWorker(cards=[card], embedding_service=self.embedding_service)
+        if not self.preflight.semantic_search_available():
+            self.pending_embedding_cards.clear()
+            return
+        background_workers = max(
+            1,
+            min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)),
+        )
+        batch_size = max(2, min(24, background_workers * 6))
+        batch = self.pending_embedding_cards[:batch_size]
+        self.pending_embedding_cards = self.pending_embedding_cards[batch_size:]
+        self.embedding_worker = EmbeddingWorker(cards=batch, embedding_service=self.embedding_service)
         self.embedding_worker.finished.connect(self._on_embedding_finished)
         self.embedding_worker.failed.connect(self._on_embedding_failed)
         self.embedding_worker.start()

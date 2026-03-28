@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import shutil
+import sqlite3
+from pathlib import Path
 
 from studymate.utils.paths import AppPaths
 
@@ -16,12 +18,27 @@ class BackupService:
         target = self.paths.backups / timestamp
         target.mkdir(parents=True, exist_ok=True)
 
-        for source_dir in [self.paths.config, self.paths.subjects, self.paths.study_history]:
+        for source_dir in [self.paths.config, self.paths.subjects, self.paths.study_history, self.paths.runtime]:
             if source_dir.exists():
                 dest_dir = target / source_dir.name
                 shutil.copytree(source_dir, dest_dir, dirs_exist_ok=True)
+        if self.paths.database_file.exists():
+            self._backup_sqlite_database(target / self.paths.database_file.name)
 
         backups = sorted([p for p in self.paths.backups.iterdir() if p.is_dir()])
         while len(backups) > self.keep_versions:
             to_remove = backups.pop(0)
             shutil.rmtree(to_remove, ignore_errors=True)
+
+    def _backup_sqlite_database(self, destination: Path) -> None:
+        temp_destination = destination.with_suffix(destination.suffix + ".tmp")
+        source = sqlite3.connect(str(self.paths.database_file))
+        try:
+            target = sqlite3.connect(str(temp_destination))
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+        temp_destination.replace(destination)

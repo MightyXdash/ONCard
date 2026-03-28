@@ -31,6 +31,11 @@ def app_stylesheet() -> str:
         border: 1px solid rgba(167, 182, 199, 0.42);
         border-radius: 26px;
     }
+    QFrame#SearchSuggestionDropdown {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(160, 176, 194, 0.48);
+        border-radius: 18px;
+    }
     QFrame#SidebarSurface {
         background-color: rgba(247, 250, 252, 0.96);
         border: 1px solid rgba(167, 182, 199, 0.38);
@@ -319,6 +324,11 @@ def app_stylesheet() -> str:
         border-radius: 14px;
         padding: 10px 12px;
         margin: 4px 0px;
+    }
+    QListWidget#SearchSuggestionList::item {
+        border-radius: 11px;
+        padding: 9px 12px;
+        margin: 3px 0px;
     }
     QListWidget::item:selected {
         background-color: #e3edf7;

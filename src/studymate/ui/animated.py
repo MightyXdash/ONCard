@@ -4,6 +4,7 @@ from PySide6.QtCore import Property, QEasingCurve, QParallelAnimationGroup, QPro
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QApplication,
     QComboBox,
     QLineEdit,
     QListView,
@@ -30,7 +31,16 @@ def polish_surface(widget: QWidget, *, sidebar: bool = False) -> None:
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
 
+def _reduced_motion_enabled() -> bool:
+    app = QApplication.instance()
+    return bool(app.property("reducedMotion")) if app is not None else False
+
+
 def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) -> None:
+    if _reduced_motion_enabled():
+        widget.setVisible(visible)
+        widget.setMaximumHeight(16777215)
+        return
     animation = getattr(widget, "_height_animation", None)
     if animation is None:
         animation = QPropertyAnimation(widget, b"maximumHeight", widget)
@@ -117,7 +127,7 @@ class AnimatedStackedWidget(QStackedWidget):
 
     def setCurrentIndex(self, index: int) -> None:
         current_index = self.currentIndex()
-        if self._animating or current_index < 0 or index == current_index:
+        if self._animating or current_index < 0 or index == current_index or _reduced_motion_enabled():
             super().setCurrentIndex(index)
             return
 
@@ -175,7 +185,7 @@ class _MotionMixin:
     def _init_motion(self) -> None:
         self._press_progress = 0.0
         self._press_animation = QVariantAnimation(self)
-        self._press_animation.setDuration(150)
+        self._press_animation.setDuration(1 if _reduced_motion_enabled() else 150)
         self._press_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._press_animation.valueChanged.connect(self._set_press_progress)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -283,22 +293,30 @@ class AnimatedToggle(QAbstractButton):
         super().__init__(parent)
         self._position = 0.0
         self._animation = QPropertyAnimation(self, b"position", self)
-        self._animation.setDuration(170)
+        self._animation.setDuration(1 if _reduced_motion_enabled() else 170)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFixedSize(46, 28)
         self.toggled.connect(self._animate_checked_state)
+        self.set_position(1.0 if self.isChecked() else 0.0)
 
     def sizeHint(self) -> QSize:
         return QSize(46, 28)
 
     def _animate_checked_state(self, checked: bool) -> None:
+        if _reduced_motion_enabled():
+            self.set_position(1.0 if checked else 0.0)
+            return
         self._animation.stop()
         self._animation.setStartValue(self._position)
         self._animation.setEndValue(1.0 if checked else 0.0)
         self._animation.start()
+
+    def setChecked(self, checked: bool) -> None:
+        super().setChecked(checked)
+        self.set_position(1.0 if checked else 0.0)
 
     def get_position(self) -> float:
         return self._position

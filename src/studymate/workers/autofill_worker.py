@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 import re
-import time
 
 from PySide6.QtCore import QThread, Signal
 
@@ -144,9 +143,7 @@ class AutofillWorker(QThread):
 
     def run(self) -> None:
         self.progress.emit("Analyzing your question...")
-        time.sleep(0.15)
         self.progress.emit("Planning card metadata...")
-        time.sleep(0.15)
         self.progress.emit("Generating JSON response with Gemma...")
         try:
             payload = generate_card_payload(
@@ -172,7 +169,6 @@ class AutofillWorker(QThread):
         ]
         for name, value in ordered_fields:
             self.progress.emit(f"Writing {name}...")
-            time.sleep(0.08)
             self.field.emit(name, value)
 
         self.done.emit(payload)

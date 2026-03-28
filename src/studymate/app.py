@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
@@ -10,18 +11,21 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from studymate.services.backup_service import BackupService
 from studymate.services.data_store import DataStore
+from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.model_registry import MODELS
 from studymate.services.update_content import load_packaged_update_content
 from studymate.services.ollama_service import OllamaService
-from studymate.services.update_service import ReleaseInfo, UpdateService
+from studymate.services.update_service import ReleaseInfo, UpdateError, UpdateService
 from studymate.theme import app_stylesheet
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
+from studymate.ui.startup_splash import StartupSplash
 from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog
 from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
 from studymate.workers.install_worker import ModelInstallWorker
+from studymate.workers.startup_warmup_worker import StartupWarmupWorker
 from studymate.workers.update_check_worker import UpdateCheckWorker
 from studymate.workers.update_download_worker import UpdateDownloadWorker
 
@@ -38,7 +42,14 @@ def run_app() -> int:
 
     fonts_dir = paths.assets / "fonts" / "NunitoSans"
     if fonts_dir.exists():
-        for font_path in fonts_dir.glob("*.ttf"):
+        preferred_fonts = [
+            "NunitoSans-Regular.ttf",
+            "NunitoSans-SemiBold.ttf",
+            "NunitoSans-Bold.ttf",
+            "NunitoSans-ExtraBold.ttf",
+        ]
+        selected_fonts = [fonts_dir / name for name in preferred_fonts if (fonts_dir / name).exists()]
+        for font_path in selected_fonts or list(fonts_dir.glob("*.ttf")):
             QFontDatabase.addApplicationFont(str(font_path))
     app.setFont(QFont("Nunito Sans", 10))
     app.setStyleSheet(app_stylesheet())
@@ -51,24 +62,81 @@ def run_app() -> int:
     datastore = DataStore(paths)
     backup_service = BackupService(paths)
     ollama = OllamaService()
+    preflight = ModelPreflightService(datastore, ollama)
     update_service = UpdateService(paths)
-
     setup = datastore.load_setup()
+    app.setProperty("reducedMotion", bool(setup.get("performance", {}).get("reduced_motion", False)))
+
+    splash = StartupSplash(video_path=paths.startup_video, app_icon=app_icon if app_icon.exists() else None)
+    splash.show()
+    app.processEvents()
+    _run_startup_warmup(app, splash, datastore, preflight)
+
     if not setup.get("onboarding_complete", False):
         wizard = OnboardingWizard(paths, datastore, ollama, icons)
         result = wizard.exec()
         if result == 0:
             return 0
 
-    window = MainWindow(paths, datastore, ollama, icons)
+    window = MainWindow(paths, datastore, ollama, icons, preflight)
+    app.aboutToQuit.connect(datastore.close)
     app.aboutToQuit.connect(backup_service.create_exit_backup)
     app.aboutToQuit.connect(lambda: _maybe_install_pending_silent_patch(update_service))
     window.show()
+    window.sounds.play("woosh")
 
     QTimer.singleShot(350, lambda: _notify_pending_silent_patch(window, update_service))
     QTimer.singleShot(500, lambda: _show_whats_new_if_needed(app, window, datastore, ollama, update_service, paths))
     QTimer.singleShot(1200, lambda: _check_for_updates(app, window, update_service))
     return app.exec()
+
+
+def _run_startup_warmup(
+    app: QApplication,
+    splash: StartupSplash,
+    datastore: DataStore,
+    preflight: ModelPreflightService,
+) -> None:
+    minimum_done = {"value": False}
+    worker_done = {"value": False}
+    finished_payload: dict[str, object] = {}
+
+    worker = StartupWarmupWorker(datastore, preflight)
+    app._oncard_startup_worker = worker  # type: ignore[attr-defined]
+    splash.update_progress("Preparing your library", "Loading SQL cache and warmup tasks...", 3)
+
+    def maybe_quit() -> None:
+        return
+
+    def on_progress(phase: str, status: str, value: int) -> None:
+        splash.update_progress(phase, status, value)
+
+    def on_finished(payload: object) -> None:
+        finished_payload["snapshot"] = payload
+        worker_done["value"] = True
+        maybe_quit()
+
+    def on_failed(message: str) -> None:
+        finished_payload["error"] = message
+        worker_done["value"] = True
+        maybe_quit()
+
+    worker.progress.connect(on_progress)
+    worker.finished.connect(on_finished)
+    worker.failed.connect(on_failed)
+    worker.start()
+    minimum_end = time.monotonic() + 3.0
+    while True:
+        app.processEvents()
+        if not minimum_done["value"] and time.monotonic() >= minimum_end:
+            minimum_done["value"] = True
+        if minimum_done["value"] and worker_done["value"]:
+            break
+        time.sleep(0.01)
+    splash.close()
+    app.processEvents()
+    if finished_payload.get("error"):
+        QMessageBox.warning(None, "Startup warmup", str(finished_payload["error"]))
 
 
 def _check_for_updates(app: QApplication, window: MainWindow, update_service: UpdateService) -> None:
@@ -109,18 +177,22 @@ def _download_update_and_install(
 
     def on_finished(path_str: str) -> None:
         progress.close()
-        installer_path = Path(path_str)
-        launcher = update_service.create_post_exit_launcher(installer_path, os.getpid(), silent=False)
-        update_service.save_update_state(
-            {
-                "current_version": APP_VERSION,
-                "latest_version": release.version,
-                "installer_path": str(installer_path),
-                "launcher_path": str(launcher),
-                "show_whats_new_for": release.version,
-            }
-        )
-        update_service.launch_helper(launcher)
+        try:
+            installer_path = Path(path_str)
+            launcher = update_service.create_post_exit_launcher(installer_path, os.getpid(), silent=False)
+            update_service.save_update_state(
+                {
+                    "current_version": APP_VERSION,
+                    "latest_version": release.version,
+                    "installer_path": str(installer_path),
+                    "launcher_path": str(launcher),
+                    "show_whats_new_for": release.version,
+                }
+            )
+            update_service.launch_helper(launcher)
+        except UpdateError as exc:
+            QMessageBox.warning(window, "Update failed", str(exc))
+            return
         window.begin_update_shutdown()
         QTimer.singleShot(0, app.quit)
 
@@ -199,7 +271,10 @@ def _maybe_install_pending_silent_patch(update_service: UpdateService) -> None:
     launcher = update_service.create_post_exit_launcher(installer_path, os.getpid(), silent=True)
     pending["launcher_path"] = str(launcher)
     update_service.save_update_state(pending)
-    update_service.launch_helper(launcher)
+    try:
+        update_service.launch_helper(launcher)
+    except UpdateError:
+        update_service.clear_update_state()
 
 def _show_whats_new_if_needed(
     app: QApplication,
