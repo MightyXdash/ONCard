@@ -141,6 +141,7 @@ class WhatsNewDialog(QDialog):
         close_btn = AnimatedButton("Continue")
         close_btn.setObjectName("PrimaryButton")
         close_btn.setFixedWidth(156)
+        close_btn.setProperty("skipClickSfx", True)
         close_btn.clicked.connect(self._accept_with_click)
         close_row.addWidget(close_btn)
         close_row.addStretch(1)

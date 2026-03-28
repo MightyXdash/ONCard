@@ -83,7 +83,6 @@ def run_app() -> int:
     app.aboutToQuit.connect(backup_service.create_exit_backup)
     app.aboutToQuit.connect(lambda: _maybe_install_pending_silent_patch(update_service))
     window.show()
-    window.sounds.play("woosh")
 
     QTimer.singleShot(350, lambda: _notify_pending_silent_patch(window, update_service))
     QTimer.singleShot(500, lambda: _show_whats_new_if_needed(app, window, datastore, ollama, update_service, paths))

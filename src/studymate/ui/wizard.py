@@ -149,7 +149,7 @@ class ProfilePage(OnboardingPage):
 
     def _on_attention_changed(self, value: int) -> None:
         if value != self._last_attention_value and self.sounds is not None:
-            self.sounds.play("click")
+            self.sounds.play("click", volume_scale=1.25)
         self._last_attention_value = value
         self.attention_value.setText(f"Attention span per question: {value} min")
         self.changed.emit()
