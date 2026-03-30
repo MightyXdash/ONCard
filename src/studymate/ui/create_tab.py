@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -370,11 +369,12 @@ class CreateTab(QWidget):
         self.ftc_run: FilesToCardsRunState | None = None
         self.selected_source_files: list[SelectedSourceFile] = []
         self.use_ocr = True
-        self._last_ftc_mode = "standard"
+        self._ftc_default_instruction = ""
+        self._ftc_defaults = self._load_ftc_defaults()
+        self._last_ftc_mode = str(self._ftc_defaults.get("default_mode", "standard"))
 
         self._build_ui()
-        ai_settings = self.datastore.load_ai_settings()
-        self.use_ocr = bool(ai_settings.get("files_to_cards_ocr", True))
+        self.refresh_ftc_defaults(force=True)
 
     def _play_sound(self, name: str) -> None:
         parent = self.window()
@@ -596,7 +596,59 @@ class CreateTab(QWidget):
 
         root.addWidget(editor_surface, 2)
         root.addWidget(queue_surface, 1)
+        self._refresh_files_to_cards_state()
 
+    def _load_ftc_defaults(self) -> dict:
+        setup = self.datastore.load_setup()
+        ftc = dict(setup.get("ftc", {}))
+        ai_settings = self.datastore.load_ai_settings()
+        standard_default = int(ftc.get("question_count_standard", 4) or 4)
+        force_default = int(ftc.get("question_count_force", 8) or 8)
+        return {
+            "default_mode": str(ftc.get("default_mode", "standard")),
+            "question_count_standard": max(1, standard_default),
+            "question_count_force": max(1, force_default),
+            "difficulty": str(ftc.get("difficulty", "normal")).strip().lower(),
+            "use_ocr": bool(ftc.get("use_ocr", ai_settings.get("files_to_cards_ocr", True))),
+        }
+
+    def _build_ftc_default_instruction(self, difficulty: str) -> str:
+        profile = self.datastore.load_profile()
+        grade = str(profile.get("grade", "")).strip()
+        age = str(profile.get("age", "")).strip()
+        difficulty_map = {
+            "easy": "Easy difficulty",
+            "kinda easy": "Kinda easy difficulty",
+            "normal": "Average difficulty",
+            "kinda difficult": "Kinda difficult difficulty",
+            "difficult": "Difficult",
+        }
+        prefix = difficulty_map.get(difficulty, "Average difficulty")
+        audience = []
+        if age:
+            audience.append(f"age {age}")
+        if grade:
+            audience.append(grade)
+        if audience:
+            return f"{prefix} set of questions per {' and '.join(audience)}."
+        return f"{prefix} set of questions per the learner."
+
+    def refresh_ftc_defaults(self, *, force: bool = False) -> None:
+        self._ftc_defaults = self._load_ftc_defaults()
+        self.use_ocr = bool(self._ftc_defaults.get("use_ocr", True))
+        default_mode = str(self._ftc_defaults.get("default_mode", "standard"))
+        if force or (not self.selected_source_files and not self.ftc_run):
+            mode_index = self.mode_combo.findData(default_mode)
+            if mode_index >= 0:
+                self.mode_combo.setCurrentIndex(mode_index)
+                self._last_ftc_mode = default_mode
+        default_instruction = self._build_ftc_default_instruction(
+            str(self._ftc_defaults.get("difficulty", "normal")).strip().lower()
+        )
+        existing = self.instructions_edit.toPlainText().strip()
+        if force or not existing or existing == self._ftc_default_instruction:
+            self.instructions_edit.setPlainText(default_instruction)
+        self._ftc_default_instruction = default_instruction
         self._refresh_files_to_cards_state()
 
     def has_pending_work(self) -> bool:
@@ -823,13 +875,21 @@ class CreateTab(QWidget):
             self.selected_files_list.show()
 
         self.question_count.setEnabled(total_units > 0 and not locked)
-        self.question_count.setMaximum(max(question_cap, 0))
-        self.question_count.setMinimum(1 if question_cap else 0)
-        default_question_count = 8 if mode == "force" else 4
-        if question_cap and (self.question_count.value() == 0 or mode != self._last_ftc_mode):
-            self.question_count.setValue(min(default_question_count, question_cap))
-        if question_cap and self.question_count.value() > question_cap:
-            self.question_count.setValue(question_cap)
+        if mode == "force":
+            default_question_count = int(self._ftc_defaults.get("question_count_force", 8))
+        else:
+            default_question_count = int(self._ftc_defaults.get("question_count_standard", 4))
+        if question_cap:
+            self.question_count.setMaximum(max(question_cap, 0))
+            self.question_count.setMinimum(1)
+            if self.question_count.value() == 0 or mode != self._last_ftc_mode:
+                self.question_count.setValue(min(default_question_count, question_cap))
+            if self.question_count.value() > question_cap:
+                self.question_count.setValue(question_cap)
+        else:
+            self.question_count.setMinimum(default_question_count)
+            self.question_count.setMaximum(default_question_count)
+            self.question_count.setValue(default_question_count)
         self._last_ftc_mode = mode
 
         can_generate = total_units > 0 and total_units <= limit and question_cap > 0 and not locked
@@ -899,7 +959,7 @@ class CreateTab(QWidget):
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
         self._refresh_files_to_cards_state()
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
-        self.use_ocr = bool(self.datastore.load_ai_settings().get("files_to_cards_ocr", True))
+        self.use_ocr = bool(self._load_ftc_defaults().get("use_ocr", True))
         background_workers = max(1, min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)))
 
         job = FilesToCardsJob(

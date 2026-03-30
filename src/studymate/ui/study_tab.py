@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
-    QGraphicsBlurEffect,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -1275,7 +1275,7 @@ class StudyTab(QWidget):
         title = str(card.get("title", "Untitled")).strip() or "Untitled"
         short_title = title if len(title) <= 200 else f"{title[:197]}..."
         row = QListWidgetItem(short_title)
-        row.setToolTip(title)
+        row.setData(Qt.ItemDataRole.ToolTipRole, "")
         row.setData(Qt.UserRole, card)
         row.setSizeHint(QSize(0, 40))
         self.card_search_list.addItem(row)
@@ -1753,33 +1753,32 @@ class StudyTab(QWidget):
 
     def _animate_card_tile(self, tile: QWidget, index: int) -> None:
         end_pos = tile.pos()
-        start_pos = QPoint(end_pos.x(), end_pos.y() + 28)
+        start_pos = QPoint(end_pos.x(), end_pos.y() + 12)
         tile.move(start_pos)
 
-        blur = QGraphicsBlurEffect(tile)
-        blur.setBlurRadius(22.0)
-        blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
-        tile.setGraphicsEffect(blur)
+        opacity = QGraphicsOpacityEffect(tile)
+        opacity.setOpacity(0.0)
+        tile.setGraphicsEffect(opacity)
 
         pop = QPropertyAnimation(tile, b"pos", tile)
-        pop.setDuration(280)
+        pop.setDuration(180)
         pop.setStartValue(start_pos)
         pop.setEndValue(end_pos)
         pop.setEasingCurve(QEasingCurve.OutCubic)
 
-        blur_anim = QVariantAnimation(tile)
-        blur_anim.setDuration(280)
-        blur_anim.setStartValue(22.0)
-        blur_anim.setEndValue(0.0)
-        blur_anim.setEasingCurve(QEasingCurve.OutCubic)
-        blur_anim.valueChanged.connect(lambda value, effect=blur: effect.setBlurRadius(float(value)))
+        opacity_anim = QVariantAnimation(tile)
+        opacity_anim.setDuration(170)
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+        opacity_anim.valueChanged.connect(lambda value, effect=opacity: effect.setOpacity(float(value)))
 
         group = QParallelAnimationGroup(tile)
         group.addAnimation(pop)
-        group.addAnimation(blur_anim)
-        group.finished.connect(lambda current=tile, effect=blur: current.setGraphicsEffect(None) if current.graphicsEffect() is effect else None)
+        group.addAnimation(opacity_anim)
+        group.finished.connect(lambda current=tile, effect=opacity: current.setGraphicsEffect(None) if current.graphicsEffect() is effect else None)
         self._card_search_animations.append(group)
-        QTimer.singleShot(index * 38, group.start)
+        QTimer.singleShot(index * 24, group.start)
 
     def _move_card(self, card: dict) -> None:
         self._play_sound("click")
