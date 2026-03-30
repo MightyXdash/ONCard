@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QComboBox,
-    QGraphicsBlurEffect,
+    QGraphicsOpacityEffect,
     QLabel,
     QLineEdit,
     QListView,
@@ -38,7 +38,11 @@ def _reduced_motion_enabled() -> bool:
     return bool(app.property("reducedMotion")) if app is not None else False
 
 
-def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) -> None:
+def _motion_duration(duration: int) -> int:
+    return 1 if _reduced_motion_enabled() else duration
+
+
+def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 180) -> None:
     if _reduced_motion_enabled():
         widget.setVisible(visible)
         widget.setMaximumHeight(16777215)
@@ -47,7 +51,7 @@ def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) 
     animation = getattr(widget, "_height_animation", None)
     if animation is None:
         animation = QPropertyAnimation(widget, b"maximumHeight", widget)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         def _finish() -> None:
             target_visible = bool(getattr(widget, "_height_target_visible", widget.isVisible()))
@@ -59,7 +63,7 @@ def fade_widget_visibility(widget: QWidget, visible: bool, duration: int = 170) 
         widget._height_animation = animation  # type: ignore[attr-defined]
 
     animation.stop()
-    animation.setDuration(duration)
+    animation.setDuration(_motion_duration(duration))
     widget._height_target_visible = visible  # type: ignore[attr-defined]
 
     if visible:
@@ -144,6 +148,7 @@ class AnimatedStackedWidget(QStackedWidget):
 
         direction = 1 if index > current_index else -1
         frame = self.rect()
+        travel = max(28, min(56, frame.width() // 18))
         current.setGeometry(frame)
         target.setGeometry(frame)
         target.show()
@@ -163,46 +168,44 @@ class AnimatedStackedWidget(QStackedWidget):
         target_overlay = QLabel(self)
         target_overlay.setPixmap(target_pixmap)
         target_overlay.setScaledContents(True)
-        target_overlay.setGeometry(frame.translated(direction * frame.width(), 0))
+        target_overlay.setGeometry(frame.translated(direction * travel, 0))
         target_overlay.show()
         target_overlay.raise_()
 
-        current_blur = QGraphicsBlurEffect(current_overlay)
-        current_blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
-        current_blur.setBlurRadius(0.0)
-        current_overlay.setGraphicsEffect(current_blur)
+        current_opacity = QGraphicsOpacityEffect(current_overlay)
+        current_opacity.setOpacity(1.0)
+        current_overlay.setGraphicsEffect(current_opacity)
 
-        target_blur = QGraphicsBlurEffect(target_overlay)
-        target_blur.setBlurHints(QGraphicsBlurEffect.AnimationHint)
-        target_blur.setBlurRadius(18.0)
-        target_overlay.setGraphicsEffect(target_blur)
+        target_opacity = QGraphicsOpacityEffect(target_overlay)
+        target_opacity.setOpacity(0.82)
+        target_overlay.setGraphicsEffect(target_opacity)
 
         self._transition_overlays = [current_overlay, target_overlay]
 
         group = QParallelAnimationGroup(self)
         for widget, start_rect, end_rect in (
-            (current_overlay, QRect(frame), QRect(frame.translated(-direction * frame.width(), 0))),
-            (target_overlay, QRect(frame.translated(direction * frame.width(), 0)), QRect(frame)),
+            (current_overlay, QRect(frame), QRect(frame.translated(-direction * travel, 0))),
+            (target_overlay, QRect(frame.translated(direction * travel, 0)), QRect(frame)),
         ):
             animation = QPropertyAnimation(widget, b"geometry", self)
-            animation.setDuration(180)
-            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            animation.setDuration(_motion_duration(190))
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
             animation.setStartValue(start_rect)
             animation.setEndValue(end_rect)
             group.addAnimation(animation)
 
         for overlay, effect, start_value, end_value in (
-            (current_overlay, current_blur, 0.0, 14.0),
-            (target_overlay, target_blur, 18.0, 0.0),
+            (current_overlay, current_opacity, 1.0, 0.56),
+            (target_overlay, target_opacity, 0.82, 1.0),
         ):
             animation = QVariantAnimation(self)
-            animation.setDuration(180)
-            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            animation.setDuration(_motion_duration(190))
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
             animation.setStartValue(start_value)
             animation.setEndValue(end_value)
             animation.valueChanged.connect(
-                lambda value, owner=overlay, blur_effect=effect: blur_effect.setBlurRadius(float(value))
-                if owner.graphicsEffect() is blur_effect
+                lambda value, owner=overlay, opacity_effect=effect: opacity_effect.setOpacity(float(value))
+                if owner.graphicsEffect() is opacity_effect
                 else None
             )
             group.addAnimation(animation)
@@ -236,15 +239,74 @@ class CardHoverChrome:
 class _MotionMixin:
     def _init_motion(self) -> None:
         self._press_progress = 0.0
+        self._hover_progress = 0.0
+        self._motion_scale_range = 0.012
+        self._motion_lift = 0.0
+        self._motion_press_scale = 0.0
+        self._motion_hover_grow_x = 0
+        self._motion_hover_grow_y = 0
+        self._base_size: QSize | None = None
+        self._size_animation = QVariantAnimation(self)
+        self._size_animation.setDuration(_motion_duration(140))
+        self._size_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._size_animation.valueChanged.connect(self._apply_size_value)
         self._press_animation = QVariantAnimation(self)
-        self._press_animation.setDuration(1 if _reduced_motion_enabled() else 150)
+        self._press_animation.setDuration(_motion_duration(90))
         self._press_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._press_animation.valueChanged.connect(self._set_press_progress)
+        self._hover_animation = QVariantAnimation(self)
+        self._hover_animation.setDuration(_motion_duration(150))
+        self._hover_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_animation.valueChanged.connect(self._set_hover_progress)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _set_press_progress(self, value) -> None:
         self._press_progress = float(value)
         self.update()
+
+    def _set_hover_progress(self, value) -> None:
+        self._hover_progress = float(value)
+        self.update()
+
+    def set_motion_scale_range(self, amount: float) -> None:
+        self._motion_scale_range = max(0.0, float(amount))
+
+    def set_motion_lift(self, amount: float) -> None:
+        self._motion_lift = max(0.0, float(amount))
+
+    def set_motion_press_scale(self, amount: float) -> None:
+        self._motion_press_scale = max(0.0, float(amount))
+
+    def set_motion_hover_grow(self, width: int, height: int = 0) -> None:
+        self._motion_hover_grow_x = max(0, int(width))
+        self._motion_hover_grow_y = max(0, int(height))
+
+    def _ensure_base_size(self) -> QSize:
+        current = self.size()
+        if current.isEmpty():
+            current = self.sizeHint()
+        if self._base_size is None or self._base_size.isEmpty() or (self._hover_progress == 0.0 and current != self._base_size):
+            self._base_size = current
+        return self._base_size
+
+    def _apply_size_value(self, value) -> None:
+        if isinstance(value, QSize):
+            self.setFixedSize(value)
+
+    def _animate_hover_state(self, hovered: bool) -> None:
+        self._hover_animation.stop()
+        self._hover_animation.setStartValue(self._hover_progress)
+        self._hover_animation.setEndValue(1.0 if hovered else 0.0)
+        self._hover_animation.start()
+        if self._motion_hover_grow_x > 0 or self._motion_hover_grow_y > 0:
+            base = self._ensure_base_size()
+            grow_x = self._motion_hover_grow_x if hovered else 0
+            grow_y = self._motion_hover_grow_y if hovered else 0
+            target = QSize(base.width() + grow_x, base.height() + grow_y)
+            self._size_animation.stop()
+            self._size_animation.setStartValue(self.size())
+            self._size_animation.setEndValue(target)
+            self._size_animation.start()
 
     def _animate_press_state(self, pressed: bool) -> None:
         self._press_animation.stop()
@@ -253,7 +315,21 @@ class _MotionMixin:
         self._press_animation.start()
 
     def _press_offset(self) -> int:
-        return int(round(2 * self._press_progress))
+        return int(round(1 * self._press_progress))
+
+    def _lift_offset(self) -> float:
+        return self._motion_lift * self._hover_progress
+
+    def _draw_scale(self) -> float:
+        if self._motion_scale_range <= 0.0:
+            return max(0.9, 1.0 - (self._motion_press_scale * self._press_progress))
+        return max(
+            0.9,
+            1.0
+            + (self._motion_scale_range * self._hover_progress)
+            - (self._motion_press_scale * self._press_progress)
+            - (min(0.02, self._motion_scale_range * 0.45) * self._press_progress),
+        )
 
 
 class AnimatedButton(QPushButton, _MotionMixin):
@@ -273,6 +349,7 @@ class AnimatedButton(QPushButton, _MotionMixin):
         super().leaveEvent(event)
         self.setProperty("hovered", False)
         _refresh_style(self)
+        self._animate_hover_state(False)
         if not self.isDown():
             self._animate_press_state(False)
 
@@ -280,16 +357,26 @@ class AnimatedButton(QPushButton, _MotionMixin):
         super().enterEvent(event)
         self.setProperty("hovered", True)
         _refresh_style(self)
+        self._animate_hover_state(True)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         option = QStyleOptionButton()
         self.initStyleOption(option)
         option.state = option.state & ~QStyle.StateFlag.State_HasFocus
+        painter = QStylePainter(self)
+        scale = self._draw_scale()
+        if scale != 1.0:
+            center = self.rect().center()
+            painter.translate(center)
+            painter.scale(scale, scale)
+            painter.translate(-center)
+        lift = self._lift_offset()
+        if lift:
+            painter.translate(0, -lift)
         offset = self._press_offset()
         if offset:
-            option.rect = self.rect().adjusted(0, offset, 0, -offset)
-        painter = QStylePainter(self)
+            painter.translate(0, offset)
         painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
 
 
@@ -310,6 +397,7 @@ class AnimatedToolButton(QToolButton, _MotionMixin):
         super().leaveEvent(event)
         self.setProperty("hovered", False)
         _refresh_style(self)
+        self._animate_hover_state(False)
         if not self.isDown():
             self._animate_press_state(False)
 
@@ -317,16 +405,26 @@ class AnimatedToolButton(QToolButton, _MotionMixin):
         super().enterEvent(event)
         self.setProperty("hovered", True)
         _refresh_style(self)
+        self._animate_hover_state(True)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         option = QStyleOptionToolButton()
         self.initStyleOption(option)
         option.state = option.state & ~QStyle.StateFlag.State_HasFocus
+        painter = QStylePainter(self)
+        scale = self._draw_scale()
+        if scale != 1.0:
+            center = self.rect().center()
+            painter.translate(center)
+            painter.scale(scale, scale)
+            painter.translate(-center)
+        lift = self._lift_offset()
+        if lift:
+            painter.translate(0, -lift)
         offset = self._press_offset()
         if offset:
-            option.rect = self.rect().adjusted(0, offset, 0, -offset)
-        painter = QStylePainter(self)
+            painter.translate(0, offset)
         painter.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option)
         painter.drawControl(QStyle.ControlElement.CE_ToolButtonLabel, option)
 
@@ -345,7 +443,7 @@ class AnimatedToggle(QAbstractButton):
         super().__init__(parent)
         self._position = 0.0
         self._animation = QPropertyAnimation(self, b"position", self)
-        self._animation.setDuration(1 if _reduced_motion_enabled() else 170)
+        self._animation.setDuration(_motion_duration(170))
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)

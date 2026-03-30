@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
@@ -39,6 +39,7 @@ def run_app() -> int:
     paths.ensure()
 
     app = QApplication(sys.argv)
+    app.setEffectEnabled(Qt.UI_AnimateTooltip, False)
 
     fonts_dir = paths.assets / "fonts" / "NunitoSans"
     if fonts_dir.exists():

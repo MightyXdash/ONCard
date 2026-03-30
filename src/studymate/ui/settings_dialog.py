@@ -53,6 +53,7 @@ class SettingsDialog(QDialog):
         self._last_attention_value = 5
 
         self.setWindowTitle("Settings")
+        self.setObjectName("SettingsDialog")
         self._apply_initial_geometry()
         self._build_ui()
         self._load()
@@ -126,14 +127,44 @@ class SettingsDialog(QDialog):
         self.grade_combo.setEditable(True)
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
         self.attention_slider = QSlider(Qt.Horizontal)
+        self.attention_slider.setObjectName("SettingsAttentionSlider")
         self.attention_slider.setRange(1, 10)
         self.attention_slider.setSingleStep(1)
         self.attention_slider.setPageStep(1)
         self.attention_slider.setValue(5)
+        self.attention_slider.setStyleSheet(
+            """
+            QSlider#SettingsAttentionSlider {
+                background: transparent;
+            }
+            QSlider#SettingsAttentionSlider::groove:horizontal {
+                height: 6px;
+                border-radius: 4px;
+                background: #d4deea;
+            }
+            QSlider#SettingsAttentionSlider::sub-page:horizontal {
+                background: #d4deea;
+                border-radius: 4px;
+            }
+            QSlider#SettingsAttentionSlider::add-page:horizontal {
+                background: #d4deea;
+                border-radius: 4px;
+            }
+            QSlider#SettingsAttentionSlider::handle:horizontal {
+                width: 20px;
+                height: 20px;
+                margin: -7px 0;
+                border-radius: 10px;
+                background: #0f2539;
+            }
+            """
+        )
         self.attention_slider.valueChanged.connect(self._on_attention_changed)
         self.attention_value = QLabel("Attention span per question: 5 min")
         self.attention_value.setObjectName("SectionText")
         attention_shell = QWidget()
+        attention_shell.setObjectName("SettingsAttentionShell")
+        attention_shell.setStyleSheet("QWidget#SettingsAttentionShell { background: transparent; }")
         attention_layout = QVBoxLayout(attention_shell)
         attention_layout.setContentsMargins(0, 0, 0, 0)
         attention_layout.setSpacing(6)
@@ -147,6 +178,64 @@ class SettingsDialog(QDialog):
         form.addRow("Attention span", attention_shell)
 
         layout.addWidget(surface)
+
+        ftc_surface = QFrame()
+        ftc_surface.setObjectName("Surface")
+        polish_surface(ftc_surface)
+        ftc_layout = QVBoxLayout(ftc_surface)
+        ftc_layout.setContentsMargins(20, 20, 20, 20)
+        ftc_layout.setSpacing(10)
+
+        ftc_title = QLabel("FTC")
+        ftc_title.setObjectName("SectionTitle")
+        ftc_note = QLabel("Default Files To Cards settings. Question counts are capped by available units per run.")
+        ftc_note.setObjectName("SectionText")
+        ftc_note.setWordWrap(True)
+        ftc_layout.addWidget(ftc_title)
+        ftc_layout.addWidget(ftc_note)
+
+        ftc_form = QFormLayout()
+        ftc_form.setHorizontalSpacing(16)
+        ftc_form.setVerticalSpacing(14)
+        ftc_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        ftc_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        ftc_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self.ftc_default_mode = AnimatedComboBox()
+        self.ftc_default_mode.addItem("Standard", "standard")
+        self.ftc_default_mode.addItem("Force", "force")
+
+        self.ftc_questions_standard = QSpinBox()
+        self.ftc_questions_standard.setRange(1, 30)
+        self.ftc_questions_standard.setMinimumWidth(140)
+        self.ftc_questions_force = QSpinBox()
+        self.ftc_questions_force.setRange(1, 30)
+        self.ftc_questions_force.setMinimumWidth(140)
+
+        self.ftc_difficulty = AnimatedComboBox()
+        self.ftc_difficulty.addItem("Easy", "easy")
+        self.ftc_difficulty.addItem("Kinda easy", "kinda easy")
+        self.ftc_difficulty.addItem("Normal", "normal")
+        self.ftc_difficulty.addItem("Kinda difficult", "kinda difficult")
+        self.ftc_difficulty.addItem("Difficult", "difficult")
+
+        self.ftc_ocr_checkbox = QCheckBox("Use OCR in Files To Cards")
+
+        ftc_form.addRow("Default mode", self.ftc_default_mode)
+        ftc_form.addRow("Question quantity (Standard)", self.ftc_questions_standard)
+        ftc_form.addRow("Question quantity (Force)", self.ftc_questions_force)
+        ftc_form.addRow("Difficulty", self.ftc_difficulty)
+        ftc_form.addRow("Files To Cards OCR", self.ftc_ocr_checkbox)
+        ftc_layout.addLayout(ftc_form)
+
+        ftc_hint = QLabel(
+            "Custom instructions will be pre-filled in Files To Cards based on the selected difficulty and profile."
+        )
+        ftc_hint.setObjectName("SmallMeta")
+        ftc_hint.setWordWrap(True)
+        ftc_layout.addWidget(ftc_hint)
+
+        layout.addWidget(ftc_surface)
         layout.addStretch(1)
         scroll.setWidget(host)
         return scroll
@@ -241,11 +330,8 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setRange(REINFORCEMENT_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
         self.reinforcement_ctx.setSingleStep(1024)
         self.reinforcement_ctx.setSuffix(" tokens")
-        self.ftc_ocr_checkbox = QCheckBox("Use OCR in Files To Cards")
-
         form.addRow("Follow-up context length", self.followup_ctx)
         form.addRow("Reinforcement context length", self.reinforcement_ctx)
-        form.addRow("Files To Cards OCR", self.ftc_ocr_checkbox)
         ai_layout.addLayout(form)
 
         minimum_note = QLabel(
@@ -380,8 +466,24 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setValue(
             max(REINFORCEMENT_CONTEXT_MIN, int(ai_settings.get("reinforcement_context_length", REINFORCEMENT_CONTEXT_MIN)))
         )
-        self.ftc_ocr_checkbox.setChecked(bool(ai_settings.get("files_to_cards_ocr", True)))
         setup = self.datastore.load_setup()
+        ftc_setup = dict(setup.get("ftc", {}))
+        default_mode = str(ftc_setup.get("default_mode", "standard"))
+        mode_index = self.ftc_default_mode.findData(default_mode)
+        if mode_index < 0:
+            mode_index = 0
+        self.ftc_default_mode.setCurrentIndex(mode_index)
+        self.ftc_questions_standard.setValue(max(1, min(30, int(ftc_setup.get("question_count_standard", 4) or 4))))
+        self.ftc_questions_force.setValue(max(1, min(30, int(ftc_setup.get("question_count_force", 8) or 8))))
+        difficulty_value = str(ftc_setup.get("difficulty", "normal")).strip().lower()
+        difficulty_index = self.ftc_difficulty.findData(difficulty_value)
+        if difficulty_index < 0:
+            difficulty_index = self.ftc_difficulty.findData("normal")
+        if difficulty_index < 0:
+            difficulty_index = 2
+        self.ftc_difficulty.setCurrentIndex(difficulty_index)
+        use_ocr = ftc_setup.get("use_ocr", ai_settings.get("files_to_cards_ocr", True))
+        self.ftc_ocr_checkbox.setChecked(bool(use_ocr))
         performance = dict(setup.get("performance", {}))
         self.performance_mode.setCurrentIndex(0 if str(performance.get("mode", "auto")) == "auto" else 1)
         self.startup_workers.setValue(max(1, min(8, int(performance.get("startup_workers", 8) or 8))))
@@ -404,10 +506,19 @@ class SettingsDialog(QDialog):
         ai_settings = self.datastore.load_ai_settings()
         ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
         ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
-        ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
         self.datastore.save_ai_settings(ai_settings)
 
         setup = self.datastore.load_setup()
+        setup["ftc"] = {
+            "default_mode": str(self.ftc_default_mode.currentData() or "standard"),
+            "question_count_standard": int(self.ftc_questions_standard.value()),
+            "question_count_force": int(self.ftc_questions_force.value()),
+            "difficulty": str(self.ftc_difficulty.currentData() or "normal"),
+            "use_ocr": bool(self.ftc_ocr_checkbox.isChecked()),
+        }
+        ai_settings = self.datastore.load_ai_settings()
+        ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
+        self.datastore.save_ai_settings(ai_settings)
         setup["performance"] = {
             "mode": str(self.performance_mode.currentData() or "auto"),
             "startup_workers": self.startup_workers.value(),
