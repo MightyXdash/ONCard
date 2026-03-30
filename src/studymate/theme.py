@@ -12,8 +12,22 @@ def app_stylesheet() -> str:
     QMainWindow, QDialog {
         background-color: #edf2f7;
     }
+    QMainWindow#OnCardMainWindow {
+        background: #edf2f7;
+    }
     QWidget {
         background-color: #edf2f7;
+    }
+    QWidget#AppShell {
+        background-color: #edf2f7;
+        border: 1px solid rgba(176, 189, 204, 0.2);
+        border-radius: 30px;
+    }
+    QWidget#AppShell[windowMaximized="true"] {
+        border-radius: 0px;
+    }
+    QWidget#StartupSplash {
+        border-radius: 28px;
     }
     QLabel {
         background: transparent;
@@ -195,12 +209,21 @@ def app_stylesheet() -> str:
         border-color: rgba(130, 166, 197, 0.75);
     }
     QPushButton#TopNavButton {
-        min-width: 110px;
-        padding: 12px 18px;
-        border-radius: 20px;
+        min-width: 92px;
+        padding: 6px 14px;
+        border-radius: 15px;
         background-color: rgba(255, 255, 255, 0.86);
         color: #193043;
         border-color: rgba(166, 180, 194, 0.38);
+        font-size: 13px;
+    }
+    QToolTip {
+        color: #f1f4f8;
+        background-color: rgba(18, 24, 32, 0.94);
+        border: 1px solid rgba(0, 0, 0, 0.35);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 12px;
     }
     QPushButton#TopNavButton:checked {
         background-color: #0f2539;
@@ -211,19 +234,87 @@ def app_stylesheet() -> str:
         background-color: #f8fbfe;
         border-color: rgba(125, 162, 196, 0.78);
     }
-    QPushButton#SettingsNavButton {
+    QFrame#WindowTitleBar {
+        background-color: #edf2f7;
+        border: none;
+        border-radius: 0px;
+    }
+    QFrame#WindowTitleBar[windowMaximized="true"] {
+        border-radius: 0px;
+    }
+    QWidget#WindowLeftCluster,
+    QWidget#WindowModeCluster,
+    QWidget#WindowRightCluster,
+    QWidget#AppIconMenu {
+        background: transparent;
+        border: none;
+    }
+    QLabel#WindowControlSeparator {
+        background: transparent;
+        color: rgba(98, 115, 132, 0.72);
+        font-size: 16px;
+        font-weight: 700;
+        padding: 0px 8px 1px 8px;
+    }
+    QPushButton#SettingsNavButton,
+    QPushButton#WindowIconButton,
+    QPushButton#AppIconButton,
+    QPushButton#WindowControlButton,
+    QPushButton#WindowControlCloseButton {
         min-width: 0px;
         padding: 0px;
         border: none;
-        border-radius: 0px;
+        border-radius: 16px;
         background: transparent;
     }
-    QPushButton#SettingsNavButton:hover {
+    QPushButton#SettingsNavButton:hover,
+    QPushButton#WindowIconButton:hover,
+    QPushButton#AppIconButton:hover {
         background: transparent;
         border: none;
     }
-    QPushButton#SettingsNavButton:pressed {
+    QPushButton#SettingsNavButton:pressed,
+    QPushButton#WindowIconButton:pressed,
+    QPushButton#AppIconButton:pressed {
         background: transparent;
+        border: none;
+    }
+    QPushButton#WindowControlButton:hover,
+    QPushButton#WindowControlCloseButton:hover {
+        background: transparent;
+        border: none;
+    }
+    QPushButton#WindowControlButton:pressed,
+    QPushButton#WindowControlCloseButton:pressed {
+        background: transparent;
+        border: none;
+    }
+    QFrame#AppIconMenuSurface {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(166, 181, 197, 0.3);
+        border-radius: 18px;
+    }
+    QFrame#UserProfileMenuSurface {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(166, 181, 197, 0.3);
+        border-radius: 18px;
+    }
+    QPushButton#AppIconMenuButton {
+        text-align: left;
+        background: transparent;
+        border: none;
+        border-radius: 12px;
+        padding: 8px 12px;
+        color: #172330;
+        font-size: 13px;
+        font-weight: 800;
+    }
+    QPushButton#AppIconMenuButton:hover {
+        background-color: #edf4fa;
+        border: none;
+    }
+    QPushButton#AppIconMenuButton:pressed {
+        background-color: #e3edf7;
         border: none;
     }
     QToolButton#CollapseButton {
@@ -238,7 +329,7 @@ def app_stylesheet() -> str:
         background-color: rgba(255, 255, 255, 0.96);
         border: 1px solid rgba(166, 181, 197, 0.44);
         border-radius: 18px;
-        padding: 12px 14px;
+        padding: 12px 18px 12px 14px;
         font-size: 14px;
         selection-background-color: #d6e4f1;
         selection-color: #132334;
@@ -259,7 +350,7 @@ def app_stylesheet() -> str:
     QSpinBox::up-button, QSpinBox::down-button {
         width: 24px;
         border: none;
-        margin-right: 8px;
+        margin-right: 2px;
     }
     QSpinBox::up-arrow, QSpinBox::down-arrow {
         width: 10px;

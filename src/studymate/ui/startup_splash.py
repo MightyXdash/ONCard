@@ -14,6 +14,8 @@ except ImportError:  # pragma: no cover
     QMediaPlayer = None  # type: ignore[assignment]
     QVideoWidget = None  # type: ignore[assignment]
 
+from studymate.ui.window_effects import polish_windows_window
+
 
 class StartupSplash(QWidget):
     def __init__(self, *, video_path: Path, app_icon: Path | None = None) -> None:
@@ -28,20 +30,21 @@ class StartupSplash(QWidget):
             }
             QFrame#StartupMediaHost {
                 background: #ffffff;
-                border: none;
+                border: 1px solid rgba(111, 132, 154, 0.12);
+                border-radius: 40px;
             }
             """
         )
-        self.resize(320, 320)
+        self.resize(360, 360)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(0)
 
         self._media_host = QFrame(self)
         self._media_host.setObjectName("StartupMediaHost")
         host_layout = QVBoxLayout(self._media_host)
-        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setContentsMargins(10, 10, 10, 10)
         host_layout.setSpacing(0)
 
         self._video_widget: QVideoWidget | QLabel
@@ -75,14 +78,20 @@ class StartupSplash(QWidget):
         root.addWidget(self._media_host, 1)
 
         self._center_on_screen()
+        self._apply_native_window_chrome()
+
+    def _apply_native_window_chrome(self) -> None:
+        polish_windows_window(self, small_corners=False, remove_border=True)
 
     def _center_on_screen(self) -> None:
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             return
         geometry = screen.availableGeometry()
-        width = min(self.width(), max(280, geometry.width() - 180))
-        height = min(self.height(), max(280, geometry.height() - 180))
+        side = min(int(min(geometry.width(), geometry.height()) * 0.28), 420)
+        side = max(280, side)
+        width = min(side, max(280, geometry.width() - 120))
+        height = min(side, max(280, geometry.height() - 120))
         self.resize(width, height)
         self.move(
             geometry.x() + int((geometry.width() - width) / 2),
@@ -91,7 +100,11 @@ class StartupSplash(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        return
+        self._apply_native_window_chrome()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_native_window_chrome()
 
     def _loop_video(self, status) -> None:
         if self._player is None:
