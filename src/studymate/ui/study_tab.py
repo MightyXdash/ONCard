@@ -199,8 +199,6 @@ class AiResponseOverlay(QWidget):
         self._target_chunks: list[str] = []
         self._render_cost_ema_ms = 7.0
         self._last_fade_start = 0.0
-        self._expanded = False
-        self._can_expand = False
         self._active_char_fades: list[tuple[QVariantAnimation, int, int]] = []
 
         root = QVBoxLayout(self)
@@ -279,17 +277,6 @@ class AiResponseOverlay(QWidget):
         self.copy_btn.setParent(self.surface)
         self.close_btn.setParent(self.surface)
         self.header_frame.hide()
-
-        self.expand_btn = AnimatedButton("Expand")
-        self.expand_btn.setParent(self.surface)
-        self.expand_btn.setObjectName("AiOverlayExpandButton")
-        self.expand_btn.setCursor(Qt.PointingHandCursor)
-        self.expand_btn.setStyleSheet(
-            "background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(208, 214, 224, 0.92); "
-            "border-radius: 12px; padding: 4px 14px; font-weight: 600;"
-        )
-        self.expand_btn.hide()
-        self.expand_btn.clicked.connect(self._expand_overlay)
 
         self.drag_zone = QWidget(self.surface)
         self.drag_zone.setCursor(Qt.OpenHandCursor)
@@ -402,15 +389,12 @@ class AiResponseOverlay(QWidget):
         self._last_stream_time = 0.0
         self._last_render_commit = 0.0
         self._last_fade_start = 0.0
-        self._expanded = False
-        self._can_expand = False
         self._stream_timer.stop()
         self._stop_char_fades()
         self.body.clear()
         self.body.hide()
         self.loading_label.show()
         self.copy_btn.hide()
-        self.expand_btn.hide()
         parent = self.parentWidget()
         self._manual_pos = None
         self._anchor_y = max(72, int(parent.height() * 0.16)) if parent is not None else 72
@@ -543,28 +527,14 @@ class AiResponseOverlay(QWidget):
         top = 14
         self.close_btn.move(right - self.close_btn.width() + 1, top)
         self.copy_btn.move(self.close_btn.x() - self.copy_btn.width() - 8, top)
-        expand_width = max(110, self.expand_btn.sizeHint().width())
-        self.expand_btn.setFixedWidth(expand_width)
-        expand_x = max(14, (surface_rect.width() - self.expand_btn.width()) // 2)
-        expand_y = max(14, surface_rect.bottom() - self.expand_btn.height() - 12)
-        self.expand_btn.move(expand_x, expand_y)
         drag_left = 14
         drag_top = 10
         drag_height = 34
         drag_right = max(drag_left + 1, self.copy_btn.x() - 10)
         self.drag_zone.setGeometry(drag_left, drag_top, max(1, drag_right - drag_left), drag_height)
         self.drag_zone.raise_()
-        if self.expand_btn.isVisible():
-            self.expand_btn.raise_()
         self.copy_btn.raise_()
         self.close_btn.raise_()
-
-    def _expand_overlay(self) -> None:
-        if self._expanded:
-            return
-        self._expanded = True
-        self.expand_btn.hide()
-        self._sync_size(animated=True)
 
     @staticmethod
     def _normalize_markdown(markdown_text: str) -> str:
@@ -1183,11 +1153,8 @@ class AiResponseOverlay(QWidget):
             expanded_height = min(max_height, total_height)
             if force_minimum:
                 final_height = minimum_height
-            elif self._expanded:
-                final_height = expanded_height
             else:
-                final_height = collapsed_height
-            self._can_expand = (not force_minimum) and (total_height > collapsed_height + 6)
+                final_height = max(collapsed_height, expanded_height)
             self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             target_rect = QRect(self._target_pos(), QSize(width, final_height))
             if not self.isVisible() or force_minimum or not animated:
@@ -1206,7 +1173,6 @@ class AiResponseOverlay(QWidget):
                 self._size_animation.setEndValue(target_rect)
                 self._size_animation.start()
             self._layout_overlay_elements()
-            self.expand_btn.setVisible(self._can_expand and not self._expanded and self.body.isVisible())
             self.raise_()
         finally:
             self._syncing_size = False
