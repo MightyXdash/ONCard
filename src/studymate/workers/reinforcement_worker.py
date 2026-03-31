@@ -8,6 +8,7 @@ from studymate.constants import REINFORCEMENT_SCHEMA
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.utils.markdown import cleanup_plain_text
 from studymate.workers.autofill_worker import generate_card_payload
+from studymate.workers.prompt_context import with_oncard_context
 
 
 class ReinforcementWorker(QThread):
@@ -76,11 +77,15 @@ class ReinforcementWorker(QThread):
         self.finished.emit(cards)
 
     def _generate_questions(self) -> list[str]:
-        system_prompt = (
-            "Return only strict JSON matching the schema. "
-            "You create temporary reinforcement flashcards for one weak topic. "
-            "Make the cards academically useful, clear, and age-appropriate. "
-            "Do not mention that they are temporary."
+        system_prompt = with_oncard_context(
+            (
+                "Return only strict JSON matching the schema. "
+                "You create temporary reinforcement flashcards for one weak topic. "
+                "Make the cards academically useful, clear, and age-appropriate. "
+                "Do not mention that they are temporary."
+            ),
+            feature="Reinforcement question generation",
+            profile_context=self.profile_context,
         )
         context_lines = [
             f"Student age: {self.profile_context.get('age', '')}",

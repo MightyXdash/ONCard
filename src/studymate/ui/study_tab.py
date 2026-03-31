@@ -3,14 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import random
 import re
+import time
 import uuid
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QTimer, Qt, Signal, QSize, QVariantAnimation
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QRect, QSignalBlocker, QThread, QTimer, Qt, Signal, QSize, QVariantAnimation
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
@@ -66,6 +68,7 @@ from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.followup_worker import FollowUpWorker
 from studymate.workers.grade_worker import GradeWorker
 from studymate.workers.reinforcement_worker import ReinforcementWorker
+from studymate.workers.ai_search_worker import AiSearchWorker
 
 
 class PromptTextEdit(QTextEdit):
@@ -77,6 +80,1153 @@ class PromptTextEdit(QTextEdit):
             self.submitted.emit()
             return
         super().keyPressEvent(event)
+
+
+class AiQueryLineEdit(AnimatedLineEdit):
+    aiModeChanged = Signal(bool)
+    historyRequested = Signal()
+
+    TRIGGER_TOKENS = {"/ai", "#ai"}
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._ai_mode = False
+        self._tag_gap = 10
+        self._base_left_margin = self.textMargins().left()
+        self._tag_chip = QLabel("Ask AI", self)
+        self._tag_chip.setObjectName("AiSearchTag")
+        self._tag_chip.setAlignment(Qt.AlignCenter)
+        self._tag_chip.setStyleSheet(
+            """
+            QLabel#AiSearchTag {
+                background: #4A7EE8;
+                color: #F8FBFF;
+                border: 1px solid rgba(81, 133, 236, 0.7);
+                border-radius: 8px;
+                padding: 2px 10px;
+                font-weight: 600;
+            }
+            """
+        )
+        self._tag_chip.hide()
+        self._update_text_margins()
+
+    def ai_mode_active(self) -> bool:
+        return self._ai_mode
+
+    def set_ai_mode(self, active: bool) -> None:
+        if self._ai_mode == active:
+            return
+        self._ai_mode = active
+        self.setProperty("aiMode", active)
+        self._tag_chip.setVisible(active)
+        self._update_text_margins()
+        self.aiModeChanged.emit(active)
+
+    def keyPressEvent(self, event) -> None:
+        if self._ai_mode and event.key() == Qt.Key_Backspace and not self.text():
+            self.set_ai_mode(False)
+            event.accept()
+            return
+        if self._ai_mode and event.key() == Qt.Key_Up:
+            self.historyRequested.emit()
+            event.accept()
+            return
+        if not self._ai_mode and event.text():
+            cursor = self.cursorPosition()
+            selected = self.selectedText()
+            if selected:
+                start = min(self.cursorPosition(), self.selectionStart())
+                end = start + len(selected)
+                prospective = f"{self.text()[:start]}{event.text()}{self.text()[end:]}"
+            else:
+                prospective = f"{self.text()[:cursor]}{event.text()}{self.text()[cursor:]}"
+            if prospective.strip().lower() in self.TRIGGER_TOKENS:
+                with QSignalBlocker(self):
+                    self.clear()
+                self.set_ai_mode(True)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_text_margins()
+
+    def _tag_rect(self):
+        contents = self.contentsRect()
+        tag_height = max(22, min(contents.height() - 4, 24))
+        chip_width = max(56, self._tag_chip.sizeHint().width())
+        y = contents.top() + max(0, (contents.height() - tag_height) // 2)
+        return QRect(contents.left() + 2, y, chip_width, tag_height)
+
+    def _update_text_margins(self) -> None:
+        tag_rect = self._tag_rect()
+        self._tag_chip.setGeometry(tag_rect)
+        left_margin = self._base_left_margin
+        if self._ai_mode:
+            left_margin += tag_rect.width() + self._tag_gap
+        self.setTextMargins(left_margin, 0, 0, 0)
+
+
+class AiResponseOverlay(QWidget):
+    closed = Signal()
+
+    def __init__(self, icons: IconHelper, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("AiResponseOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self.hide()
+        self._animation_group: QParallelAnimationGroup | None = None
+        self._last_markdown = ""
+        self._syncing_size = False
+        self._streaming_started = False
+        self._closing = False
+        self._display_markdown = ""
+        self._target_markdown = ""
+        self._anchor_y: int | None = None
+        self._copy_flash_active = False
+        self._manual_pos: QPoint | None = None
+        self._drag_active = False
+        self._drag_offset = QPoint()
+        self._display_chunk_count = 0
+        self._stream_mode = "words"
+        self._stream_units_per_second = 30.0
+        self._stream_unit_credit = 0.0
+        self._last_stream_time = 0.0
+        self._last_render_commit = 0.0
+        self._target_chunks: list[str] = []
+        self._render_cost_ema_ms = 7.0
+        self._last_fade_start = 0.0
+        self._expanded = False
+        self._can_expand = False
+        self._active_char_fades: list[tuple[QVariantAnimation, int, int]] = []
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(0)
+
+        self.surface = QFrame(self)
+        self.surface.setObjectName("AiResponseSurface")
+        self.surface.setStyleSheet(
+            """
+            QFrame#AiResponseSurface {
+                background: #FAFAFB;
+                border: 1px solid rgba(215, 219, 226, 0.88);
+                border-radius: 22px;
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(self.surface)
+        shadow.setBlurRadius(52)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(21, 28, 37, 66))
+        self.surface.setGraphicsEffect(shadow)
+        root.addWidget(self.surface)
+
+        layout = QVBoxLayout(self.surface)
+        layout.setContentsMargins(18, 8, 18, 20)
+        layout.setSpacing(8)
+
+        self.header_frame = QFrame(self.surface)
+        self.header_frame.setObjectName("AiOverlayHeader")
+        self.header_frame.setCursor(Qt.OpenHandCursor)
+        self.header_frame.setStyleSheet("background: transparent;")
+        self.header_frame.setFixedHeight(0)
+        header = QHBoxLayout(self.header_frame)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        header.addStretch(1)
+
+        self.copy_btn = AnimatedToolButton()
+        self.copy_btn.setObjectName("AiOverlayCopyButton")
+        self.copy_btn.setIcon(icons.icon("common", "copy", "C"))
+        self.copy_btn.setIconSize(QSize(16, 16))
+        self.copy_btn.setAutoRaise(True)
+        self.copy_btn.setFixedSize(28, 28)
+        self.copy_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_btn.setToolTip("")
+        self.copy_btn.setProperty("skipClickSfx", True)
+        self.copy_btn.hide()
+        self.copy_btn.clicked.connect(self._copy_response)
+        self.copy_btn.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
+        )
+        self.copy_btn.set_motion_scale_range(0.08)
+        self.copy_btn._hover_animation.setDuration(650)
+        header.addWidget(self.copy_btn)
+
+        self.close_btn = AnimatedToolButton()
+        self.close_btn.setObjectName("AiOverlayCloseButton")
+        self.close_btn.setIcon(icons.icon("common", "close", "X"))
+        self.close_btn.setIconSize(QSize(16, 16))
+        self.close_btn.setAutoRaise(True)
+        self.close_btn.setFixedSize(28, 28)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setToolTip("")
+        self.close_btn.setProperty("skipClickSfx", True)
+        self.close_btn.clicked.connect(self.close_overlay)
+        self.close_btn.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
+        )
+        self.close_btn.set_motion_scale_range(0.08)
+        self.close_btn._hover_animation.setDuration(650)
+        header.addWidget(self.close_btn)
+        layout.addWidget(self.header_frame)
+        header.removeWidget(self.copy_btn)
+        header.removeWidget(self.close_btn)
+        self.copy_btn.setParent(self.surface)
+        self.close_btn.setParent(self.surface)
+        self.header_frame.hide()
+
+        self.expand_btn = AnimatedButton("Expand")
+        self.expand_btn.setParent(self.surface)
+        self.expand_btn.setObjectName("AiOverlayExpandButton")
+        self.expand_btn.setCursor(Qt.PointingHandCursor)
+        self.expand_btn.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(208, 214, 224, 0.92); "
+            "border-radius: 12px; padding: 4px 14px; font-weight: 600;"
+        )
+        self.expand_btn.hide()
+        self.expand_btn.clicked.connect(self._expand_overlay)
+
+        self.drag_zone = QWidget(self.surface)
+        self.drag_zone.setCursor(Qt.OpenHandCursor)
+        self.drag_zone.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.drag_zone.setStyleSheet("background: transparent;")
+        self.drag_zone.installEventFilter(self)
+        self.drag_zone.hide()
+
+        self.loading_label = QLabel("Thinking...")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.loading_label.setStyleSheet(
+            'color: #676D77; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; '
+            "font-size: 14px; font-weight: 300; padding: 6px 0 4px 0;"
+        )
+        layout.addWidget(self.loading_label)
+
+        self.body = QTextBrowser(self.surface)
+        self.body.setObjectName("AiResponseBody")
+        self.body.setFrameShape(QFrame.Shape.NoFrame)
+        self.body.setOpenExternalLinks(True)
+        self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.body.setStyleSheet(
+            'background: transparent; border: none; color: #1A1A1A; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; font-weight: 300;'
+        )
+        self.body.document().setDocumentMargin(0)
+        self.body.document().setDefaultStyleSheet(
+            """
+            body {
+                color: #1A1A1A;
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 15px;
+                font-weight: 300;
+                line-height: 1.68;
+            }
+            h1 {
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 20px;
+                font-weight: 600;
+                margin: 0 0 12px 0;
+                color: #1A1A1A;
+            }
+            h2 {
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 15px;
+                font-weight: 600;
+                margin: 12px 0 6px 0;
+                color: #1A1A1A;
+            }
+            h3 {
+                font-size: 14px;
+                font-weight: 600;
+                margin: 10px 0 6px 0;
+                color: #1A1A1A;
+            }
+            p, li {
+                margin: 0 0 7px 0;
+                color: #1A1A1A;
+            }
+            ul, ol {
+                margin: 0 0 10px 18px;
+            }
+            pre {
+                background: rgba(239, 242, 247, 0.92);
+                border: 1px solid rgba(214, 220, 230, 0.9);
+                border-radius: 10px;
+                padding: 12px;
+                margin: 8px 0 12px 0;
+            }
+            code {
+                background: rgba(239, 242, 247, 0.92);
+                border-radius: 6px;
+                padding: 2px 5px;
+            }
+            strong {
+                font-weight: 600;
+            }
+            em {
+                font-style: italic;
+            }
+            """
+        )
+        base_font = QFont(self.font())
+        base_font.setWeight(QFont.Weight.Light)
+        self.body.setFont(base_font)
+        self.body.hide()
+        layout.addWidget(self.body, 1)
+
+        self._stream_timer = QTimer(self)
+        self._stream_timer.setInterval(16)
+        self._stream_timer.timeout.connect(self._flush_stream_tick)
+
+        self._size_debounce = QTimer(self)
+        self._size_debounce.setSingleShot(True)
+        self._size_debounce.timeout.connect(lambda: self._sync_size(animated=True))
+
+        self._size_animation = QPropertyAnimation(self, b"geometry", self)
+        self._size_animation.setDuration(145)
+        self._size_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def begin_stream(self) -> None:
+        self._last_markdown = ""
+        self._display_markdown = ""
+        self._target_markdown = ""
+        self._target_chunks = []
+        self._streaming_started = False
+        self._closing = False
+        self._display_chunk_count = 0
+        self._stream_unit_credit = 0.0
+        self._last_stream_time = 0.0
+        self._last_render_commit = 0.0
+        self._last_fade_start = 0.0
+        self._expanded = False
+        self._can_expand = False
+        self._stream_timer.stop()
+        self._stop_char_fades()
+        self.body.clear()
+        self.body.hide()
+        self.loading_label.show()
+        self.copy_btn.hide()
+        self.expand_btn.hide()
+        parent = self.parentWidget()
+        self._manual_pos = None
+        self._anchor_y = max(72, int(parent.height() * 0.16)) if parent is not None else 72
+        self._streaming_started = True
+        self._sync_size(force_minimum=False, animated=False)
+        self.show()
+        self.drag_zone.show()
+        self.raise_()
+        self._layout_overlay_elements()
+        self._animate_in()
+
+    def set_markdown(self, markdown_text: str) -> None:
+        previous_plain = self.body.toPlainText() if self.body.isVisible() else ""
+        self._last_markdown = markdown_text
+        self._target_markdown = markdown_text
+        self._display_markdown = markdown_text
+        follow_bottom = self._should_follow_bottom()
+        if self.loading_label.isVisible():
+            self.loading_label.hide()
+            self.body.show()
+            self.copy_btn.show()
+            self._layout_overlay_elements()
+        self.body.setMarkdown(self._display_markdown)
+        current_plain = self.body.toPlainText()
+        if not current_plain.startswith(previous_plain):
+            self._stop_char_fades()
+        else:
+            if len(current_plain) > len(previous_plain):
+                self._animate_new_text_fade(len(previous_plain), len(current_plain))
+        if follow_bottom:
+            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
+        self._size_debounce.start(22)
+
+    def set_stream_settings(self, mode: str, tps: float, fade_seconds: float) -> None:
+        return
+
+    def refresh_layout(self) -> None:
+        if self.isVisible():
+            self._sync_size(animated=False)
+            self._layout_overlay_elements()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.drag_zone:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_active = True
+                self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.drag_zone.setCursor(Qt.ClosedHandCursor)
+                return True
+            if event.type() == QEvent.MouseMove and self._drag_active:
+                self._manual_pos = event.globalPosition().toPoint() - self._drag_offset
+                self.move(self._manual_pos)
+                return True
+            if event.type() == QEvent.MouseButtonRelease and self._drag_active:
+                self._drag_active = False
+                self._manual_pos = self.pos()
+                self.drag_zone.setCursor(Qt.OpenHandCursor)
+                return True
+        return super().eventFilter(watched, event)
+
+    def has_markdown(self) -> bool:
+        return bool(self._last_markdown.strip())
+
+    def _should_follow_bottom(self) -> bool:
+        scroll = self.body.verticalScrollBar()
+        return scroll.maximum() <= 0 or scroll.value() >= max(0, scroll.maximum() - 24)
+
+    def _animate_in(self) -> None:
+        end_pos = self._target_pos()
+        start_pos = QPoint(end_pos.x(), end_pos.y() + 14)
+        self.move(start_pos)
+        if self._animation_group is not None:
+            self._animation_group.stop()
+        motion = 1 if QApplication.instance() is not None and bool(QApplication.instance().property("reducedMotion")) else 200
+
+        slide = QPropertyAnimation(self, b"pos", self)
+        slide.setDuration(motion)
+        slide.setStartValue(start_pos)
+        slide.setEndValue(end_pos)
+        slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._animation_group = QParallelAnimationGroup(self)
+        self._animation_group.addAnimation(slide)
+        self._animation_group.start()
+
+    def close_overlay(self) -> None:
+        if self._closing or not self.isVisible():
+            return
+        self._closing = True
+        self._stream_timer.stop()
+        self._stop_char_fades()
+        animation = QPropertyAnimation(self, b"pos", self)
+        animation.setDuration(150)
+        start_pos = self.pos()
+        animation.setStartValue(start_pos)
+        animation.setEndValue(QPoint(start_pos.x(), start_pos.y() + 12))
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _finish() -> None:
+            self.hide()
+            self.drag_zone.hide()
+            self._drag_active = False
+            self.drag_zone.setCursor(Qt.OpenHandCursor)
+            self._closing = False
+            self.closed.emit()
+
+        animation.finished.connect(_finish)
+        animation.start()
+        self._animation_group = None
+        self._close_animation = animation
+
+    def _copy_response(self) -> None:
+        if not self._last_markdown.strip():
+            return
+        QApplication.clipboard().setText(self._last_markdown)
+        self._copy_flash_active = True
+        self.copy_btn.setStyleSheet(
+            "background: rgba(74, 126, 232, 0.16); border: none; border-radius: 10px; padding: 4px;"
+        )
+        QTimer.singleShot(140, self._reset_copy_button_style)
+
+    def _reset_copy_button_style(self) -> None:
+        self._copy_flash_active = False
+        self.copy_btn.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
+        )
+
+    def _layout_overlay_elements(self) -> None:
+        surface_rect = self.surface.rect()
+        right = surface_rect.right() - 18
+        top = 14
+        self.close_btn.move(right - self.close_btn.width() + 1, top)
+        self.copy_btn.move(self.close_btn.x() - self.copy_btn.width() - 8, top)
+        expand_width = max(110, self.expand_btn.sizeHint().width())
+        self.expand_btn.setFixedWidth(expand_width)
+        expand_x = max(14, (surface_rect.width() - self.expand_btn.width()) // 2)
+        expand_y = max(14, surface_rect.bottom() - self.expand_btn.height() - 12)
+        self.expand_btn.move(expand_x, expand_y)
+        drag_left = 14
+        drag_top = 10
+        drag_height = 34
+        drag_right = max(drag_left + 1, self.copy_btn.x() - 10)
+        self.drag_zone.setGeometry(drag_left, drag_top, max(1, drag_right - drag_left), drag_height)
+        self.drag_zone.raise_()
+        if self.expand_btn.isVisible():
+            self.expand_btn.raise_()
+        self.copy_btn.raise_()
+        self.close_btn.raise_()
+
+    def _expand_overlay(self) -> None:
+        if self._expanded:
+            return
+        self._expanded = True
+        self.expand_btn.hide()
+        self._sync_size(animated=True)
+
+    @staticmethod
+    def _normalize_markdown(markdown_text: str) -> str:
+        if not markdown_text:
+            return ""
+
+        normalized = markdown_text.replace("\r\n", "\n").replace("\r", "\n")
+        trailing_newline = normalized.endswith("\n")
+        bullet_chars = r"\-\*\+\u2022\u25CF\u25AA\u25E6\u2043\u2219"
+        section_label_modes = {
+            "key points",
+            "quick explanation",
+            "quick breakdown",
+            "takeaway",
+            "key takeaway",
+            "key take away",
+            "summary",
+            "short answer",
+            "next steps",
+        }
+        canonical_section = {
+            "key takeaway": "takeaway",
+            "key take away": "takeaway",
+        }
+        section_headings = {
+            "key points": "Key Points",
+            "quick explanation": "Quick Explanation",
+            "quick breakdown": "Quick Breakdown",
+            "takeaway": "Takeaway",
+            "summary": "Summary",
+            "short answer": "Short Answer",
+            "next steps": "Next Steps",
+        }
+        section_pattern = "|".join(re.escape(label) for label in sorted(section_label_modes, key=len, reverse=True))
+        url_pattern = re.compile(r"(?:https?://|www\.)\S+")
+
+        def close_unbalanced_leading_emphasis(value: str) -> str:
+            stripped_value = value.lstrip()
+            if stripped_value.startswith("**") and (len(re.findall(r"(?<!\\)\*\*", value)) % 2 == 1):
+                label_colon = value.find(":")
+                if label_colon > -1:
+                    closed = f"{value[:label_colon + 1]}**{value[label_colon + 1:]}"
+                    return re.sub(r"(\*\*[^*\n]{1,120}:\*\*)(?=\S)", r"\1 ", closed)
+                return f"{value}**"
+            if stripped_value.startswith("__") and (len(re.findall(r"(?<!\\)__", value)) % 2 == 1):
+                return f"{value}__"
+            return value
+
+        # Repair common broken encodings for bullets before regex normalization.
+        normalized = normalized.replace("\u00e2\u20ac\u00a2", "\u2022")
+        normalized = normalized.replace("\u00e2\u2014\u008f", "\u25CF")
+        normalized = normalized.replace("\u00e2\u2013\u00aa", "\u25AA")
+        normalized = normalized.replace("\u00e2\u2014\u00a6", "\u25E6")
+
+        # Split glued structural markers into their own lines.
+        normalized = re.sub(r"#[ \t]+#", "##", normalized)
+        normalized = re.sub(r"(?<=[^\s#])(?=(?:#{1,6})\s*[A-Za-z])", "\n", normalized)
+        normalized = re.sub(
+            rf"(?i)(?<=[^\n])(?=(?:{section_pattern})\s*[:\-])",
+            "\n",
+            normalized,
+        )
+        normalized = re.sub(
+            rf"(?i)(?<=[.!?])\s*(?=(?:#{{1,6}}\s*)?(?:{section_pattern})\b)",
+            "\n\n",
+            normalized,
+        )
+        normalized = re.sub(rf"(?<=[.!?])\s*(?=[{bullet_chars}]\s+\S)", "\n", normalized)
+        normalized = re.sub(r"(?<=[.!?])\s*(?=\d{1,3}[.)-]\s+\S)", "\n", normalized)
+
+        # Convert setext headings to ATX headings.
+        setext_converted: list[str] = []
+        source_lines = normalized.split("\n")
+        idx = 0
+        while idx < len(source_lines):
+            current = source_lines[idx]
+            if idx + 1 < len(source_lines):
+                underline = source_lines[idx + 1].strip()
+                if current.strip() and re.fullmatch(r"=+", underline):
+                    setext_converted.append(f"# {current.strip()}")
+                    idx += 2
+                    continue
+                if current.strip() and re.fullmatch(r"-{3,}", underline) and not re.match(r"^\s*[-*+]\s", current):
+                    setext_converted.append(f"## {current.strip()}")
+                    idx += 2
+                    continue
+            setext_converted.append(current)
+            idx += 1
+
+        healed: list[str] = []
+        in_fence = False
+        section_mode = ""
+        saw_heading = False
+
+        for raw_line in setext_converted:
+            if re.fullmatch(r"(?:\*{3,}|-{3,}|_{3,})", raw_line.strip()):
+                healed.append("---")
+                section_mode = ""
+                continue
+            expanded = raw_line
+            expanded = re.sub(rf"^\s*[{bullet_chars}]\s+", "- ", expanded)
+            expanded = re.sub(r"(?<=[^\s#])(?=(?:#{1,6})\s*)", "\n", expanded)
+            expanded = re.sub(
+                rf"(?i)(?<=[^\n])(?=(?:{section_pattern})\s*[:\-])",
+                "\n",
+                expanded,
+            )
+            expanded = re.sub(
+                rf"(?i)(?<=[.!?])\s*(?=(?:#{{1,6}}\s*)?(?:{section_pattern})\b)",
+                "\n",
+                expanded,
+            )
+            expanded = re.sub(rf"(?<=[.!?])\s*(?:[{bullet_chars}]|\d{{1,3}}[.)-])\s+(?=\S)", "\n- ", expanded)
+
+            for part in expanded.split("\n"):
+                line = part
+                stripped = line.strip()
+
+                if stripped.startswith(("```", "~~~")):
+                    in_fence = not in_fence
+                    healed.append(line)
+                    continue
+                if in_fence:
+                    healed.append(line)
+                    continue
+                if re.fullmatch(r"(?:\*{3,}|-{3,}|_{3,})", stripped):
+                    healed.append("---")
+                    section_mode = ""
+                    continue
+
+                line = re.sub(rf"^\s*[{bullet_chars}]\s+", "- ", line)
+                line = re.sub(r"^(#{1,6})(?=\S)", r"\1 ", line)
+                line = re.sub(r"^#\s+#\s*", "## ", line)
+                line = re.sub(r"^([\-+])(?=\S)", r"\1 ", line)
+                line = re.sub(r"^\*(?!\*)(?=\S)", "* ", line)
+                line = re.sub(r"^(\d+)[)\-](?=\S)", r"\1. ", line)
+                line = re.sub(r"^(\d+)[)\-]\s+", r"\1. ", line)
+                line = re.sub(r"^(>)(?=\S)", r"\1 ", line)
+                line = re.sub(r"^\[([xX ])\]\s+(?=\S)", r"- [\1] ", line)
+                line = re.sub(r"(\*\*[^*\n]{1,120}:\*\*)(?=\S)", r"\1 ", line)
+                line = re.sub(r"([:;,!?])(?=[A-Za-z])", r"\1 ", line)
+                def _unglue_token(token: str) -> str:
+                    if not token or token.isspace():
+                        return token
+                    trimmed = token.rstrip(").,;!?")
+                    if (
+                        trimmed.startswith(("http://", "https://", "www."))
+                        or url_pattern.fullmatch(trimmed)
+                        or re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:[/?#]\S*)?", trimmed)
+                    ):
+                        return token
+                    updated = token
+                    updated = re.sub(r"(?<=[a-z])(?=[A-Z][a-z])", " ", updated)
+                    updated = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", updated)
+                    updated = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", updated)
+                    updated = re.sub(
+                        r"^(of|in|on|at|by|for|from|with|to|into|onto|upon|over|under|during|through|between|before|after|around|across)(the|a|an)([A-Za-z0-9-].*)$",
+                        r"\1 \2 \3",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"^(was|were|is|are|be|been|being|has|have|had|does|did|do)(the|a|an)([A-Za-z0-9-].*)$",
+                        r"\1 \2 \3",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"^(of|in|on|at|by|for|from|with|to)(the|a|an)$",
+                        r"\1 \2",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"^(was|were|is|are|be|been|being|has|have|had|does|did|do)(the|a|an)$",
+                        r"\1 \2",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\b([a-z]{4,})(for|with|from|into|over|under|after|before|between|through|and|or|to|the)\b",
+                        r"\1 \2",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\b([a-z]{4,}(?:s|ed|ing))a\b",
+                        r"\1 a",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\bfor(?=im[a-z]{3,}\b)",
+                        "for ",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\bor(?=self(?:-[a-z]{2,})?\b)",
+                        "or ",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\bto(?=be[a-z]{3,}\b)",
+                        "to ",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"\bthe(?=[bcdfghjklmnpqrstvwxyz][a-z]{7,}\b)",
+                        "the ",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"^the(new|old|same|next|first|last|other|american|united|electoral|continental|federal|national|presidency|government)([A-Za-z0-9-].*)?$",
+                        r"the \1\2",
+                        updated,
+                    )
+                    updated = re.sub(
+                        r"^(was|were|is|are|be|been|being|has|have|had|can|could|should|would|will|shall|may|might|must|does|did|do)([a-z]{7,})$",
+                        r"\1 \2",
+                        updated,
+                    )
+                    updated = re.sub(r"([A-Za-z][’']s)(?=[A-Za-z]{3,}\b)", r"\1 ", updated)
+                    updated = re.sub(r"(?<=[a-z]{3}ly)(?=[a-z]{3,})", " ", updated)
+                    return updated
+
+                line = "".join(_unglue_token(token) for token in re.split(r"(\s+)", line))
+                line = close_unbalanced_leading_emphasis(line)
+                stripped = line.strip()
+                lowered = stripped.lower()
+
+                if re.fullmatch(r"(?:\*{3,}|-{3,}|_{3,})", stripped):
+                    healed.append("---")
+                    section_mode = ""
+                    continue
+
+                if stripped.startswith("#"):
+                    saw_heading = True
+
+                if lowered in section_label_modes:
+                    canonical = canonical_section.get(lowered, lowered)
+                    heading = section_headings.get(canonical, " ".join(word.capitalize() for word in canonical.split()))
+                    healed.append(f"## {heading}")
+                    section_mode = canonical
+                    saw_heading = True
+                    continue
+
+                match = re.match(
+                    rf"(?i)^(?:#{{1,6}}\s*)?({section_pattern})\s*[:\-]?\s*(.+)?$",
+                    stripped,
+                )
+                if match and stripped:
+                    label = match.group(1).lower()
+                    canonical = canonical_section.get(label, label)
+                    content = (match.group(2) or "").strip()
+                    heading = section_headings.get(canonical, " ".join(word.capitalize() for word in canonical.split()))
+                    healed.append(f"## {heading}")
+                    saw_heading = True
+                    if content:
+                        if canonical in {"key points", "takeaway", "next steps"}:
+                            healed.append(f"- {content}")
+                        else:
+                            healed.append(content)
+                    section_mode = canonical
+                    continue
+
+                if stripped.startswith("## "):
+                    label = stripped[3:].strip().lower()
+                    canonical = canonical_section.get(label, label)
+                    section_mode = canonical if canonical in section_label_modes else ""
+                    saw_heading = True
+                elif stripped.startswith("#"):
+                    section_mode = ""
+                    saw_heading = True
+
+                if stripped == "":
+                    healed.append("")
+                    continue
+
+                inline_items = re.split(
+                    rf"(?:^|(?<=[.!?]))\s*(?:[{bullet_chars}]|\d{{1,3}}[.)-])\s+(?=\S)",
+                    stripped,
+                )
+                inline_items = [segment.strip() for segment in inline_items if segment.strip()]
+                if (
+                    section_mode in {"key points", "takeaway", "next steps"}
+                    and len(inline_items) > 1
+                    and not stripped.startswith((">", "#", "```"))
+                ):
+                    for segment in inline_items:
+                        healed.append(f"- {segment}")
+                    continue
+
+                is_list_item = bool(re.match(r"^(?:[-*+]\s|\d+\.\s)", stripped))
+                if section_mode in {"key points", "takeaway", "next steps"} and not is_list_item and not stripped.startswith((">", "#")):
+                    if ":" in stripped or stripped.startswith(("**", "[x]", "[X]", "[ ]")) or section_mode == "takeaway":
+                        line = f"- {stripped}"
+                healed.append(line)
+
+        cleaned = [line for line in healed if not re.fullmatch(r"#{1,6}", line.strip())]
+        first_content_idx = -1
+        has_subheading_after_first = False
+        for idx, line in enumerate(cleaned):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            first_content_idx = idx
+            break
+        if first_content_idx >= 0:
+            for line in cleaned[first_content_idx + 1:]:
+                if line.strip().startswith("## "):
+                    has_subheading_after_first = True
+                    break
+
+        if first_content_idx >= 0:
+            first = cleaned[first_content_idx].strip()
+            first_is_heading = first.startswith("#")
+            first_is_list_like = first.startswith(("```", "-", "*", ">", "1.", "2.", "3."))
+            looks_like_title = bool(first) and not bool(re.search(r"[.!?]$", first))
+            if (not first_is_heading and not first_is_list_like and looks_like_title) and (
+                has_subheading_after_first or not saw_heading
+            ):
+                cleaned[first_content_idx] = f"# {first}"
+
+        collapsed: list[str] = []
+        blank_count = 0
+        for line in cleaned:
+            if line.strip() == "":
+                blank_count += 1
+                if blank_count > 2:
+                    continue
+            else:
+                blank_count = 0
+            collapsed.append(line)
+
+        section_spaced: list[str] = []
+        for line in collapsed:
+            stripped = line.strip()
+            if stripped.startswith("#") and section_spaced and section_spaced[-1].strip():
+                section_spaced.append("")
+            section_spaced.append(line)
+
+        result = "\n".join(section_spaced)
+        if trailing_newline and not result.endswith("\n"):
+            result += "\n"
+        return result
+
+    def _split_stream_chunks(self, markdown_text: str) -> list[str]:
+        if self._stream_mode == "characters":
+            return list(markdown_text)
+        if self._stream_mode == "lines":
+            return markdown_text.splitlines(keepends=True)
+        return re.findall(r"\S+\s*", markdown_text)
+
+    def _compose_stream_markdown(self, chunks: list[str], count: int) -> str:
+        text = "".join(chunks[:count])
+        return text
+
+    def _render_commit_interval(self) -> float:
+        if self._stream_mode == "characters":
+            base_interval = 1.0 / 30.0
+        elif self._stream_units_per_second >= 85.0:
+            base_interval = 1.0 / 30.0
+        elif self._stream_units_per_second >= 45.0:
+            base_interval = 1.0 / 34.0
+        else:
+            base_interval = 1.0 / 40.0
+        budget_interval = max(1.0 / 60.0, min(0.11, (self._render_cost_ema_ms * 1.65) / 1000.0))
+        return max(base_interval, budget_interval)
+
+    def _fade_restart_interval(self) -> float:
+        if self._stream_units_per_second >= 90.0:
+            return 0.18
+        if self._stream_units_per_second >= 60.0:
+            return 0.15
+        if self._stream_units_per_second >= 30.0:
+            return 0.12
+        return 0.1
+
+    @staticmethod
+    def _compute_changed_span(previous: str, current: str) -> tuple[int, int] | None:
+        if previous == current:
+            return None
+        max_prefix = min(len(previous), len(current))
+        prefix = 0
+        while prefix < max_prefix and previous[prefix] == current[prefix]:
+            prefix += 1
+        prev_suffix = len(previous)
+        curr_suffix = len(current)
+        while prev_suffix > prefix and curr_suffix > prefix and previous[prev_suffix - 1] == current[curr_suffix - 1]:
+            prev_suffix -= 1
+            curr_suffix -= 1
+        if curr_suffix <= prefix:
+            return None
+        return prefix, curr_suffix
+
+    def _flush_stream_tick(self) -> None:
+        target_markdown = self._target_markdown
+        if not target_markdown:
+            self._display_markdown = ""
+            self._display_chunk_count = 0
+            self._stream_unit_credit = 0.0
+            self._target_chunks = []
+            self.body.clear()
+            self._stream_timer.stop()
+            return
+
+        chunks = self._target_chunks
+        if not chunks and target_markdown:
+            chunks = self._split_stream_chunks(target_markdown)
+            self._target_chunks = chunks
+        if not chunks:
+            self._display_markdown = target_markdown
+            self._display_chunk_count = 0
+            self.body.setMarkdown(self._display_markdown)
+            self._stream_timer.stop()
+            return
+
+        if self._display_chunk_count > len(chunks):
+            self._display_chunk_count = len(chunks)
+        if self._display_chunk_count < len(chunks):
+            burst_limits = {
+                "characters": 8,
+                "words": 4,
+                "lines": 2,
+            }
+            burst_limit = burst_limits.get(self._stream_mode, 4)
+            now = time.perf_counter()
+            if self._last_stream_time <= 0.0:
+                self._last_stream_time = now
+            # Clamp elapsed so occasional UI stalls do not produce end-of-stream bursts.
+            elapsed = max(0.0, min(0.09, now - self._last_stream_time))
+            self._last_stream_time = now
+            self._stream_unit_credit += elapsed * self._stream_units_per_second
+            self._stream_unit_credit = min(self._stream_unit_credit, float(burst_limit))
+            units_to_emit = int(self._stream_unit_credit)
+            if units_to_emit <= 0:
+                return
+            units_to_emit = min(units_to_emit, burst_limit)
+            self._stream_unit_credit -= units_to_emit
+            self._display_chunk_count = min(len(chunks), self._display_chunk_count + units_to_emit)
+
+        next_markdown = self._compose_stream_markdown(chunks, self._display_chunk_count)
+        if next_markdown == self._display_markdown:
+            if self._display_chunk_count >= len(chunks):
+                self._stream_timer.stop()
+            return
+
+        is_final_frame = self._display_chunk_count >= len(chunks) and next_markdown == target_markdown
+        now = time.perf_counter()
+        if not is_final_frame:
+            min_interval = self._render_commit_interval()
+            if self._last_render_commit > 0.0 and (now - self._last_render_commit) < min_interval:
+                return
+
+        follow_bottom = self._should_follow_bottom()
+        app = QApplication.instance()
+        reduced_motion = bool(app.property("reducedMotion")) if app is not None else False
+        animate_fade = (
+            not reduced_motion
+            and (now - self._last_fade_start) >= self._fade_restart_interval()
+        )
+        previous_plain = self.body.toPlainText() if animate_fade else ""
+        self._display_markdown = next_markdown
+        if self.loading_label.isVisible():
+            self.loading_label.hide()
+            self.body.show()
+            self.copy_btn.show()
+            self._layout_overlay_elements()
+        render_started = time.perf_counter()
+        self.body.setMarkdown(self._display_markdown)
+        render_ms = (time.perf_counter() - render_started) * 1000.0
+        self._render_cost_ema_ms = (self._render_cost_ema_ms * 0.82) + (render_ms * 0.18)
+        if animate_fade:
+            current_plain = self.body.toPlainText()
+            changed_span: tuple[int, int] | None = None
+            if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
+                changed_span = (len(previous_plain), len(current_plain))
+            else:
+                changed_span = self._compute_changed_span(previous_plain, current_plain)
+            if changed_span is not None:
+                span_len = max(0, changed_span[1] - changed_span[0])
+                if span_len <= 420:
+                    self._animate_new_text_fade(changed_span[0], changed_span[1])
+                    self._last_fade_start = now
+
+        self._last_render_commit = time.perf_counter()
+        self._size_debounce.start(22)
+        if follow_bottom:
+            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
+        if self._display_chunk_count >= len(chunks) and self._display_markdown == target_markdown:
+            self._stream_timer.stop()
+
+    def complete_stream(self) -> None:
+        target_markdown = self._target_markdown or self._last_markdown
+        self._stream_timer.stop()
+        self._stream_unit_credit = 0.0
+        self._last_stream_time = 0.0
+        self._last_render_commit = 0.0
+        self._last_fade_start = 0.0
+        if not target_markdown:
+            return
+        follow_bottom = self._should_follow_bottom()
+        previous_plain = self.body.toPlainText() if self.body.isVisible() else ""
+        self._display_markdown = target_markdown
+        self._display_chunk_count = len(self._split_stream_chunks(target_markdown))
+        if self.loading_label.isVisible():
+            self.loading_label.hide()
+            self.body.show()
+            self.copy_btn.show()
+            self._layout_overlay_elements()
+        self.body.setMarkdown(self._display_markdown)
+        current_plain = self.body.toPlainText()
+        if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
+            self._animate_new_text_fade(len(previous_plain), len(current_plain))
+        else:
+            self._stop_char_fades()
+        self._size_debounce.stop()
+        self._sync_size(animated=False)
+        if follow_bottom:
+            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
+
+    def ensure_stream_progress(self) -> None:
+        target_markdown = self._target_markdown or self._last_markdown
+        if not target_markdown:
+            return
+        if self.loading_label.isVisible():
+            self.loading_label.hide()
+            self.body.show()
+            self.copy_btn.show()
+            self._layout_overlay_elements()
+        if self._display_markdown != target_markdown:
+            previous_plain = self.body.toPlainText()
+            self._display_markdown = target_markdown
+            self.body.setMarkdown(self._display_markdown)
+            current_plain = self.body.toPlainText()
+            if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
+                self._animate_new_text_fade(len(previous_plain), len(current_plain))
+            else:
+                self._stop_char_fades()
+        self._size_debounce.start(22)
+
+    def _set_fade_span_alpha(self, start: int, end: int, alpha: int) -> None:
+        document = self.body.document()
+        max_pos = max(0, document.characterCount() - 1)
+        if start < 0:
+            start = 0
+        if start > max_pos:
+            return
+        end = min(end, max_pos)
+        if end <= start:
+            return
+        cursor = QTextCursor(document)
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(26, 26, 26, max(0, min(255, alpha))))
+        cursor.mergeCharFormat(fmt)
+
+    def _stop_char_fades(self) -> None:
+        for animation, _start, _end in self._active_char_fades:
+            animation.stop()
+        self._active_char_fades.clear()
+
+    def _animate_new_text_fade(self, start: int, end: int) -> None:
+        if end <= start:
+            return
+        app = QApplication.instance()
+        if app is not None and bool(app.property("reducedMotion")):
+            return
+        animation = QVariantAnimation(self)
+        animation.setDuration(400)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.setStartValue(120)
+        animation.setEndValue(255)
+        animation.valueChanged.connect(
+            lambda value, span_start=start, span_end=end: self._set_fade_span_alpha(span_start, span_end, int(value))
+        )
+
+        def _finalize(span_start: int = start, span_end: int = end, current_animation: QVariantAnimation = animation) -> None:
+            self._set_fade_span_alpha(span_start, span_end, 255)
+            self._active_char_fades[:] = [
+                (fade_animation, fade_start, fade_end)
+                for fade_animation, fade_start, fade_end in self._active_char_fades
+                if fade_animation is not current_animation
+            ]
+            current_animation.deleteLater()
+
+        animation.finished.connect(_finalize)
+        self._active_char_fades.append((animation, start, end))
+        self._set_fade_span_alpha(start, end, 120)
+        animation.start()
+
+    def _sync_size(self, force_minimum: bool = False, animated: bool = True) -> None:
+        if self._syncing_size:
+            return
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self._syncing_size = True
+        try:
+            width = self._target_width()
+            if width <= 0:
+                return
+            self.setFixedWidth(width)
+            root_margins = self.layout().contentsMargins()
+            surface_margins = self.surface.layout().contentsMargins()
+            viewport_width = max(
+                240,
+                width - root_margins.left() - root_margins.right() - surface_margins.left() - surface_margins.right(),
+            )
+            self.body.setMinimumWidth(viewport_width)
+            self.body.document().setTextWidth(max(1, viewport_width))
+            self.body.document().adjustSize()
+            doc_height = int(self.body.document().size().height())
+            compact_height = 90
+            minimum_height = compact_height
+            max_height = max(minimum_height, int(parent.height() * 0.7))
+            collapsed_height = max(minimum_height, int(max_height * 0.5))
+            header_height = 36
+            body_height = doc_height + header_height + surface_margins.top() + surface_margins.bottom() + 24
+            total_height = compact_height if force_minimum or not self._streaming_started else max(compact_height, body_height + root_margins.top() + root_margins.bottom())
+            expanded_height = min(max_height, total_height)
+            if force_minimum:
+                final_height = minimum_height
+            elif self._expanded:
+                final_height = expanded_height
+            else:
+                final_height = collapsed_height
+            self._can_expand = (not force_minimum) and (total_height > collapsed_height + 6)
+            self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            target_rect = QRect(self._target_pos(), QSize(width, final_height))
+            if not self.isVisible() or force_minimum or not animated:
+                self._size_animation.stop()
+                self.setGeometry(target_rect)
+            else:
+                current_rect = self.geometry()
+                if current_rect == target_rect:
+                    return
+                if self._size_animation.state() == QPropertyAnimation.Running:
+                    end_rect = self._size_animation.endValue()
+                    if isinstance(end_rect, QRect) and end_rect == target_rect:
+                        return
+                self._size_animation.stop()
+                self._size_animation.setStartValue(current_rect)
+                self._size_animation.setEndValue(target_rect)
+                self._size_animation.start()
+            self._layout_overlay_elements()
+            self.expand_btn.setVisible(self._can_expand and not self._expanded and self.body.isVisible())
+            self.raise_()
+        finally:
+            self._syncing_size = False
+
+    def _target_width(self) -> int:
+        parent = self.parentWidget()
+        if parent is None:
+            return 0
+        available = max(360, parent.width() - 80)
+        return min(760, available)
+
+    def _target_pos(self) -> QPoint:
+        parent = self.parentWidget()
+        if parent is None:
+            return QPoint(0, 0)
+        if self._manual_pos is not None:
+            return self._manual_pos
+        x = max(16, (parent.width() - self.width()) // 2)
+        y = self._anchor_y if self._anchor_y is not None else max(72, int(parent.height() * 0.16))
+        return QPoint(x, y)
 
 
 class StartStudyDialog(QDialog):
@@ -413,6 +1563,7 @@ class StudyTab(QWidget):
     CARD_SUGGESTION_DEBOUNCE_MS = 280
     CARDS_TOOLBAR_CONTROL_HEIGHT = 40
     CARDS_TOOLBAR_SHELL_HEIGHT = 50
+    AI_TRIGGER_TOKENS = {"/ai", "#ai"}
 
     def __init__(
         self,
@@ -453,8 +1604,12 @@ class StudyTab(QWidget):
         self.session_prep_worker: SessionPrepWorker | None = None
         self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
+        self.ai_query_worker: AiSearchWorker | None = None
         self.session_prep_dialog: SessionPrepDialog | None = None
         self.reinforcement_dialog: ReinforcementProgressDialog | None = None
+        self.ai_response_overlay: AiResponseOverlay | None = None
+        self.ai_query_history: list[str] = []
+        self.ai_query_history_index = 0
         self.pending_reinforcement_cards: list[dict] = []
         self.pending_reinforcement_cluster_key = ""
         self.session_prep_remaining_cards: list[dict] = []
@@ -469,6 +1624,7 @@ class StudyTab(QWidget):
         self.card_search_last_scores: list[float] = []
         self.card_search_has_executed = False
         self.card_search_request_id = 0
+        self.ai_query_request_id = 0
         self.card_search_no_close_match = False
         self.global_recommendations: list[RecommendedCard] = []
         self._recommendation_signature: tuple[int, int] | None = None
@@ -500,6 +1656,8 @@ class StudyTab(QWidget):
         self.card_stream_timer.timeout.connect(self._render_next_card_batch)
 
         self._build_ui()
+        self.ai_response_overlay = AiResponseOverlay(self.icons, self)
+        self.ai_response_overlay.closed.connect(self._close_ai_overlay)
         self.reload_cards()
 
     def _play_sound(self, name: str) -> None:
@@ -600,11 +1758,13 @@ class StudyTab(QWidget):
         search_shell_layout.setContentsMargins(16, 5, 8, 5)
         search_shell_layout.setSpacing(8)
 
-        self.card_search_input = AnimatedLineEdit()
+        self.card_search_input = AiQueryLineEdit()
         self.card_search_input.setObjectName("SearchInputField")
         self.card_search_input.setPlaceholderText("Something like...")
         self.card_search_input.textChanged.connect(self._queue_card_search)
         self.card_search_input.returnPressed.connect(self._execute_card_search)
+        self.card_search_input.aiModeChanged.connect(self._on_card_search_ai_mode_changed)
+        self.card_search_input.historyRequested.connect(self._restore_previous_ai_query)
         self.card_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.card_search_input.installEventFilter(self)
         self.card_search_btn = AnimatedToolButton()
@@ -645,6 +1805,11 @@ class StudyTab(QWidget):
         self.card_search_dropdown = QFrame()
         self.card_search_dropdown.setObjectName("SearchSuggestionDropdown")
         polish_surface(self.card_search_dropdown)
+        dropdown_shadow = QGraphicsDropShadowEffect(self.card_search_dropdown)
+        dropdown_shadow.setBlurRadius(48)
+        dropdown_shadow.setOffset(0, 10)
+        dropdown_shadow.setColor(QColor(15, 37, 57, 92))
+        self.card_search_dropdown.setGraphicsEffect(dropdown_shadow)
         self.card_search_dropdown.setParent(container)
         self.card_search_dropdown.setVisible(False)
         dropdown_layout = QVBoxLayout(self.card_search_dropdown)
@@ -657,7 +1822,6 @@ class StudyTab(QWidget):
         self.card_search_list.setObjectName("SearchSuggestionList")
         self.card_search_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.card_search_list.itemClicked.connect(self._card_search_suggestion_clicked)
-        self.card_search_list.itemPressed.connect(self._card_search_suggestion_clicked)
         self.card_search_list.itemActivated.connect(self._card_search_suggestion_clicked)
         dropdown_layout.addWidget(self.card_search_list)
 
@@ -1014,7 +2178,14 @@ class StudyTab(QWidget):
             self.card_search_shell.update()
             if event.type() == QEvent.FocusIn and self.card_search_list.count() > 0:
                 QTimer.singleShot(0, self._reposition_card_search_dropdown)
+            elif event.type() == QEvent.FocusOut:
+                self._set_card_search_dropdown_visible(False)
         return super().eventFilter(watched, event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.ai_response_overlay is not None and self.ai_response_overlay.isVisible():
+            QTimer.singleShot(0, self.ai_response_overlay.refresh_layout)
 
     def _rerender_cards_for_layout_change(self) -> None:
         if not self.cards_loaded_once:
@@ -1218,8 +2389,17 @@ class StudyTab(QWidget):
         return filtered
 
     def _queue_card_search(self, text: str) -> None:
+        normalized = text.strip()
+        if not self.card_search_input.ai_mode_active() and normalized.lower() in self.AI_TRIGGER_TOKENS:
+            with QSignalBlocker(self.card_search_input):
+                self.card_search_input.clear()
+            self.card_search_input.set_ai_mode(True)
+            return
+        if self.card_search_input.ai_mode_active():
+            self.card_search_timer.stop()
+            self._set_card_search_dropdown_visible(False)
+            return
         self.card_search_request_id += 1
-        self.card_search_query = text
         self.card_search_has_executed = False if not text.strip() else self.card_search_has_executed
         self._set_card_search_dropdown_visible(False)
         self.card_search_suggestions = []
@@ -1236,6 +2416,8 @@ class StudyTab(QWidget):
         self.card_search_timer.start(self.CARD_SUGGESTION_DEBOUNCE_MS)
 
     def _request_card_suggestions(self) -> None:
+        if self.card_search_input.ai_mode_active():
+            return
         query = self.card_search_input.text().strip()
         if len(query) < 2 or not self.card_search_input.hasFocus():
             return
@@ -1310,6 +2492,22 @@ class StudyTab(QWidget):
             "subtopic": None if self.current_subtopic == "All" else self.current_subtopic,
         }
 
+    def _on_card_search_ai_mode_changed(self, active: bool) -> None:
+        self.card_search_timer.stop()
+        self._set_card_search_dropdown_visible(False)
+        if active:
+            self.ai_query_history_index = len(self.ai_query_history)
+            self.card_search_input.setFocus()
+
+    def _restore_previous_ai_query(self) -> None:
+        if not self.card_search_input.ai_mode_active() or not self.ai_query_history:
+            return
+        self.ai_query_history_index = max(0, self.ai_query_history_index - 1)
+        query = self.ai_query_history[self.ai_query_history_index]
+        with QSignalBlocker(self.card_search_input):
+            self.card_search_input.setText(query)
+        self.card_search_input.setCursorPosition(len(query))
+
     def _should_hide_card_suggestions(self, query: str, suggestions: list[dict]) -> bool:
         query_lower = query.lower().strip()
         if not query_lower:
@@ -1330,6 +2528,9 @@ class StudyTab(QWidget):
         query = self.card_search_input.text().strip()
         self.card_search_timer.stop()
         self._set_card_search_dropdown_visible(False)
+        if self.card_search_input.ai_mode_active():
+            self._submit_ai_query(query)
+            return
         if not query:
             self.card_search_query = ""
             self.card_search_has_executed = False
@@ -1367,6 +2568,8 @@ class StudyTab(QWidget):
     def _on_card_search_finished(self, request_id: int, query: str, scored: object) -> None:
         if request_id != self.card_search_request_id:
             return
+        if self.card_search_input.ai_mode_active():
+            return
         if query != self.card_search_input.text().strip():
             return
         scored_items = scored if isinstance(scored, list) else []
@@ -1391,6 +2594,70 @@ class StudyTab(QWidget):
             self._card_search_workers.remove(worker)
         if self.card_search_worker is worker:
             self.card_search_worker = None
+
+    def _submit_ai_query(self, query: str) -> None:
+        if not query:
+            return
+        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Ask AI"):
+            return
+        if not self.ai_query_history or self.ai_query_history[-1] != query:
+            self.ai_query_history.append(query)
+        self.ai_query_history_index = len(self.ai_query_history)
+        if self.ai_query_worker is not None and self.ai_query_worker.isRunning():
+            self.ai_query_worker.stop()
+        self.ai_query_request_id += 1
+        request_id = self.ai_query_request_id
+        with QSignalBlocker(self.card_search_input):
+            self.card_search_input.clear()
+        self.card_search_input.set_ai_mode(False)
+        ai_settings = self.datastore.load_ai_settings()
+        profile_context = self.datastore.load_profile()
+        if self.ai_response_overlay is not None:
+            self.ai_response_overlay.begin_stream()
+        worker = AiSearchWorker(
+            request_id=request_id,
+            ollama=self.ollama,
+            model="gemma3:4b",
+            prompt=query,
+            context_length=int(ai_settings.get("followup_context_length", 8192)),
+            profile_context=profile_context,
+        )
+        self.ai_query_worker = worker
+        worker.chunk.connect(self._on_ai_query_chunk)
+        worker.failed.connect(self._on_ai_query_failed)
+        worker.finished.connect(self._on_ai_query_finished)
+        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_query_worker(current))
+        worker.finished.connect(lambda _request_id, current=worker: self._cleanup_ai_query_worker(current))
+        worker.start()
+
+    def _on_ai_query_chunk(self, request_id: int, markdown_text: str) -> None:
+        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
+            return
+        self.ai_response_overlay.set_markdown(markdown_text)
+
+    def _on_ai_query_failed(self, request_id: int, message: str) -> None:
+        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
+            return
+        self.ai_response_overlay.set_markdown(f"### Unable to answer\n- {message}")
+        self.ai_response_overlay.ensure_stream_progress()
+
+    def _on_ai_query_finished(self, request_id: int) -> None:
+        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
+            return
+        if not self.ai_response_overlay.has_markdown():
+            self.ai_response_overlay.set_markdown("### No answer\n- The model returned an empty response.")
+        self.ai_response_overlay.ensure_stream_progress()
+
+    def _cleanup_ai_query_worker(self, worker: AiSearchWorker) -> None:
+        if self.ai_query_worker is not worker:
+            worker.deleteLater()
+            return
+        self.ai_query_worker = None
+        worker.deleteLater()
+
+    def _close_ai_overlay(self) -> None:
+        if self.ai_query_worker is not None and self.ai_query_worker.isRunning():
+            self.ai_query_worker.stop()
 
     @staticmethod
     def _fallback_text_search(query: str, cards: list[dict]) -> list[dict]:
@@ -2583,12 +3850,14 @@ class StudyTab(QWidget):
         if auto_prompt is None:
             self.followup_input.clear()
         ai_settings = self.datastore.load_ai_settings()
+        profile_context = self.datastore.load_profile()
         self.followup_worker = FollowUpWorker(
             ollama=self.ollama,
             model="gemma3:4b",
             prompt=prompt,
             context=context,
             context_length=int(ai_settings.get("followup_context_length", 8192)),
+            profile_context=profile_context,
         )
         self.followup_worker.chunk.connect(self.grade_feedback.setMarkdown)
         self.followup_worker.finished.connect(lambda: self.followup_btn.setEnabled(True))

@@ -11,7 +11,7 @@ from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
 from studymate.services.recommendation_service import build_global_recommendations
 from studymate.services.study_intelligence import build_session_state, enqueue_similar_cards, refresh_topic_clusters, register_grade_result
-from studymate.ui.study_tab import StudyTab
+from studymate.ui.study_tab import AiResponseOverlay, StudyTab
 from studymate.utils.paths import AppPaths
 
 
@@ -224,6 +224,91 @@ class NnaServiceTests(unittest.TestCase):
         self.assertFalse(StudyTab._should_grade_answer_on_next("   "))
         self.assertFalse(StudyTab._should_grade_answer_on_next("....."))
         self.assertFalse(StudyTab._should_grade_answer_on_next("asdfghjkl"))
+
+    def test_ai_overlay_normalize_markdown_splits_inline_bullets(self) -> None:
+        raw = (
+            "Improving Your GamingSkills\n"
+            "Key points\n"
+            "- Practice consistently:Regular play is crucialfor skill development.- Analyze your gameplay: "
+            "Identify areas forimprovement through recordings orself-reflection.- Focus on fundamentals: "
+            "Master basic mechanicsand strategies.\n"
+            "- Learn from others: Watch experienced playersand streamers.\n"
+            "Quick explanation\n"
+            "Gaming skill improvement requiresa multifaceted approach.\n"
+            "Takeaway\n"
+            "Dedication and focusedlearning are key tobecoming a better gamer."
+        )
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("# Improving Your Gaming Skills", normalized)
+        self.assertIn("## Key Points", normalized)
+        self.assertIn("## Quick Explanation", normalized)
+        self.assertIn("## Takeaway", normalized)
+        self.assertRegex(normalized, r"(?m)^- Practice consistently:")
+        self.assertRegex(normalized, r"(?m)^- Analyze your gameplay:")
+        self.assertRegex(normalized, r"(?m)^- Focus on fundamentals:")
+        self.assertNotIn("development.- Analyze", normalized)
+
+    def test_ai_overlay_normalize_markdown_converts_unicode_bullets(self) -> None:
+        raw = (
+            "Test title\n"
+            "Key points\n"
+            "\u2022 First point.- Second point.\n"
+            "Takeaway\n"
+            "\u2022 Keep practicing."
+        )
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("# Test title", normalized)
+        self.assertRegex(normalized, r"(?m)^- First point\.$")
+        self.assertRegex(normalized, r"(?m)^- Second point\.$")
+        self.assertRegex(normalized, r"(?m)^- Keep practicing\.$")
+
+    def test_ai_overlay_normalize_markdown_repairs_glued_heading_and_spacing(self) -> None:
+        raw = (
+            "George Washington\n"
+            "Key Points\n"
+            "\u2022 He served from1789 to 1797.- He led theContinental Army during theAmerican Revolutionary War."
+            "## Quick Explanation\n"
+            "\u2022 Washington was unanimouslyelected by the ElectoralCollege.\n"
+            "Takeaway\n"
+            "\u2022 Washington's presidency shaped thefoundation of American democracy."
+        )
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("# George Washington", normalized)
+        self.assertIn("## Key Points", normalized)
+        self.assertIn("## Quick Explanation", normalized)
+        self.assertIn("## Takeaway", normalized)
+        self.assertIn("- He served from 1789 to 1797.", normalized)
+        self.assertIn("- He led the Continental Army during the American Revolutionary War.", normalized)
+        self.assertNotIn("War.## Quick Explanation", normalized)
+        self.assertIn("unanimously elected", normalized)
+        self.assertIn("Electoral College", normalized)
+        self.assertIn("the foundation of American democracy", normalized)
+
+    def test_ai_overlay_normalize_markdown_canonicalizes_common_markers(self) -> None:
+        raw = (
+            "Plan\n"
+            "---\n"
+            "1) first item\n"
+            "2- second item\n"
+            "[x] done task\n"
+            ">quoted text\n"
+            "***\n"
+        )
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("# Plan", normalized)
+        self.assertRegex(normalized, r"(?m)^1\. first item$")
+        self.assertRegex(normalized, r"(?m)^2\. second item$")
+        self.assertRegex(normalized, r"(?m)^- \[x\] done task$")
+        self.assertRegex(normalized, r"(?m)^> quoted text$")
+        self.assertIn("\n---\n", normalized)
 
 
 if __name__ == "__main__":

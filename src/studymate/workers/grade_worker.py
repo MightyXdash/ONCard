@@ -7,6 +7,7 @@ from PySide6.QtCore import QThread, Signal
 from studymate.constants import GRADE_RESPONSE_SCHEMA
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.utils.markdown import cleanup_plain_text
+from studymate.workers.prompt_context import with_oncard_context
 
 
 class GradeWorker(QThread):
@@ -98,15 +99,19 @@ class GradeWorker(QThread):
 
         preview_text = ""
         if self.stream_preview:
-            preview_prompt = (
-                "You are a strict but fair teacher speaking directly to the student. "
-                "Be calm and professional, not soft. "
-                "Reward correct or mostly correct answers strongly, including 10/10 when the core meaning is clearly right for the student's level. "
-                "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still earn 10/10. "
-                "In that case, you may omit criticism entirely instead of forcing a what-is-wrong section. "
-                "Be strict on wrong, off-topic, vague, spammy, or low-effort answers. "
-                "If an answer is inappropriate, hateful, abusive, nonsense, or does not attempt the question, say that clearly and do not praise it. "
-                "Stream concise feedback in markdown."
+            preview_prompt = with_oncard_context(
+                (
+                    "You are a strict but fair teacher speaking directly to the student. "
+                    "Be calm and professional, not soft. "
+                    "Reward correct or mostly correct answers strongly, including 10/10 when the core meaning is clearly right for the student's level. "
+                    "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still earn 10/10. "
+                    "In that case, you may omit criticism entirely instead of forcing a what-is-wrong section. "
+                    "Be strict on wrong, off-topic, vague, spammy, or low-effort answers. "
+                    "If an answer is inappropriate, hateful, abusive, nonsense, or does not attempt the question, say that clearly and do not praise it. "
+                    "Stream concise feedback in markdown."
+                ),
+                feature="Answer grading preview",
+                profile_context=self.profile_context,
             )
             user_preview_prompt = (
                 f"Student age: {self.profile_context.get('age', '')}\n"
@@ -132,22 +137,26 @@ class GradeWorker(QThread):
                 self.stream.emit(preview_text)
 
         self.status.emit("Creating structured grade report...")
-        structured_prompt = (
-            "Return only strict JSON matching schema. "
-            "You are a strict but fair teacher speaking directly to the student. "
-            "Score the answer based on the expected answer, age, and grade level. "
-            "Small grammar mistakes are okay, but factual mistakes, off-topic content, spam, gibberish, abusive language, slurs, or non-answers must be graded harshly. "
-            "If the answer is inappropriate, hateful, abusive, random garbage, or does not attempt the question, marks_out_of_10 must be between 0 and 2 and state must be wrong. "
-            "If the core meaning is clearly correct for the student's level, award 10/10 even if wording is simple. "
-            "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still receive 10/10. "
-            "For those under-16 clearly-correct answers, you may leave what_went_bad empty and avoid nitpicking. "
-            "Somewhat right answers may still receive high marks if the core meaning is correct. "
-            "Also produce a hidden how_good score out of 120.0000 for internal study analytics. "
-            "Set state to 'correct' when the answer meaning is broadly right for the student's level. "
-            "Set state to 'wrong' when the answer meaning is not right enough yet. "
-            "When correct, make what_went_good specific and deserved. "
-            "When wrong, be firm and direct about what is missing or unacceptable. "
-            "Do not praise wrong, abusive, irrelevant, or nonsense answers."
+        structured_prompt = with_oncard_context(
+            (
+                "Return only strict JSON matching schema. "
+                "You are a strict but fair teacher speaking directly to the student. "
+                "Score the answer based on the expected answer, age, and grade level. "
+                "Small grammar mistakes are okay, but factual mistakes, off-topic content, spam, gibberish, abusive language, slurs, or non-answers must be graded harshly. "
+                "If the answer is inappropriate, hateful, abusive, random garbage, or does not attempt the question, marks_out_of_10 must be between 0 and 2 and state must be wrong. "
+                "If the core meaning is clearly correct for the student's level, award 10/10 even if wording is simple. "
+                "If the student is age 16 or younger, a vague or slightly imprecise but clearly correct answer may still receive 10/10. "
+                "For those under-16 clearly-correct answers, you may leave what_went_bad empty and avoid nitpicking. "
+                "Somewhat right answers may still receive high marks if the core meaning is correct. "
+                "Also produce a hidden how_good score out of 120.0000 for internal study analytics. "
+                "Set state to 'correct' when the answer meaning is broadly right for the student's level. "
+                "Set state to 'wrong' when the answer meaning is not right enough yet. "
+                "When correct, make what_went_good specific and deserved. "
+                "When wrong, be firm and direct about what is missing or unacceptable. "
+                "Do not praise wrong, abusive, irrelevant, or nonsense answers."
+            ),
+            feature="Answer grading structured output",
+            profile_context=self.profile_context,
         )
         user_structured = (
             f"Student age: {self.profile_context.get('age', '')}\n"

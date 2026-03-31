@@ -16,6 +16,7 @@ from studymate.services.files_to_cards_service import (
 from studymate.services.model_registry import MODELS
 from studymate.services.ollama_service import OllamaService
 from studymate.utils.markdown import cleanup_plain_text
+from studymate.workers.prompt_context import with_oncard_context
 
 
 class FilesToCardsCancelled(RuntimeError):
@@ -99,12 +100,15 @@ class FilesToCardsWorker(QThread):
             restart_requested = False
             for chunk in self.ollama.stream_chat(
                 model=MODELS["gemma3_4b"].primary_tag,
-                system_prompt=(
-                    "You are a careful OCR assistant. "
-                    "First reason about what is visible, then transcribe only the visible content. "
-                    "Do not invent or complete missing text. "
-                    "If a word is unreadable, write [unclear]. "
-                    "Return markdown with exactly these sections: ## Analysis and ## Plain Text."
+                system_prompt=with_oncard_context(
+                    (
+                        "You are a careful OCR assistant. "
+                        "First reason about what is visible, then transcribe only the visible content. "
+                        "Do not invent or complete missing text. "
+                        "If a word is unreadable, write [unclear]. "
+                        "Return markdown with exactly these sections: ## Analysis and ## Plain Text."
+                    ),
+                    feature="Files To Cards OCR extraction",
                 ),
                 user_prompt=self._ocr_prompt_for_page(page),
                 image_paths=[str(page.image_path)],
@@ -212,11 +216,14 @@ class FilesToCardsWorker(QThread):
             restart_requested = False
             for chunk in self.ollama.stream_chat(
                 model=MODELS["gemma3_4b"].primary_tag,
-                system_prompt=(
-                    "You are an expert study-material synthesizer reading images directly. "
-                    "Use the visible content to write strong revision notes, not OCR transcripts. "
-                    "Do not loop or repeat the same word over and over. "
-                    "Use plain markdown headings only."
+                system_prompt=with_oncard_context(
+                    (
+                        "You are an expert study-material synthesizer reading images directly. "
+                        "Use the visible content to write strong revision notes, not OCR transcripts. "
+                        "Do not loop or repeat the same word over and over. "
+                        "Use plain markdown headings only."
+                    ),
+                    feature="Files To Cards vision paper synthesis",
                 ),
                 user_prompt=user_prompt,
                 image_paths=image_paths,
@@ -285,11 +292,14 @@ class FilesToCardsWorker(QThread):
             restart_requested = False
             for chunk in self.ollama.stream_chat(
                 model=MODELS["gemma3_4b"].primary_tag,
-                system_prompt=(
-                    "You are an expert study-material synthesizer. "
-                    "Merge overlapping study sections cleanly without losing key facts. "
-                    "Do not loop or repeat the same word over and over. "
-                    "Use plain markdown headings only."
+                system_prompt=with_oncard_context(
+                    (
+                        "You are an expert study-material synthesizer. "
+                        "Merge overlapping study sections cleanly without losing key facts. "
+                        "Do not loop or repeat the same word over and over. "
+                        "Use plain markdown headings only."
+                    ),
+                    feature="Files To Cards paper merge",
                 ),
                 user_prompt=user_prompt,
                 temperature=0.2,
@@ -353,10 +363,13 @@ class FilesToCardsWorker(QThread):
             restart_requested = False
             for chunk in self.ollama.stream_chat(
                 model=MODELS["gemma3_4b"].primary_tag,
-                system_prompt=(
-                    "You are an expert study-material synthesizer. "
-                    "Do not loop or repeat the same word over and over. "
-                    "Use plain markdown headings only."
+                system_prompt=with_oncard_context(
+                    (
+                        "You are an expert study-material synthesizer. "
+                        "Do not loop or repeat the same word over and over. "
+                        "Use plain markdown headings only."
+                    ),
+                    feature="Files To Cards paper synthesis",
                 ),
                 user_prompt=user_prompt,
                 temperature=0.2,
@@ -444,9 +457,12 @@ class FilesToCardsWorker(QThread):
             self._emit_status(f"Gemma batch attempt {attempt}: collecting {needed} more question(s)...")
             result = self.ollama.stream_structured_chat(
                 model=MODELS["gemma3_4b"].primary_tag,
-                system_prompt=(
-                    "Return only strict JSON matching the schema. "
-                    "Write concise school-study questions with natural wording."
+                system_prompt=with_oncard_context(
+                    (
+                        "Return only strict JSON matching the schema. "
+                        "Write concise school-study questions with natural wording."
+                    ),
+                    feature="Files To Cards question generation",
                 ),
                 user_prompt=prompt,
                 schema=schema,

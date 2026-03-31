@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from studymate.services.ollama_service import OllamaError, OllamaService
+from studymate.workers.prompt_context import with_oncard_context
 
 
 class FollowUpWorker(QThread):
@@ -18,6 +19,7 @@ class FollowUpWorker(QThread):
         prompt: str,
         context: str,
         context_length: int = 8192,
+        profile_context: dict | None = None,
     ) -> None:
         super().__init__()
         self.ollama = ollama
@@ -25,9 +27,14 @@ class FollowUpWorker(QThread):
         self.prompt = prompt
         self.context = context
         self.context_length = context_length
+        self.profile_context = profile_context or {}
 
     def run(self) -> None:
-        system_prompt = "You are a friendly study coach. Give concise practical follow-up advice."
+        system_prompt = with_oncard_context(
+            "You are a friendly study coach. Give concise practical follow-up advice.",
+            feature="Study follow-up help",
+            profile_context=self.profile_context,
+        )
         user_prompt = f"{self.context}\n\nFollow-up request:\n{self.prompt}"
         text = ""
         try:

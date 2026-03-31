@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from studymate.constants import CREATE_RESPONSE_SCHEMA, SUBJECT_TAXONOMY
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.utils.markdown import cleanup_plain_text
+from studymate.workers.prompt_context import with_oncard_context
 
 
 def generate_card_payload(
@@ -44,10 +45,14 @@ def generate_card_payload(
             "response_to_user": response_to_user,
         }
 
-    system_prompt = (
-        "You are a precise flashcard assistant. "
-        "Return only valid JSON that matches the provided schema. "
-        "No markdown, no code fences, no extra keys."
+    system_prompt = with_oncard_context(
+        (
+            "You are a precise flashcard assistant. "
+            "Return only valid JSON that matches the provided schema. "
+            "No markdown, no code fences, no extra keys."
+        ),
+        feature="Card autofill generation",
+        profile_context=profile_context,
     )
     taxonomy = ", ".join(SUBJECT_TAXONOMY.keys())
     profile_text = (
