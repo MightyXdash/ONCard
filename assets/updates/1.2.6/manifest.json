@@ -1,0 +1,18 @@
+{
+  "post_install": {
+    "update_name": "Ask AI In Semantic Search",
+    "subtitle": "ONCard 1.2.6 makes Ask AI easier to reach and easier to read.",
+    "text1": "You can now go to the semantic search bar and type \"/ai\" to switch into Ask AI mode. From there, you can ask direct questions in a natural way. In this example, the banner shows a user asking who the first president of America was.",
+    "text2": "Here, shows what that Ask AI response experience looks like in practice. Using the same example question about the first president of America, ONCard displays the answer inside the Ask AI overlay so the user can immediately read the feedback they get."
+  },
+  "whats_new": {
+    "title": "Welcome to ONCard 1.2.6",
+    "description": "Ask AI is now easier to access from semantic search, and the first-open banners walk through that flow with a real example.",
+    "points": [
+      "Type \"/ai\" in the semantic search bar to switch into Ask AI mode.",
+      "Ask AI lets the user ask direct questions instead of only searching cards.",
+      "The example banners show a question about the first president of America and the response the user receives.",
+      "The Ask AI answer now appears in the overlay with the updated presentation flow."
+    ]
+  }
+}
