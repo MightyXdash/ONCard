@@ -26,9 +26,6 @@ def app_stylesheet() -> str:
     QWidget#AppShell[windowMaximized="true"] {
         border-radius: 0px;
     }
-    QWidget#StartupSplash {
-        border-radius: 28px;
-    }
     QLabel {
         background: transparent;
     }
@@ -817,3 +814,4 @@ def app_stylesheet() -> str:
         border-color: #dfe5eb;
     }
     """
+
