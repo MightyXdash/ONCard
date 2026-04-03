@@ -212,7 +212,7 @@ class AiResponseOverlay(QWidget):
             QFrame#AiResponseSurface {
                 background: #FAFAFB;
                 border: 1px solid rgba(215, 219, 226, 0.88);
-                border-radius: 22px;
+                border-radius: 34px;
             }
             """
         )

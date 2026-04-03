@@ -9,6 +9,7 @@ import uuid
 from PySide6.QtCore import QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QMouseEvent, QPixmap, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QDialog,
     QFileDialog,
     QFrame,
@@ -425,6 +426,7 @@ class CreateTab(QWidget):
         files_layout = QHBoxLayout(files_frame)
         files_layout.setContentsMargins(18, 18, 18, 18)
         files_layout.setSpacing(18)
+        self._files_layout = files_layout
 
         files_left = QVBoxLayout()
         files_left.setContentsMargins(0, 0, 0, 0)
@@ -465,6 +467,7 @@ class CreateTab(QWidget):
         import_spacer = QLabel("")
         import_spacer.setMinimumWidth(210)
         labels_row.addWidget(import_spacer)
+        self._labels_import_spacer = import_spacer
 
         mode_label = QLabel("Mode")
         mode_label.setObjectName("SmallMeta")
@@ -597,6 +600,50 @@ class CreateTab(QWidget):
         root.addWidget(editor_surface, 2)
         root.addWidget(queue_surface, 1)
         self._refresh_files_to_cards_state()
+        QTimer.singleShot(0, self._apply_responsive_ftc_layout)
+
+    def _apply_responsive_ftc_layout(self) -> None:
+        controls_parent = self.import_btn.parentWidget()
+        controls_width = controls_parent.width() if controls_parent is not None else self.width()
+
+        compact = controls_width < 860
+        stacked_sidebar = controls_width < 720
+
+        if stacked_sidebar:
+            self._files_layout.setDirection(QBoxLayout.Direction.TopToBottom)
+            self._files_layout.setStretch(0, 1)
+            self._files_layout.setStretch(1, 0)
+            self.selected_files_list.setMinimumWidth(0)
+            self.selected_files_list.setMaximumWidth(16777215)
+        else:
+            self._files_layout.setDirection(QBoxLayout.Direction.LeftToRight)
+            self._files_layout.setStretch(0, 3)
+            self._files_layout.setStretch(1, 1)
+            if compact:
+                self.selected_files_list.setMinimumWidth(220)
+                self.selected_files_list.setMaximumWidth(280)
+            else:
+                self.selected_files_list.setMinimumWidth(320)
+                self.selected_files_list.setMaximumWidth(360)
+
+        if compact:
+            self._labels_import_spacer.setMinimumWidth(140)
+            self.import_btn.setMinimumWidth(150)
+            self.mode_combo.setMinimumWidth(128)
+            self.question_count.setMinimumWidth(90)
+            self.generate_btn.setMinimumWidth(130)
+            self.stop_btn.setMinimumWidth(112)
+        else:
+            self._labels_import_spacer.setMinimumWidth(210)
+            self.import_btn.setMinimumWidth(210)
+            self.mode_combo.setMinimumWidth(180)
+            self.question_count.setMinimumWidth(120)
+            self.generate_btn.setMinimumWidth(180)
+            self.stop_btn.setMinimumWidth(140)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_ftc_layout()
 
     def _load_ftc_defaults(self) -> dict:
         setup = self.datastore.load_setup()
