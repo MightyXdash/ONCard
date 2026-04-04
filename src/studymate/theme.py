@@ -42,6 +42,29 @@ def app_stylesheet() -> str:
         border: 1px solid rgba(167, 182, 199, 0.42);
         border-radius: 26px;
     }
+    QDialog#StatsDialog {
+        background: transparent;
+        border: none;
+    }
+    QDialog#StatsDialog QFrame#Surface[statsMain="true"] {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(167, 182, 199, 0.36);
+        border-radius: 40px;
+    }
+    QPushButton#StatsCloseButton {
+        background: transparent;
+        border: none;
+        border-radius: 12px;
+        padding: 0px;
+    }
+    QPushButton#StatsCloseButton:hover {
+        background-color: rgba(15, 37, 57, 0.08);
+        border: none;
+    }
+    QPushButton#StatsCloseButton:pressed {
+        background-color: rgba(15, 37, 57, 0.15);
+        border: none;
+    }
     QFrame#SearchSuggestionDropdown {
         background-color: rgba(255, 255, 255, 0.98);
         border: 1px solid rgba(160, 176, 194, 0.48);
@@ -313,6 +336,39 @@ def app_stylesheet() -> str:
     QPushButton#AppIconMenuButton:pressed {
         background-color: #e3edf7;
         border: none;
+    }
+    QPushButton#AppIconAccountButton {
+        text-align: left;
+        background: transparent;
+        border: none;
+        border-radius: 12px;
+        padding: 8px 12px;
+        color: #172330;
+        font-size: 13px;
+        font-weight: 700;
+    }
+    QPushButton#AppIconAccountButton:hover {
+        background-color: #edf4fa;
+        border: none;
+        border-radius: 12px;
+    }
+    QPushButton#AppIconAccountButton:pressed {
+        background-color: #e3edf7;
+        border: none;
+        border-radius: 12px;
+    }
+    QComboBox#AppIconAccountsCombo {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(166, 181, 197, 0.5);
+        border-radius: 12px;
+        padding: 6px 28px 6px 10px;
+        font-size: 12px;
+        color: #172330;
+        min-height: 24px;
+    }
+    QComboBox#AppIconAccountsCombo:hover {
+        border-color: rgba(122, 168, 220, 0.85);
+        background: #fcfeff;
     }
     QToolButton#CollapseButton {
         background-color: transparent;

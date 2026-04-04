@@ -8,6 +8,7 @@ import webbrowser
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 import psutil
 
+from studymate.services.account_archive_service import AccountArchiveService
 from studymate.services.data_store import DataStore
 from studymate.services.model_registry import MODELS, recommended_models_for_ram, required_models_for_ram, total_selected_size_gb
 from studymate.services.ollama_service import OllamaService
@@ -92,6 +94,9 @@ class FieldBlock(QWidget):
 
 
 class ProfilePage(OnboardingPage):
+    import_profile_requested = Signal()
+    remove_import_requested = Signal()
+
     def __init__(self, banners_root: Path, sounds: UiSoundBank | None = None) -> None:
         super().__init__(
             title="Welcome to ONCard",
@@ -101,6 +106,7 @@ class ProfilePage(OnboardingPage):
         )
         self.sounds = sounds
         self._last_attention_value = 5
+        self._import_archive_path = ""
 
         surface = QFrame()
         surface.setObjectName("Surface")
@@ -114,11 +120,27 @@ class ProfilePage(OnboardingPage):
         grid.setVerticalSpacing(12)
 
         self.name_edit = AnimatedLineEdit()
+        self.profile_name_edit = AnimatedLineEdit()
         self.age_spin = QSpinBox()
         self.age_spin.setRange(4, 99)
         self.age_spin.setValue(16)
         self.grade_combo = AnimatedComboBox()
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
+        self.gender_combo = AnimatedComboBox()
+        self.gender_combo.addItems(["Male", "Female", "Custom"])
+        self.gender_custom_edit = AnimatedLineEdit()
+        self.gender_custom_edit.setMaxLength(20)
+        self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
+        self.gender_custom_edit.setVisible(False)
+        self.gender_combo.currentIndexChanged.connect(self._on_gender_mode_changed)
+        gender_shell = QWidget()
+        gender_shell.setObjectName("WizardGenderShell")
+        gender_shell.setStyleSheet("QWidget#WizardGenderShell { background: transparent; }")
+        gender_layout = QVBoxLayout(gender_shell)
+        gender_layout.setContentsMargins(0, 0, 0, 0)
+        gender_layout.setSpacing(6)
+        gender_layout.addWidget(self.gender_combo)
+        gender_layout.addWidget(self.gender_custom_edit)
         self.hobbies_edit = AnimatedLineEdit()
 
         self.attention_slider = QSlider(Qt.Horizontal)
@@ -130,19 +152,37 @@ class ProfilePage(OnboardingPage):
         self.attention_value.setObjectName("SectionText")
 
         self.name_edit.textChanged.connect(lambda *_: self.changed.emit())
+        self.name_edit.textChanged.connect(self._on_name_changed)
         self.age_spin.valueChanged.connect(lambda *_: self.changed.emit())
         self.grade_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.gender_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.gender_custom_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.hobbies_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.attention_slider.valueChanged.connect(self._on_attention_changed)
 
-        grid.addWidget(FieldBlock("Name", self.name_edit), 0, 0)
-        grid.addWidget(FieldBlock("Age", self.age_spin), 0, 1)
-        grid.addWidget(FieldBlock("Grade", self.grade_combo), 1, 0)
-        grid.addWidget(FieldBlock("Hobbies / interests", self.hobbies_edit), 1, 1)
+        grid.addWidget(FieldBlock("User name", self.name_edit), 0, 0)
+        grid.addWidget(FieldBlock("Profile name", self.profile_name_edit), 0, 1)
+        grid.addWidget(FieldBlock("Age", self.age_spin), 1, 0)
+        grid.addWidget(FieldBlock("Grade", self.grade_combo), 1, 1)
+        grid.addWidget(FieldBlock("Hobbies / interests", self.hobbies_edit), 2, 0)
+        grid.addWidget(FieldBlock("Gender", gender_shell), 2, 1)
 
         surface_layout.addLayout(grid)
         surface_layout.addWidget(self.attention_value)
         surface_layout.addWidget(self.attention_slider)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 2, 0, 0)
+        controls.setSpacing(8)
+        self.import_profile_btn = AnimatedButton("Import profile")
+        self.import_profile_btn.clicked.connect(self.import_profile_requested.emit)
+        self.remove_zip_btn = AnimatedButton("remove zip file")
+        self.remove_zip_btn.clicked.connect(self.remove_import_requested.emit)
+        self.remove_zip_btn.hide()
+        controls.addWidget(self.import_profile_btn, 0, Qt.AlignLeft)
+        controls.addWidget(self.remove_zip_btn, 0, Qt.AlignLeft)
+        controls.addStretch(1)
+        surface_layout.addLayout(controls)
 
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
@@ -154,18 +194,102 @@ class ProfilePage(OnboardingPage):
         self.attention_value.setText(f"Attention span per question: {value} min")
         self.changed.emit()
 
+    def _on_name_changed(self) -> None:
+        if not self.profile_name_edit.text().strip():
+            self.profile_name_edit.setText(self.name_edit.text().strip())
+
+    def _on_gender_mode_changed(self) -> None:
+        is_custom = self.gender_combo.currentText().strip().lower() == "custom"
+        self.gender_custom_edit.setVisible(is_custom)
+
+    def _set_gender_from_profile(self, gender_value: str) -> None:
+        gender = str(gender_value or "").strip()
+        normalized = gender.lower()
+        if normalized == "male":
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        elif normalized == "female":
+            self.gender_combo.setCurrentText("Female")
+            self.gender_custom_edit.clear()
+        elif gender:
+            self.gender_combo.setCurrentText("Custom")
+            self.gender_custom_edit.setText(gender[:20])
+        else:
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        self._on_gender_mode_changed()
+
+    def _effective_gender(self) -> str:
+        mode = self.gender_combo.currentText().strip()
+        if mode.lower() == "custom":
+            return self.gender_custom_edit.text().strip()[:20]
+        return mode
+
     def can_continue(self) -> bool:
-        return bool(self.name_edit.text().strip())
+        if not self.name_edit.text().strip():
+            return False
+        if self.gender_combo.currentText().strip().lower() == "custom":
+            return bool(self.gender_custom_edit.text().strip())
+        return True
 
     def profile_payload(self) -> dict:
+        user_name = self.name_edit.text().strip()
         return {
-            "name": self.name_edit.text().strip(),
+            "name": user_name,
+            "profile_name": self.profile_name_edit.text().strip() or user_name,
             "age": str(self.age_spin.value()),
             "grade": self.grade_combo.currentText(),
+            "gender": self._effective_gender(),
             "hobbies": self.hobbies_edit.text().strip(),
             "attention_span_minutes": self.attention_slider.value(),
             "question_focus_level": self.attention_slider.value(),
         }
+
+    def set_imported_profile(self, profile: dict, *, archive_path: str) -> None:
+        self._import_archive_path = str(archive_path)
+        imported_name = str(profile.get("name", "")).strip()
+        self.name_edit.setText(imported_name)
+        self.profile_name_edit.setText(str(profile.get("profile_name", "")).strip() or imported_name)
+        try:
+            age = int(str(profile.get("age", "")).strip() or 16)
+        except ValueError:
+            age = 16
+        age = max(self.age_spin.minimum(), min(age, self.age_spin.maximum()))
+        self.age_spin.setValue(age)
+        grade = str(profile.get("grade", "")).strip()
+        if grade:
+            self.grade_combo.setCurrentText(grade)
+        self._set_gender_from_profile(str(profile.get("gender", "")).strip())
+        self.hobbies_edit.setText(str(profile.get("hobbies", "")).strip())
+        attention_value = int(profile.get("attention_span_minutes", profile.get("question_focus_level", 5)) or 5)
+        attention_value = max(self.attention_slider.minimum(), min(attention_value, self.attention_slider.maximum()))
+        self.attention_slider.setValue(attention_value)
+        self._set_form_locked(True)
+        self.changed.emit()
+
+    def clear_imported_profile(self) -> None:
+        self._import_archive_path = ""
+        self._set_form_locked(False)
+        self.changed.emit()
+
+    def imported_archive_path(self) -> str:
+        return self._import_archive_path
+
+    def _set_form_locked(self, locked: bool) -> None:
+        self.name_edit.setEnabled(not locked)
+        self.profile_name_edit.setEnabled(not locked)
+        self.age_spin.setEnabled(not locked)
+        self.grade_combo.setEnabled(not locked)
+        self.gender_combo.setEnabled(not locked)
+        self.gender_custom_edit.setEnabled(not locked and self.gender_combo.currentText().strip().lower() == "custom")
+        if locked:
+            self.gender_custom_edit.setVisible(False)
+        else:
+            self._on_gender_mode_changed()
+        self.hobbies_edit.setEnabled(not locked)
+        self.attention_slider.setEnabled(not locked)
+        self.import_profile_btn.setVisible(not locked)
+        self.remove_zip_btn.setVisible(locked)
 
 
 class AboutPage(OnboardingPage):
@@ -517,14 +641,24 @@ class QuickStartPage(OnboardingPage):
 
 
 class OnboardingWizard(QDialog):
-    def __init__(self, paths, datastore: DataStore, ollama: OllamaService, icons: IconHelper) -> None:
+    def __init__(
+        self,
+        paths,
+        datastore: DataStore,
+        ollama: OllamaService,
+        icons: IconHelper,
+        *,
+        archive_service: AccountArchiveService | None = None,
+    ) -> None:
         super().__init__()
         self.paths = paths
         self.datastore = datastore
         self.ollama = ollama
         self.icons = icons
+        self.archive_service = archive_service
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
         self.current_index = 0
+        self.import_archive_path = ""
 
         self.setWindowTitle("ONCard Setup")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
@@ -551,6 +685,8 @@ class OnboardingWizard(QDialog):
         for page in self.pages:
             page.changed.connect(self._refresh_nav)
             self.stack.addWidget(page)
+        self.profile_page.import_profile_requested.connect(self._import_profile_into_profile_page)
+        self.profile_page.remove_import_requested.connect(self._remove_imported_profile)
         shell.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
@@ -596,6 +732,26 @@ class OnboardingWizard(QDialog):
         if self.current_index < len(self.pages) - 1 and self.pages[self.current_index].can_continue():
             self._show_page(self.current_index + 1)
 
+    def _import_profile_into_profile_page(self) -> None:
+        if self.archive_service is None:
+            QMessageBox.warning(self, "Import profile", "Import service is not available right now.")
+            return
+        archive_file, _ = QFileDialog.getOpenFileName(self, "Import profile zip", "", "Zip files (*.zip)")
+        if not archive_file:
+            return
+        inspection = self.archive_service.inspect_archive(Path(archive_file))
+        if not inspection.valid:
+            QMessageBox.warning(self, "Import profile", inspection.error or "This profile zip is not valid.")
+            return
+        self.profile_page.set_imported_profile(inspection.profile, archive_path=archive_file)
+        self.import_archive_path = archive_file
+        self._refresh_nav()
+
+    def _remove_imported_profile(self) -> None:
+        self.profile_page.clear_imported_profile()
+        self.import_archive_path = ""
+        self._refresh_nav()
+
     def accept(self) -> None:
         if not self.pages[self.current_index].can_continue():
             return
@@ -613,3 +769,77 @@ class OnboardingWizard(QDialog):
         setup_state["performance_arena"] = perf_payload
         self.datastore.save_setup(setup_state)
         super().accept()
+
+
+class ProfileMakerDialog(QDialog):
+    def __init__(
+        self,
+        paths,
+        *,
+        existing_names: set[str] | None = None,
+        archive_service: AccountArchiveService | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.paths = paths
+        self.existing_names = set(existing_names or set())
+        self.archive_service = archive_service
+        self.import_archive_path = ""
+        self.sounds = UiSoundBank(self.paths.assets / "sfx")
+
+        self.setWindowTitle("Profile maker")
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
+        self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
+        self.setFixedSize(980, 700)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(18, 14, 18, 14)
+        shell.setSpacing(12)
+
+        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self.profile_page.import_profile_requested.connect(self._import_profile)
+        self.profile_page.remove_import_requested.connect(self._remove_imported_profile)
+        shell.addWidget(self.profile_page, 1)
+
+        nav = QHBoxLayout()
+        nav.addStretch(1)
+        self.create_btn = AnimatedButton("Create account")
+        self.create_btn.setObjectName("PrimaryButton")
+        self.cancel_btn = AnimatedButton("Cancel")
+        self.create_btn.clicked.connect(self._accept_if_valid)
+        self.cancel_btn.clicked.connect(self.reject)
+        nav.addWidget(self.create_btn)
+        nav.addWidget(self.cancel_btn)
+        shell.addLayout(nav)
+
+    def _import_profile(self) -> None:
+        if self.archive_service is None:
+            QMessageBox.warning(self, "Import profile", "Import service is not available right now.")
+            return
+        archive_file, _ = QFileDialog.getOpenFileName(self, "Import profile zip", "", "Zip files (*.zip)")
+        if not archive_file:
+            return
+        inspection = self.archive_service.inspect_archive(Path(archive_file))
+        if not inspection.valid:
+            QMessageBox.warning(self, "Import profile", inspection.error or "This profile zip is not valid.")
+            return
+        self.profile_page.set_imported_profile(inspection.profile, archive_path=archive_file)
+        self.import_archive_path = archive_file
+
+    def _remove_imported_profile(self) -> None:
+        self.profile_page.clear_imported_profile()
+        self.import_archive_path = ""
+
+    def _accept_if_valid(self) -> None:
+        profile = self.profile_payload()
+        name = str(profile.get("name", "")).strip()
+        if not name:
+            QMessageBox.warning(self, "Profile maker", "Name is required.")
+            return
+        if name in self.existing_names:
+            QMessageBox.warning(self, "Profile maker", "An account with the same name already exists.")
+            return
+        self.accept()
+
+    def profile_payload(self) -> dict:
+        return self.profile_page.profile_payload()

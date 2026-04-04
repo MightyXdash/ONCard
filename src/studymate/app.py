@@ -9,6 +9,8 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
+from studymate.services.account_archive_service import AccountArchiveService
+from studymate.services.account_service import AccountService
 from studymate.services.backup_service import BackupService
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
@@ -21,7 +23,7 @@ from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
 from studymate.ui.startup_splash import StartupSplash
 from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog
-from studymate.ui.wizard import OnboardingWizard
+from studymate.ui.wizard import OnboardingWizard, ProfileMakerDialog
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
 from studymate.workers.install_worker import ModelInstallWorker
@@ -30,18 +32,330 @@ from studymate.workers.update_check_worker import UpdateCheckWorker
 from studymate.workers.update_download_worker import UpdateDownloadWorker
 
 
+class SessionController:
+    def __init__(self, app: QApplication, base_paths: AppPaths, icons: IconHelper) -> None:
+        self.app = app
+        self.base_paths = base_paths
+        self.icons = icons
+        self.ollama = OllamaService()
+        self.account_service = AccountService(base_paths)
+        self.archive_service = AccountArchiveService()
+
+        self.window: MainWindow | None = None
+        self.paths: AppPaths | None = None
+        self.datastore: DataStore | None = None
+        self.preflight: ModelPreflightService | None = None
+        self.update_service: UpdateService | None = None
+        self.backup_service: BackupService | None = None
+        self._switching = False
+        self._startup_ready = False
+
+        self.app.aboutToQuit.connect(self._on_about_to_quit)
+
+    def start(self) -> int:
+        self.account_service.ensure_seed_account(name="Account 1")
+        if not self._open_active_session(show_splash=True):
+            return 0
+        return self.app.exec()
+
+    def list_accounts(self) -> list[dict]:
+        return self.account_service.list_accounts()
+
+    def active_account_id(self) -> str:
+        return self.account_service.get_active_account_id()
+
+    def rename_active_account(self, new_name: str) -> None:
+        active_id = self.active_account_id()
+        if not active_id:
+            raise RuntimeError("No active account is available.")
+        clean_name = str(new_name or "").strip()
+        if not clean_name:
+            raise ValueError("Name is required.")
+        self.account_service.rename_account(active_id, clean_name)
+
+    def switch_to_account(self, account_id: str) -> None:
+        target = str(account_id or "").strip()
+        if not target or target == self.active_account_id():
+            return
+        self.account_service.set_active_account(target)
+        self._reload_session()
+
+    def create_temp_export(self) -> Path:
+        if self.paths is None:
+            raise RuntimeError("No active session.")
+        account = self.account_service.get_active_account()
+        if account is None:
+            raise RuntimeError("No active account is available.")
+        return self.archive_service.create_temp_export(account=account, paths=self.paths)
+
+    def import_archive_into_current(self, archive_path: Path) -> None:
+        if self.paths is None:
+            raise RuntimeError("No active session.")
+        current_id = self.active_account_id()
+        if not current_id:
+            raise RuntimeError("No active account is available.")
+        self._teardown_session()
+        target_paths = self.account_service.account_paths(current_id)
+        target_paths.ensure()
+        try:
+            self.archive_service.import_archive_into_account(archive_path=Path(archive_path), paths=target_paths, overwrite=True)
+        except Exception:
+            self._open_active_session(show_splash=False)
+            raise
+        if not self._open_active_session(show_splash=False):
+            self.app.quit()
+
+    def delete_current_account(self) -> str:
+        current_id = self.active_account_id()
+        if not current_id:
+            raise RuntimeError("No active account is available.")
+        self._teardown_session()
+        next_id = self.account_service.delete_account(current_id)
+        if not next_id:
+            self.app.quit()
+            return "quit"
+        if not self._open_active_session(show_splash=False):
+            self.app.quit()
+            return "quit"
+        return "switched"
+
+    def create_new_account_via_profile(self, parent=None) -> bool:
+        existing_names = {str(item.get("name", "")).strip() for item in self.account_service.list_accounts()}
+        dialog = ProfileMakerDialog(
+            self.base_paths,
+            existing_names=existing_names,
+            archive_service=self.archive_service,
+            parent=parent,
+        )
+        if dialog.exec() == 0:
+            return False
+
+        profile = dialog.profile_payload()
+        name = str(profile.get("name", "")).strip()
+        if not name:
+            raise RuntimeError("Name is required.")
+        if self.account_service.name_exists(name):
+            raise RuntimeError("An account with the same name already exists.")
+
+        created = self.account_service.create_account(name=name, make_active=False)
+        created_id = str(created.get("id", ""))
+        created_paths = self.account_service.account_paths(created_id)
+        created_paths.ensure()
+        try:
+            if dialog.import_archive_path:
+                inspection = self.archive_service.inspect_archive(Path(dialog.import_archive_path))
+                if not inspection.valid:
+                    raise RuntimeError(inspection.error or "Import archive is invalid.")
+                imported_name = str(inspection.profile.get("name", "")).strip()
+                if imported_name and self.account_service.name_exists(imported_name, exclude_account_id=created_id):
+                    raise RuntimeError("An account with the imported name already exists.")
+                self.archive_service.import_archive_into_account(
+                    archive_path=Path(dialog.import_archive_path),
+                    paths=created_paths,
+                    overwrite=True,
+                )
+                if imported_name and imported_name != name:
+                    self.account_service.rename_account(created_id, imported_name)
+            else:
+                store = DataStore(created_paths)
+                store.save_profile(profile)
+                setup = store.load_setup()
+                source_setup = self.datastore.load_setup() if self.datastore is not None else {}
+                for key in ("ram_gb", "advanced_installation", "selected_models", "installed_models", "performance_arena", "performance"):
+                    if key in source_setup:
+                        setup[key] = source_setup[key]
+                setup["onboarding_complete"] = True
+                store.save_setup(setup)
+                if self.datastore is not None:
+                    store.save_ai_settings(self.datastore.load_ai_settings())
+                store.close()
+        except Exception:
+            self.account_service.delete_account(created_id)
+            raise
+
+        self.account_service.set_active_account(created_id)
+        self._reload_session()
+        return True
+
+    def _reload_session(self) -> None:
+        if self._switching:
+            return
+        self._switching = True
+        try:
+            self._teardown_session()
+            if not self._open_active_session(show_splash=False):
+                self.app.quit()
+        finally:
+            self._switching = False
+
+    def _teardown_session(self) -> None:
+        if self.window is not None:
+            self.window.begin_update_shutdown()
+            self.window.close()
+            self.window.deleteLater()
+            self.window = None
+        if self.datastore is not None:
+            self.datastore.close()
+            self.datastore = None
+        self.preflight = None
+        self.backup_service = None
+        self.update_service = None
+        self.paths = None
+
+    def _open_active_session(self, *, show_splash: bool) -> bool:
+        active = self.account_service.get_active_account()
+        if active is None:
+            active = self.account_service.ensure_seed_account(name="Account 1")
+        account_id = str(active.get("id", "")).strip()
+        if not account_id:
+            return False
+        self.account_service.set_active_account(account_id)
+        self.paths = self.account_service.account_paths(account_id)
+        self.paths.ensure()
+
+        self.datastore = DataStore(self.paths)
+        self.backup_service = BackupService(self.paths)
+        self.preflight = ModelPreflightService(self.datastore, self.ollama)
+        self.update_service = UpdateService(self.paths)
+        self._sync_account_name_from_profile()
+        setup = self.datastore.load_setup()
+        self.app.setProperty("reducedMotion", bool(setup.get("performance", {}).get("reduced_motion", False)))
+
+        app_icon = self.paths.icons / "app" / "app_logo.png"
+        if show_splash:
+            splash = StartupSplash(video_path=self.paths.startup_video, app_icon=app_icon if app_icon.exists() else None)
+            splash.show()
+            self.app.processEvents()
+            _run_startup_warmup(self.app, splash, self.datastore, self.preflight)
+
+        if not bool(setup.get("onboarding_complete", False)):
+            wizard = OnboardingWizard(
+                self.paths,
+                self.datastore,
+                self.ollama,
+                self.icons,
+                archive_service=self.archive_service,
+            )
+            result = wizard.exec()
+            if result == 0:
+                return False
+            if wizard.import_archive_path:
+                self.datastore.close()
+                self.archive_service.import_archive_into_account(
+                    archive_path=Path(wizard.import_archive_path),
+                    paths=self.paths,
+                    overwrite=True,
+                )
+                self.datastore = DataStore(self.paths)
+                self.preflight = ModelPreflightService(self.datastore, self.ollama)
+            self._sync_account_name_from_profile()
+
+        self.window = MainWindow(
+            self.paths,
+            self.datastore,
+            self.ollama,
+            self.icons,
+            self.preflight,
+            session_controller=self,
+        )
+        self.window.show()
+
+        if self.window is not None and self.update_service is not None and self.datastore is not None and self.paths is not None:
+            window = self.window
+            update_service = self.update_service
+            datastore = self.datastore
+            paths = self.paths
+            QTimer.singleShot(350, lambda: _notify_pending_silent_patch(window, update_service))
+            QTimer.singleShot(
+                500,
+                lambda: _show_whats_new_if_needed(
+                    self.app,
+                    window,
+                    datastore,
+                    self.ollama,
+                    update_service,
+                    paths,
+                ),
+            )
+            QTimer.singleShot(1200, lambda: _check_for_updates(self.app, window, update_service))
+        self._startup_ready = True
+        return True
+
+    def _sync_account_name_from_profile(self) -> None:
+        if self.datastore is None:
+            return
+        active_id = self.active_account_id()
+        if not active_id:
+            return
+        profile = self.datastore.load_profile()
+        account = self.account_service.get_account(active_id)
+        if account is None:
+            return
+
+        account_name = str(account.get("name", "")).strip()
+        desired_user_name = str(profile.get("name", "")).strip()
+        if not desired_user_name:
+            desired_user_name = account_name or f"Account {active_id[:6]}"
+
+        profile_name = str(profile.get("profile_name", "")).strip() or desired_user_name
+        profile_changed = False
+        if str(profile.get("name", "")).strip() != desired_user_name:
+            profile["name"] = desired_user_name
+            profile_changed = True
+        if str(profile.get("profile_name", "")).strip() != profile_name:
+            profile["profile_name"] = profile_name
+            profile_changed = True
+
+        final_account_name = desired_user_name
+        if account_name != desired_user_name:
+            try:
+                self.account_service.rename_account(active_id, desired_user_name)
+            except ValueError:
+                base = desired_user_name or account_name or f"Account {active_id[:6]}"
+                suffix = 2
+                candidate = base
+                while self.account_service.name_exists(candidate, exclude_account_id=active_id):
+                    candidate = f"{base} {suffix}"
+                    suffix += 1
+                self.account_service.rename_account(active_id, candidate)
+                final_account_name = candidate
+                if profile.get("name", "") != final_account_name:
+                    profile["name"] = final_account_name
+                    profile_changed = True
+                if not str(profile.get("profile_name", "")).strip():
+                    profile["profile_name"] = final_account_name
+                    profile_changed = True
+
+        if profile_changed:
+            self.datastore.save_profile(profile)
+
+    def _on_about_to_quit(self) -> None:
+        active_id = self.active_account_id()
+        if active_id:
+            try:
+                self.account_service.touch_last_used(active_id)
+            except Exception:
+                pass
+        if self.backup_service is not None:
+            self.backup_service.create_exit_backup()
+        if self.update_service is not None:
+            _maybe_install_pending_silent_patch(self.update_service)
+        if self.datastore is not None:
+            self.datastore.close()
+
+
 def run_app() -> int:
     if getattr(sys, "frozen", False):
         root = Path(sys.executable).resolve().parent
     else:
         root = Path(__file__).resolve().parents[2]
-    paths = AppPaths.from_runtime(root)
-    paths.ensure()
+    base_paths = AppPaths.from_runtime(root)
+    base_paths.ensure()
 
     app = QApplication(sys.argv)
     app.setEffectEnabled(Qt.UI_AnimateTooltip, False)
 
-    fonts_dir = paths.assets / "fonts" / "NunitoSans"
+    fonts_dir = base_paths.assets / "fonts" / "NunitoSans"
     if fonts_dir.exists():
         preferred_fonts = [
             "NunitoSans-Regular.ttf",
@@ -55,40 +369,12 @@ def run_app() -> int:
     app.setFont(QFont("Nunito Sans", 10))
     app.setStyleSheet(app_stylesheet())
 
-    icons = IconHelper(paths.icons)
-    app_icon = paths.icons / "app" / "app_logo.png"
+    icons = IconHelper(base_paths.icons)
+    app_icon = base_paths.icons / "app" / "app_logo.png"
     if app_icon.exists():
         app.setWindowIcon(QIcon(str(app_icon)))
-
-    datastore = DataStore(paths)
-    backup_service = BackupService(paths)
-    ollama = OllamaService()
-    preflight = ModelPreflightService(datastore, ollama)
-    update_service = UpdateService(paths)
-    setup = datastore.load_setup()
-    app.setProperty("reducedMotion", bool(setup.get("performance", {}).get("reduced_motion", False)))
-
-    splash = StartupSplash(video_path=paths.startup_video, app_icon=app_icon if app_icon.exists() else None)
-    splash.show()
-    app.processEvents()
-    _run_startup_warmup(app, splash, datastore, preflight)
-
-    if not setup.get("onboarding_complete", False):
-        wizard = OnboardingWizard(paths, datastore, ollama, icons)
-        result = wizard.exec()
-        if result == 0:
-            return 0
-
-    window = MainWindow(paths, datastore, ollama, icons, preflight)
-    app.aboutToQuit.connect(datastore.close)
-    app.aboutToQuit.connect(backup_service.create_exit_backup)
-    app.aboutToQuit.connect(lambda: _maybe_install_pending_silent_patch(update_service))
-    window.show()
-
-    QTimer.singleShot(350, lambda: _notify_pending_silent_patch(window, update_service))
-    QTimer.singleShot(500, lambda: _show_whats_new_if_needed(app, window, datastore, ollama, update_service, paths))
-    QTimer.singleShot(1200, lambda: _check_for_updates(app, window, update_service))
-    return app.exec()
+    controller = SessionController(app, base_paths, icons)
+    return controller.start()
 
 
 def _run_startup_warmup(

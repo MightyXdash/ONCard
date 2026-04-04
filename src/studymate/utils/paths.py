@@ -16,6 +16,9 @@ class AppPaths:
         install_root: Path | None = None,
         data_root: Path | None = None,
         local_data_root: Path | None = None,
+        base_data_root: Path | None = None,
+        base_local_data_root: Path | None = None,
+        account_id: str = "",
         is_frozen: bool = False,
     ) -> None:
         self.root = root
@@ -29,6 +32,11 @@ class AppPaths:
         self.startup_assets = self.assets / "startup"
         self.data = data_root or (root / "data")
         self.local_data = local_data_root or self.data
+        self.base_data = base_data_root or self.data
+        self.base_local_data = base_local_data_root or self.local_data
+        self.account_id = str(account_id or "").strip()
+        self.accounts = self.base_data / "accounts"
+        self.accounts_index_file = self.accounts / "accounts_index.json"
         self.config = self.data / "config"
         self.subjects = self.data / "subjects"
         self.study_history = self.data / "study_history"
@@ -44,6 +52,24 @@ class AppPaths:
         self.embedding_cache_file = self.runtime / "embedding_cache.json"
         self.startup_video = self.startup_assets / "startup_loop.mp4"
         self.update_state = self.runtime / "update_state.json"
+
+    def for_account(self, account_id: str) -> "AppPaths":
+        account = str(account_id or "").strip()
+        if not account:
+            raise ValueError("account_id is required")
+        account_root = self.accounts / account
+        # Keep account state in one root so import/export can copy the full account cleanly.
+        return AppPaths(
+            self.root,
+            bundle_root=self.bundle_root,
+            install_root=self.install_root,
+            data_root=account_root,
+            local_data_root=account_root,
+            base_data_root=self.base_data,
+            base_local_data_root=self.base_local_data,
+            account_id=account,
+            is_frozen=self.is_frozen,
+        )
 
     @classmethod
     def from_runtime(cls, root: Path) -> "AppPaths":
@@ -79,11 +105,14 @@ class AppPaths:
             install_root=install_root,
             data_root=data_root,
             local_data_root=local_data_root,
+            base_data_root=data_root,
+            base_local_data_root=local_data_root,
             is_frozen=is_frozen,
         )
 
     def ensure(self) -> None:
         paths_to_create = [
+            self.accounts,
             self.config,
             self.subjects,
             self.study_history,

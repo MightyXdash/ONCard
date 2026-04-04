@@ -106,8 +106,10 @@ class DataStore:
         now = cls.now_iso()
         return {
             "name": "",
+            "profile_name": "",
             "age": "",
             "grade": "",
+            "gender": "",
             "hobbies": "",
             "attention_span_minutes": 5,
             "question_focus_level": 5,

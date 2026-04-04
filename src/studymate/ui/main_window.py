@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRect, QSize, Qt, QEasingCurve, QUrl, QTimer
+from PySide6.QtCore import QEvent, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRect, QSize, Qt, QEasingCurve, QUrl, QTimer, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QMouseEvent, QPainter, QPainterPath, QPixmap, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QGraphicsBlurEffect,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -17,11 +18,12 @@ from PySide6.QtWidgets import (
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
-from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
+from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedStackedWidget
 from studymate.ui.audio import ClickSoundFilter, UiSoundBank
 from studymate.ui.create_tab import CreateTab
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.settings_dialog import SettingsDialog
+from studymate.ui.stats_dialog import StatsDialog
 from studymate.ui.study_tab import StudyTab
 from studymate.ui.window_effects import polish_windows_window
 
@@ -77,6 +79,8 @@ class WindowDragBar(QFrame):
 
 
 class AppIconMenu(QWidget):
+    account_selected = Signal(str)
+
     LINKS = (
         ("ONCard", "https://github.com/MightyXdash/ONCard"),
         ("Releases", "https://github.com/MightyXdash/ONCard/releases"),
@@ -110,6 +114,17 @@ class AppIconMenu(QWidget):
         surface_layout.setContentsMargins(8, 8, 8, 8)
         surface_layout.setSpacing(4)
 
+        self.account_combo = AnimatedComboBox(self.surface)
+        self.account_combo.setObjectName("AppIconAccountsCombo")
+        self.account_combo.setPlaceholderText("")
+        self.account_combo.setCurrentIndex(-1)
+        self.account_combo.currentIndexChanged.connect(self._account_combo_changed)
+        surface_layout.addWidget(self.account_combo)
+
+        links_header = QLabel("Links")
+        links_header.setObjectName("SmallMeta")
+        surface_layout.addWidget(links_header)
+
         for label, url in self.LINKS:
             button = AnimatedButton(label)
             button.setObjectName("AppIconMenuButton")
@@ -119,6 +134,19 @@ class AppIconMenu(QWidget):
             button.set_motion_scale_range(0.012)
             button.clicked.connect(lambda _checked=False, target=url: self._open_url(target))
             surface_layout.addWidget(button)
+
+    def set_accounts(self, accounts: list[dict], active_id: str) -> None:
+        self.account_combo.blockSignals(True)
+        self.account_combo.clear()
+        active_index = -1
+        for account in accounts:
+            account_id = str(account.get("id", "")).strip()
+            name = str(account.get("name", "")).strip() or f"Account {account_id[:6]}"
+            self.account_combo.addItem(name, account_id)
+            if account_id and account_id == active_id:
+                active_index = self.account_combo.count() - 1
+        self.account_combo.setCurrentIndex(active_index)
+        self.account_combo.blockSignals(False)
 
     def popup_from(self, anchor: QWidget) -> None:
         if self.isVisible():
@@ -169,8 +197,20 @@ class AppIconMenu(QWidget):
         self.hide()
         QDesktopServices.openUrl(QUrl(url))
 
+    def _choose_account(self, account_id: str) -> None:
+        self.hide()
+        self.account_selected.emit(account_id)
+
+    def _account_combo_changed(self, index: int) -> None:
+        account_id = str(self.account_combo.itemData(index) or "").strip()
+        if not account_id:
+            return
+        self._choose_account(account_id)
+
 
 class UserProfileMenu(QWidget):
+    view_stats_requested = Signal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setObjectName("UserProfileMenu")
@@ -204,29 +244,30 @@ class UserProfileMenu(QWidget):
         self.name_label.setObjectName("SectionTitle")
         surface_layout.addWidget(self.name_label)
 
-        self.meta_label = QLabel("")
+        self.meta_label = QLabel("Tap View stats")
         self.meta_label.setObjectName("SmallMeta")
         surface_layout.addWidget(self.meta_label)
 
-        self.hobbies_label = QLabel("")
-        self.hobbies_label.setObjectName("SectionText")
-        self.hobbies_label.setWordWrap(True)
-        surface_layout.addWidget(self.hobbies_label)
+        self.stats_btn = AnimatedButton("View stats")
+        self.stats_btn.setObjectName("AppIconMenuButton")
+        self.stats_btn.setProperty("skipClickSfx", True)
+        self.stats_btn.setMinimumWidth(176)
+        self.stats_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.stats_btn.set_motion_scale_range(0.012)
+        self.stats_btn.clicked.connect(self._request_stats)
+        surface_layout.addWidget(self.stats_btn)
 
     def set_profile(self, profile: dict) -> None:
         name = str(profile.get("name", "")).strip() or "Student"
         grade = str(profile.get("grade", "")).strip()
         age = str(profile.get("age", "")).strip()
-        hobbies = str(profile.get("hobbies", "")).strip()
-
-        meta_parts = []
+        meta_parts: list[str] = []
         if grade:
             meta_parts.append(grade)
         if age:
             meta_parts.append(f"Age {age}")
         self.name_label.setText(name)
-        self.meta_label.setText(" \u00b7 ".join(meta_parts) if meta_parts else "Profile details")
-        self.hobbies_label.setText(hobbies or "No interests added yet.")
+        self.meta_label.setText(" \u00b7 ".join(meta_parts) if meta_parts else "Tap View stats")
 
     def popup_from(self, anchor: QWidget) -> None:
         if self.isVisible():
@@ -273,6 +314,10 @@ class UserProfileMenu(QWidget):
         self._animation_group.addAnimation(opacity_animation)
         self._animation_group.start()
 
+    def _request_stats(self) -> None:
+        self.hide()
+        self.view_stats_requested.emit()
+
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -282,6 +327,7 @@ class MainWindow(QMainWindow):
         ollama: OllamaService,
         icons: IconHelper,
         preflight: ModelPreflightService,
+        session_controller=None,
     ) -> None:
         super().__init__()
         self.paths = paths
@@ -289,10 +335,13 @@ class MainWindow(QMainWindow):
         self.ollama = ollama
         self.icons = icons
         self.preflight = preflight
+        self.session_controller = session_controller
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
         self._click_sfx_filter = ClickSoundFilter(self.sounds, self)
         self._app_menu = AppIconMenu(self)
         self._profile_menu = UserProfileMenu(self)
+        self._app_menu.account_selected.connect(self._on_account_selected)
+        self._profile_menu.view_stats_requested.connect(self._open_stats_dialog)
         self._profile_hover_timer = QTimer(self)
         self._profile_hover_timer.setSingleShot(True)
         self._profile_hover_timer.timeout.connect(self._show_profile_menu_from_hover)
@@ -334,6 +383,7 @@ class MainWindow(QMainWindow):
         shell = QWidget()
         shell.setObjectName("AppShell")
         shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._app_shell = shell
         layout = QVBoxLayout(shell)
         layout.setContentsMargins(22, 12, 22, 22)
         layout.setSpacing(14)
@@ -374,6 +424,8 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.feedback_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.envelope_btn = self._build_icon_button("envelope", "Notifications", lambda: self.show_update_notice("Notifications coming soon", 3000))
         left_layout.addWidget(self.envelope_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.quick_add_btn = self._build_icon_button("plus", "Quick add", lambda: self.show_update_notice("Quick add coming soon", 3000))
+        left_layout.addWidget(self.quick_add_btn, 0, Qt.AlignmentFlag.AlignLeft)
         title_layout.addWidget(left_cluster, 0, Qt.AlignmentFlag.AlignLeft)
 
         title_layout.addStretch(1)
@@ -443,9 +495,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack, 1)
 
         self.setCentralWidget(shell)
+        self._stats_overlay = QWidget(shell)
+        self._stats_overlay.setObjectName("StatsBackdropOverlay")
+        self._stats_overlay.setStyleSheet("QWidget#StatsBackdropOverlay { background: rgba(255, 255, 255, 0.44); border: none; }")
+        self._stats_overlay.hide()
+        self._stats_overlay.raise_()
+        self._position_stats_overlay()
         self.statusBar().setSizeGripEnabled(False)
         self._sync_nav_icons()
         self._sync_window_controls()
+
+    def _position_stats_overlay(self) -> None:
+        overlay = getattr(self, "_stats_overlay", None)
+        shell = getattr(self, "_app_shell", None)
+        if overlay is None or shell is None:
+            return
+        overlay.setGeometry(shell.rect())
 
     def _apply_native_window_chrome(self) -> None:
         rounded = not (self._pseudo_maximized or self.isMaximized())
@@ -501,6 +566,8 @@ class MainWindow(QMainWindow):
     def _toggle_app_menu(self) -> None:
         if self._profile_menu.isVisible():
             self._profile_menu.hide()
+        if self.session_controller is not None:
+            self._app_menu.set_accounts(self.session_controller.list_accounts(), self.session_controller.active_account_id())
         self._app_menu.popup_from(self.app_icon_btn)
 
     def _toggle_profile_menu(self) -> None:
@@ -574,10 +641,49 @@ class MainWindow(QMainWindow):
         self._sync_window_controls()
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.datastore, self.ollama, self.preflight, self)
+        dialog = SettingsDialog(
+            self.datastore,
+            self.ollama,
+            self.preflight,
+            self,
+            session_controller=self.session_controller,
+        )
         result = dialog.exec()
         if result:
             self.create_tab.refresh_ftc_defaults()
+
+    def _open_stats_dialog(self) -> None:
+        if self.session_controller is None:
+            return
+        self._position_stats_overlay()
+        self._stats_overlay.show()
+        self._stats_overlay.raise_()
+        blur = QGraphicsBlurEffect(self._app_shell)
+        blur.setBlurRadius(16.0)
+        self._app_shell.setGraphicsEffect(blur)
+        dialog = StatsDialog(
+            self.datastore,
+            self.ollama,
+            self.session_controller,
+            self,
+            close_icon_path=self.paths.icons / "common" / "close.png",
+        )
+        try:
+            dialog.exec()
+        finally:
+            self._stats_overlay.hide()
+            try:
+                self._app_shell.setGraphicsEffect(None)
+            except RuntimeError:
+                pass
+
+    def _on_account_selected(self, account_id: str) -> None:
+        if self.session_controller is None:
+            return
+        try:
+            self.session_controller.switch_to_account(account_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Accounts", str(exc))
 
     def begin_update_shutdown(self) -> None:
         self._update_shutdown_requested = True
@@ -618,6 +724,7 @@ class MainWindow(QMainWindow):
                 self._pseudo_maximized = False
                 self._sync_window_controls()
         super().resizeEvent(event)
+        self._position_stats_overlay()
         self._apply_native_window_chrome()
 
     def showEvent(self, event: QShowEvent) -> None:

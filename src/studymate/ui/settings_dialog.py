@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import shutil
 
 from PySide6.QtCore import Qt
@@ -8,12 +9,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
@@ -41,14 +44,24 @@ MODEL_ROLE_COPY = {
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, datastore: DataStore, ollama: OllamaService, preflight: ModelPreflightService, parent=None) -> None:
+    def __init__(
+        self,
+        datastore: DataStore,
+        ollama: OllamaService,
+        preflight: ModelPreflightService,
+        parent=None,
+        *,
+        session_controller=None,
+    ) -> None:
         super().__init__(parent)
         self.datastore = datastore
         self.ollama = ollama
         self.preflight = preflight
+        self.session_controller = session_controller
         self._install_worker: ModelInstallWorker | None = None
         self._install_target_key = ""
         self._model_rows: dict[str, dict[str, object]] = {}
+        self._account_action_buttons: list[QPushButton] = []
         self._sfx_ready = False
         self._last_attention_value = 5
 
@@ -120,12 +133,28 @@ class SettingsDialog(QDialog):
         form.setFormAlignment(Qt.AlignTop)
 
         self.name_edit = AnimatedLineEdit()
+        self.profile_name_edit = AnimatedLineEdit()
         self.age_spin = QSpinBox()
         self.age_spin.setRange(4, 99)
         self.hobbies_edit = AnimatedLineEdit()
         self.grade_combo = AnimatedComboBox()
         self.grade_combo.setEditable(True)
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
+        self.gender_combo = AnimatedComboBox()
+        self.gender_combo.addItems(["Male", "Female", "Custom"])
+        self.gender_custom_edit = AnimatedLineEdit()
+        self.gender_custom_edit.setMaxLength(20)
+        self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
+        self.gender_custom_edit.setVisible(False)
+        self.gender_combo.currentIndexChanged.connect(self._on_gender_mode_changed)
+        gender_shell = QWidget()
+        gender_shell.setObjectName("SettingsGenderShell")
+        gender_shell.setStyleSheet("QWidget#SettingsGenderShell { background: transparent; }")
+        gender_layout = QVBoxLayout(gender_shell)
+        gender_layout.setContentsMargins(0, 0, 0, 0)
+        gender_layout.setSpacing(6)
+        gender_layout.addWidget(self.gender_combo)
+        gender_layout.addWidget(self.gender_custom_edit)
         self.attention_slider = QSlider(Qt.Horizontal)
         self.attention_slider.setObjectName("SettingsAttentionSlider")
         self.attention_slider.setRange(1, 10)
@@ -171,13 +200,64 @@ class SettingsDialog(QDialog):
         attention_layout.addWidget(self.attention_value)
         attention_layout.addWidget(self.attention_slider)
 
-        form.addRow("Name", self.name_edit)
+        form.addRow("User name", self.name_edit)
+        form.addRow("Profile name", self.profile_name_edit)
         form.addRow("Age", self.age_spin)
         form.addRow("Hobby/Interests", self.hobbies_edit)
         form.addRow("Grade", self.grade_combo)
+        form.addRow("Gender", gender_shell)
         form.addRow("Attention span", attention_shell)
 
         layout.addWidget(surface)
+
+        account_surface = QFrame()
+        account_surface.setObjectName("Surface")
+        polish_surface(account_surface)
+        account_layout = QVBoxLayout(account_surface)
+        account_layout.setContentsMargins(20, 20, 20, 20)
+        account_layout.setSpacing(8)
+        account_title = QLabel("Profile account actions")
+        account_title.setObjectName("SectionTitle")
+        account_note = QLabel("Manage your account directly from profile settings.")
+        account_note.setObjectName("SectionText")
+        account_note.setWordWrap(True)
+        account_layout.addWidget(account_title)
+        account_layout.addWidget(account_note)
+
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 2, 0, 0)
+        actions_row.setSpacing(10)
+        for text, handler in (
+            ("export account", self._export_account_flow),
+            ("delete account", self._delete_account_flow),
+            ("change account", self._change_account_flow),
+            ("New account", self._new_account_flow),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("SettingsTinyLink")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFlat(True)
+            button.clicked.connect(handler)
+            button.setStyleSheet(
+                """
+                QPushButton#SettingsTinyLink {
+                    border: none;
+                    background: transparent;
+                    color: #8C96A1;
+                    font-size: 11px;
+                    padding: 0px;
+                    text-align: left;
+                }
+                QPushButton#SettingsTinyLink:hover {
+                    color: #2E7DFF;
+                }
+                """
+            )
+            actions_row.addWidget(button, 0, Qt.AlignLeft)
+            self._account_action_buttons.append(button)
+        actions_row.addStretch(1)
+        account_layout.addLayout(actions_row)
+        layout.addWidget(account_surface)
 
         ftc_surface = QFrame()
         ftc_surface.setObjectName("Surface")
@@ -236,6 +316,7 @@ class SettingsDialog(QDialog):
         ftc_layout.addWidget(ftc_hint)
 
         layout.addWidget(ftc_surface)
+        self._set_account_actions_enabled(self.session_controller is not None)
         layout.addStretch(1)
         scroll.setWidget(host)
         return scroll
@@ -446,9 +527,13 @@ class SettingsDialog(QDialog):
 
     def _load(self) -> None:
         profile = self.datastore.load_profile()
-        self.name_edit.setText(str(profile.get("name", "")))
+        user_name = str(profile.get("name", "")).strip()
+        profile_name = str(profile.get("profile_name", "")).strip() or user_name
+        self.name_edit.setText(user_name)
+        self.profile_name_edit.setText(profile_name)
         self.age_spin.setValue(self._coerce_age(profile.get("age")))
         self.hobbies_edit.setText(str(profile.get("hobbies", "")))
+        self._set_gender_from_profile(str(profile.get("gender", "")).strip())
 
         grade = str(profile.get("grade", "")).strip()
         if grade and self.grade_combo.findText(grade) < 0:
@@ -494,11 +579,27 @@ class SettingsDialog(QDialog):
         self._refresh_model_status()
 
     def _save(self) -> None:
+        profile_name = self.name_edit.text().strip()
+        if not profile_name:
+            QMessageBox.warning(self, "Settings", "Name is required.")
+            return
+        if self.gender_combo.currentText().strip().lower() == "custom" and not self.gender_custom_edit.text().strip():
+            QMessageBox.warning(self, "Settings", "Enter a custom gender up to 20 characters.")
+            return
+        if self.session_controller is not None:
+            try:
+                self.session_controller.rename_active_account(profile_name)
+            except Exception as exc:
+                QMessageBox.warning(self, "Settings", str(exc))
+                return
+
         profile = self.datastore.load_profile()
-        profile["name"] = self.name_edit.text().strip()
+        profile["name"] = profile_name
+        profile["profile_name"] = self.profile_name_edit.text().strip() or profile_name
         profile["age"] = str(self.age_spin.value())
         profile["hobbies"] = self.hobbies_edit.text().strip()
         profile["grade"] = self.grade_combo.currentText().strip()
+        profile["gender"] = self._effective_gender_value()
         profile["attention_span_minutes"] = self.attention_slider.value()
         profile["question_focus_level"] = self.attention_slider.value()
         self.datastore.save_profile(profile)
@@ -543,8 +644,192 @@ class SettingsDialog(QDialog):
         self._last_attention_value = value
         self._update_attention_label(value)
 
+    def _on_gender_mode_changed(self) -> None:
+        is_custom = self.gender_combo.currentText().strip().lower() == "custom"
+        self.gender_custom_edit.setVisible(is_custom)
+
+    def _set_gender_from_profile(self, gender_value: str) -> None:
+        gender = str(gender_value or "").strip()
+        normalized = gender.lower()
+        if normalized == "male":
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        elif normalized == "female":
+            self.gender_combo.setCurrentText("Female")
+            self.gender_custom_edit.clear()
+        elif gender:
+            self.gender_combo.setCurrentText("Custom")
+            self.gender_custom_edit.setText(gender[:20])
+        else:
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        self._on_gender_mode_changed()
+
+    def _effective_gender_value(self) -> str:
+        mode = self.gender_combo.currentText().strip()
+        if mode.lower() == "custom":
+            return self.gender_custom_edit.text().strip()[:20]
+        return mode
+
     def _update_attention_label(self, value: int) -> None:
         self.attention_value.setText(f"Attention span per question: {value} min")
+
+    def _set_account_actions_enabled(self, enabled: bool) -> None:
+        for button in self._account_action_buttons:
+            button.setEnabled(enabled)
+
+    def _export_account_flow(self) -> bool:
+        if self.session_controller is None:
+            return False
+        try:
+            temp_zip = self.session_controller.create_temp_export()
+        except Exception as exc:
+            QMessageBox.warning(self, "Export account", str(exc))
+            return False
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Export account")
+        msg.setText("We have made a copy of your data. Where would you like to save it?")
+        choose_btn = msg.addButton("I will choose", QMessageBox.AcceptRole)
+        downloads_btn = msg.addButton("Downloads folder", QMessageBox.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == cancel_btn:
+            self._cleanup_temp_export(temp_zip)
+            return False
+
+        destination: Path | None = None
+        if clicked == downloads_btn:
+            destination = Path.home() / "Downloads" / temp_zip.name
+        elif clicked == choose_btn:
+            filename, _ = QFileDialog.getSaveFileName(self, "Save exported account", temp_zip.name, "Zip files (*.zip)")
+            if not filename:
+                self._cleanup_temp_export(temp_zip)
+                return False
+            destination = Path(filename)
+        if destination is None:
+            self._cleanup_temp_export(temp_zip)
+            return False
+
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(temp_zip, destination)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export account", f"Could not save export: {exc}")
+            self._cleanup_temp_export(temp_zip)
+            return False
+        self._cleanup_temp_export(temp_zip)
+        QMessageBox.information(self, "Export account", f"Account copy saved:\n{destination}")
+        return True
+
+    @staticmethod
+    def _cleanup_temp_export(path: Path) -> None:
+        parent = path.parent
+        path.unlink(missing_ok=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+    def _delete_account_flow(self) -> None:
+        if self.session_controller is None:
+            return
+        for step in range(1, 5):
+            answer = QMessageBox.question(
+                self,
+                "Delete account",
+                f"Your local account will be delete forever. Are you sure? [{step}/4]",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        final = QMessageBox(self)
+        final.setWindowTitle("Delete account")
+        final.setText("Got it! We will delete your data for you. Would you like to create a copy of your account before you do that?")
+        copy_btn = final.addButton("Okay!", QMessageBox.AcceptRole)
+        final.addButton("permentantly delete my data", QMessageBox.DestructiveRole)
+        cancel_btn = final.addButton("Cancel", QMessageBox.RejectRole)
+        final.exec()
+        clicked = final.clickedButton()
+        if clicked == cancel_btn:
+            return
+        if clicked == copy_btn and not self._export_account_flow():
+            return
+        try:
+            self.session_controller.delete_current_account()
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete account", str(exc))
+            return
+        self.accept()
+
+    def _change_account_flow(self) -> None:
+        if self.session_controller is None:
+            return
+        for _ in range(3):
+            confirm = QMessageBox(self)
+            confirm.setWindowTitle("Change account")
+            confirm.setText(
+                "Changin the account will delete your data and overwrite it with the data given by the user. please confirm this message 3 times"
+            )
+            ok_btn = confirm.addButton("okay", QMessageBox.AcceptRole)
+            confirm.addButton("cancel", QMessageBox.RejectRole)
+            confirm.exec()
+            if confirm.clickedButton() != ok_btn:
+                return
+
+        ready = QMessageBox(self)
+        ready.setWindowTitle("Change account")
+        ready.setText(
+            "Got it! After you import your data from the other account, we will delete the in-app data and overwrite it with your new account"
+        )
+        okay_btn = ready.addButton("Okay", QMessageBox.AcceptRole)
+        ready.addButton("Cancel", QMessageBox.RejectRole)
+        ready.exec()
+        if ready.clickedButton() != okay_btn:
+            return
+
+        archive_file, _ = QFileDialog.getOpenFileName(self, "Import account zip", "", "Zip files (*.zip)")
+        if not archive_file:
+            return
+        try:
+            self.session_controller.import_archive_into_current(Path(archive_file))
+        except Exception as exc:
+            QMessageBox.warning(self, "Change account", str(exc))
+            return
+        QMessageBox.information(self, "Change account", "Account data was imported and overwritten successfully.")
+        self.accept()
+
+    def _new_account_flow(self) -> None:
+        if self.session_controller is None:
+            return
+        profile = self.datastore.load_profile()
+        name = str(profile.get("name", "")).strip() or "Student"
+        first = QMessageBox(self)
+        first.setWindowTitle("New account")
+        first.setText(
+            f"Hey, {name}. It is nice to see you making another account. Creating a new account won't affect any of your existing account(s). you can change it anytime by pressing on the app icon > pressing accounts > and pressing on your prefered account"
+        )
+        yes_btn = first.addButton("yes, I am in!", QMessageBox.AcceptRole)
+        first.addButton("cancel", QMessageBox.RejectRole)
+        first.exec()
+        if first.clickedButton() != yes_btn:
+            return
+
+        second = QMessageBox(self)
+        second.setWindowTitle("New account")
+        second.setText("Nice! New account will be made. The app will open a new profile maker window for you to make a new account.")
+        okay_btn = second.addButton("Okay", QMessageBox.AcceptRole)
+        second.addButton("nevermind, I changed my mind", QMessageBox.RejectRole)
+        second.exec()
+        if second.clickedButton() != okay_btn:
+            return
+
+        try:
+            created = bool(self.session_controller.create_new_account_via_profile(self))
+        except Exception as exc:
+            QMessageBox.warning(self, "New account", str(exc))
+            return
+        if created:
+            self.accept()
 
     def _refresh_model_status(self) -> None:
         snap = self.preflight.snapshot(force=True)

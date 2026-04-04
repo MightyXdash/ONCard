@@ -460,7 +460,10 @@ class FilesToCardsWorker(QThread):
                 system_prompt=with_oncard_context(
                     (
                         "Return only strict JSON matching the schema. "
-                        "Write concise school-study questions with natural wording."
+                        "Write concise school-study questions with natural wording. "
+                        "Every question must be fully standalone and understandable without seeing the source text, paper, or prompt. "
+                        "Do not use source-referential phrasing such as 'as of the given text', 'according to the passage', "
+                        "'based on the notes', 'from the document', or similar framing."
                     ),
                     feature="Files To Cards question generation",
                 ),
