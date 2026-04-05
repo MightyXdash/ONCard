@@ -6,8 +6,8 @@ import re
 import time
 import uuid
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QRect, QSignalBlocker, QThread, QTimer, Qt, Signal, QSize, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QEasingCurve, Property, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QRect, QRectF, QSignalBlocker, QThread, QTimer, Qt, Signal, QSize, QVariantAnimation
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSizePolicy,
     QScrollArea,
+    QStackedLayout,
     QStackedWidget,
     QTextBrowser,
     QTextEdit,
@@ -82,6 +83,55 @@ class PromptTextEdit(QTextEdit):
         super().keyPressEvent(event)
 
 
+class AiTagChip(QWidget):
+    def __init__(self, text: str = "Ask AI", parent=None) -> None:
+        super().__init__(parent)
+        self._text = text
+        self._reveal = 1.0
+        self.hide()
+
+    def sizeHint(self) -> QSize:
+        metrics = self.fontMetrics()
+        return QSize(max(56, metrics.horizontalAdvance(self._text) + 22), 24)
+
+    def getReveal(self) -> float:
+        return self._reveal
+
+    def setReveal(self, value: float) -> None:
+        try:
+            self._reveal = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._reveal = 1.0
+        self.update()
+
+    reveal = Property(float, getReveal, setReveal)
+
+    def paintEvent(self, event) -> None:
+        del event
+        if self._reveal <= 0.0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        if rect.width() <= 1 or rect.height() <= 1:
+            return
+
+        clip_width = rect.width() * self._reveal
+        painter.save()
+        painter.setClipRect(QRectF(rect.left(), rect.top(), clip_width, rect.height()))
+        painter.setPen(QPen(QColor(81, 133, 236, 178), 1))
+        painter.setBrush(QColor("#4A7EE8"))
+        painter.drawRoundedRect(QRectF(rect), 8.0, 8.0)
+
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor("#F8FBFF"))
+        painter.drawText(rect.adjusted(10, 0, -10, 0), Qt.AlignCenter, self._text)
+        painter.restore()
+
+
 class AiQueryLineEdit(AnimatedLineEdit):
     aiModeChanged = Signal(bool)
     historyRequested = Signal()
@@ -93,21 +143,10 @@ class AiQueryLineEdit(AnimatedLineEdit):
         self._ai_mode = False
         self._tag_gap = 10
         self._base_left_margin = self.textMargins().left()
-        self._tag_chip = QLabel("Ask AI", self)
-        self._tag_chip.setObjectName("AiSearchTag")
-        self._tag_chip.setAlignment(Qt.AlignCenter)
-        self._tag_chip.setStyleSheet(
-            """
-            QLabel#AiSearchTag {
-                background: #4A7EE8;
-                color: #F8FBFF;
-                border: 1px solid rgba(81, 133, 236, 0.7);
-                border-radius: 8px;
-                padding: 2px 10px;
-                font-weight: 600;
-            }
-            """
-        )
+        self._tag_chip = AiTagChip("Ask AI", self)
+        self._tag_reveal = QPropertyAnimation(self._tag_chip, b"reveal", self)
+        self._tag_reveal.setDuration(180)
+        self._tag_reveal.setEasingCurve(QEasingCurve.Type.Linear)
         self._tag_chip.hide()
         self._update_text_margins()
 
@@ -119,7 +158,29 @@ class AiQueryLineEdit(AnimatedLineEdit):
             return
         self._ai_mode = active
         self.setProperty("aiMode", active)
-        self._tag_chip.setVisible(active)
+        self._tag_reveal.stop()
+        if active:
+            self._tag_chip.show()
+            self._tag_chip.setReveal(0.0)
+            self._tag_reveal.setStartValue(0.0)
+            self._tag_reveal.setEndValue(1.0)
+            self._tag_reveal.start()
+        else:
+            self._tag_chip.setReveal(1.0)
+            self._tag_chip.show()
+            self._tag_reveal.setStartValue(1.0)
+            self._tag_reveal.setEndValue(0.0)
+
+            def _hide_chip() -> None:
+                if not self._ai_mode:
+                    self._tag_chip.hide()
+                try:
+                    self._tag_reveal.finished.disconnect(_hide_chip)
+                except (RuntimeError, TypeError):
+                    pass
+
+            self._tag_reveal.finished.connect(_hide_chip)
+            self._tag_reveal.start()
         self._update_text_margins()
         self.aiModeChanged.emit(active)
 
@@ -167,6 +228,123 @@ class AiQueryLineEdit(AnimatedLineEdit):
         if self._ai_mode:
             left_margin += tag_rect.width() + self._tag_gap
         self.setTextMargins(left_margin, 0, 0, 0)
+
+
+class AiResponseSkeleton(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(24)
+        self._timer.timeout.connect(self._advance)
+        self.setMinimumHeight(268)
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+        self.update()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _advance(self) -> None:
+        self._phase = (self._phase + 0.025) % 1.0
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(2, 2, -2, -2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#FAFAFB"))
+        painter.drawRoundedRect(rect, 24.0, 24.0)
+
+        content = rect.adjusted(18, 18, -18, -18)
+        line_height = 14
+        gap = 10
+        widths = [0.74, 0.92, 0.87, 0.95, 0.68, 0.90, 0.84, 0.57, 0.93, 0.88, 0.79, 0.64]
+        for index, ratio in enumerate(widths):
+            top = int(content.top() + index * (line_height + gap))
+            if top + line_height > content.bottom():
+                break
+            bar = QRectF(content.left(), top, content.width() * ratio, line_height)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(231, 236, 242))
+            painter.drawRoundedRect(bar, 8.0, 8.0)
+
+            shimmer_width = max(52.0, bar.width() * 0.26)
+            track = max(1.0, bar.width() + shimmer_width)
+            x = bar.left() - shimmer_width + (track * self._phase)
+            highlight = QRectF(x, bar.top(), shimmer_width, bar.height())
+            gradient = QLinearGradient(highlight.left(), 0, highlight.right(), 0)
+            gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+            gradient.setColorAt(0.5, QColor(255, 255, 255, 150))
+            gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(bar, 8.0, 8.0)
+
+
+class AiRevealOverlay(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._progress = 0.0
+        self._pixmap = QPixmap()
+        self.hide()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def setPixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def getProgress(self) -> float:
+        return self._progress
+
+    def setProgress(self, value: float) -> None:
+        try:
+            self._progress = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._progress = 1.0
+        self.update()
+
+    progress = Property(float, getProgress, setProgress)
+
+    def paintEvent(self, event) -> None:
+        del event
+        if self._pixmap.isNull():
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        if rect.width() <= 2 or rect.height() <= 2:
+            return
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect), 24.0, 24.0)
+        painter.fillPath(path, QColor("#FAFAFB"))
+
+        content = rect.adjusted(1, 1, -1, -1)
+        reveal_bottom = content.top() + (content.height() * self._progress)
+        if reveal_bottom <= content.top():
+            return
+
+        painter.save()
+        painter.setClipPath(path)
+        painter.setClipRect(QRectF(content.left(), content.top(), content.width(), reveal_bottom - content.top()))
+        painter.drawPixmap(QRectF(content), self._pixmap, QRectF(0, 0, self._pixmap.width(), self._pixmap.height()))
+        painter.restore()
+
+        if reveal_bottom < content.bottom():
+            feather = min(58.0, content.height() * 0.2)
+            band_top = max(content.top(), reveal_bottom - feather)
+            gradient = QLinearGradient(content.left(), band_top, content.left(), reveal_bottom)
+            gradient.setColorAt(0.0, QColor(250, 250, 251, 0))
+            gradient.setColorAt(1.0, QColor(250, 250, 251, 255))
+            painter.save()
+            painter.setClipPath(path)
+            painter.fillRect(QRectF(content.left(), band_top, content.width(), reveal_bottom - band_top), gradient)
+            painter.restore()
 
 
 class AiResponseOverlay(QWidget):
@@ -285,14 +463,6 @@ class AiResponseOverlay(QWidget):
         self.drag_zone.installEventFilter(self)
         self.drag_zone.hide()
 
-        self.loading_label = QLabel("Thinking...")
-        self.loading_label.setAlignment(Qt.AlignCenter)
-        self.loading_label.setStyleSheet(
-            'color: #676D77; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; '
-            "font-size: 14px; font-weight: 300; padding: 6px 0 4px 0;"
-        )
-        layout.addWidget(self.loading_label)
-
         self.body = QTextBrowser(self.surface)
         self.body.setObjectName("AiResponseBody")
         self.body.setFrameShape(QFrame.Shape.NoFrame)
@@ -362,8 +532,22 @@ class AiResponseOverlay(QWidget):
         base_font = QFont(self.font())
         base_font.setWeight(QFont.Weight.Light)
         self.body.setFont(base_font)
-        self.body.hide()
-        layout.addWidget(self.body, 1)
+        self.body_container = QWidget(self.surface)
+        body_layout = QVBoxLayout(self.body_container)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(self.body)
+
+        self.skeleton = AiResponseSkeleton(self.surface)
+        self.response_host = QWidget(self.surface)
+        self.response_stack = QStackedLayout(self.response_host)
+        self.response_stack.setContentsMargins(0, 0, 0, 0)
+        self.response_stack.setStackingMode(QStackedLayout.StackOne)
+        self.response_stack.addWidget(self.skeleton)
+        self.response_stack.addWidget(self.body_container)
+        self.response_stack.setCurrentWidget(self.skeleton)
+        self.reveal_overlay = AiRevealOverlay(self.response_host)
+        layout.addWidget(self.response_host, 1)
 
         self._stream_timer = QTimer(self)
         self._stream_timer.setInterval(16)
@@ -392,8 +576,9 @@ class AiResponseOverlay(QWidget):
         self._stream_timer.stop()
         self._stop_char_fades()
         self.body.clear()
-        self.body.hide()
-        self.loading_label.show()
+        self.skeleton.start()
+        self.response_stack.setCurrentWidget(self.skeleton)
+        self.reveal_overlay.hide()
         self.copy_btn.hide()
         parent = self.parentWidget()
         self._manual_pos = None
@@ -407,25 +592,25 @@ class AiResponseOverlay(QWidget):
         self._animate_in()
 
     def set_markdown(self, markdown_text: str) -> None:
-        previous_plain = self.body.toPlainText() if self.body.isVisible() else ""
-        self._last_markdown = markdown_text
-        self._target_markdown = markdown_text
-        self._display_markdown = markdown_text
-        follow_bottom = self._should_follow_bottom()
-        if self.loading_label.isVisible():
-            self.loading_label.hide()
-            self.body.show()
-            self.copy_btn.show()
-            self._layout_overlay_elements()
+        cleaned = self._normalize_markdown(markdown_text)
+        self._last_markdown = cleaned
+        self._target_markdown = cleaned
+        self._display_markdown = cleaned
         self.body.setMarkdown(self._display_markdown)
-        current_plain = self.body.toPlainText()
-        if not current_plain.startswith(previous_plain):
-            self._stop_char_fades()
-        else:
-            if len(current_plain) > len(previous_plain):
-                self._animate_new_text_fade(len(previous_plain), len(current_plain))
-        if follow_bottom:
-            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
+        bar = self.body.verticalScrollBar()
+        if bar is not None:
+            bar.setValue(bar.maximum())
+        self.skeleton.stop()
+        animate_reveal = self.response_stack.currentWidget() is self.skeleton
+        self.response_stack.setCurrentWidget(self.body_container)
+        self.copy_btn.show()
+        self._layout_overlay_elements()
+        self._size_debounce.stop()
+        self._sync_size(animated=False)
+        if animate_reveal:
+            self._start_reveal_animation()
+            return
+        self.reveal_overlay.hide()
         self._size_debounce.start(22)
 
     def set_stream_settings(self, mode: str, tps: float, fade_seconds: float) -> None:
@@ -457,6 +642,27 @@ class AiResponseOverlay(QWidget):
     def has_markdown(self) -> bool:
         return bool(self._last_markdown.strip())
 
+    def _start_reveal_animation(self) -> None:
+        self.reveal_overlay.setGeometry(self.response_host.rect())
+        self.reveal_overlay.raise_()
+        self.reveal_overlay.setPixmap(self.body_container.grab())
+        self.reveal_overlay.setProgress(0.0)
+        self.reveal_overlay.show()
+
+        animation = QPropertyAnimation(self.reveal_overlay, b"progress", self)
+        animation.setDuration(620)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _finish() -> None:
+            self.reveal_overlay.hide()
+            self._size_debounce.start(22)
+
+        animation.finished.connect(_finish)
+        animation.start()
+        self._close_animation = animation
+
     def _should_follow_bottom(self) -> bool:
         scroll = self.body.verticalScrollBar()
         return scroll.maximum() <= 0 or scroll.value() >= max(0, scroll.maximum() - 24)
@@ -485,6 +691,8 @@ class AiResponseOverlay(QWidget):
         self._closing = True
         self._stream_timer.stop()
         self._stop_char_fades()
+        self.skeleton.stop()
+        self.reveal_overlay.hide()
         animation = QPropertyAnimation(self, b"pos", self)
         animation.setDuration(150)
         start_pos = self.pos()
@@ -925,150 +1133,15 @@ class AiResponseOverlay(QWidget):
         return prefix, curr_suffix
 
     def _flush_stream_tick(self) -> None:
-        target_markdown = self._target_markdown
-        if not target_markdown:
-            self._display_markdown = ""
-            self._display_chunk_count = 0
-            self._stream_unit_credit = 0.0
-            self._target_chunks = []
-            self.body.clear()
-            self._stream_timer.stop()
-            return
-
-        chunks = self._target_chunks
-        if not chunks and target_markdown:
-            chunks = self._split_stream_chunks(target_markdown)
-            self._target_chunks = chunks
-        if not chunks:
-            self._display_markdown = target_markdown
-            self._display_chunk_count = 0
-            self.body.setMarkdown(self._display_markdown)
-            self._stream_timer.stop()
-            return
-
-        if self._display_chunk_count > len(chunks):
-            self._display_chunk_count = len(chunks)
-        if self._display_chunk_count < len(chunks):
-            burst_limits = {
-                "characters": 8,
-                "words": 4,
-                "lines": 2,
-            }
-            burst_limit = burst_limits.get(self._stream_mode, 4)
-            now = time.perf_counter()
-            if self._last_stream_time <= 0.0:
-                self._last_stream_time = now
-            # Clamp elapsed so occasional UI stalls do not produce end-of-stream bursts.
-            elapsed = max(0.0, min(0.09, now - self._last_stream_time))
-            self._last_stream_time = now
-            self._stream_unit_credit += elapsed * self._stream_units_per_second
-            self._stream_unit_credit = min(self._stream_unit_credit, float(burst_limit))
-            units_to_emit = int(self._stream_unit_credit)
-            if units_to_emit <= 0:
-                return
-            units_to_emit = min(units_to_emit, burst_limit)
-            self._stream_unit_credit -= units_to_emit
-            self._display_chunk_count = min(len(chunks), self._display_chunk_count + units_to_emit)
-
-        next_markdown = self._compose_stream_markdown(chunks, self._display_chunk_count)
-        if next_markdown == self._display_markdown:
-            if self._display_chunk_count >= len(chunks):
-                self._stream_timer.stop()
-            return
-
-        is_final_frame = self._display_chunk_count >= len(chunks) and next_markdown == target_markdown
-        now = time.perf_counter()
-        if not is_final_frame:
-            min_interval = self._render_commit_interval()
-            if self._last_render_commit > 0.0 and (now - self._last_render_commit) < min_interval:
-                return
-
-        follow_bottom = self._should_follow_bottom()
-        app = QApplication.instance()
-        reduced_motion = bool(app.property("reducedMotion")) if app is not None else False
-        animate_fade = (
-            not reduced_motion
-            and (now - self._last_fade_start) >= self._fade_restart_interval()
-        )
-        previous_plain = self.body.toPlainText() if animate_fade else ""
-        self._display_markdown = next_markdown
-        if self.loading_label.isVisible():
-            self.loading_label.hide()
-            self.body.show()
-            self.copy_btn.show()
-            self._layout_overlay_elements()
-        render_started = time.perf_counter()
-        self.body.setMarkdown(self._display_markdown)
-        render_ms = (time.perf_counter() - render_started) * 1000.0
-        self._render_cost_ema_ms = (self._render_cost_ema_ms * 0.82) + (render_ms * 0.18)
-        if animate_fade:
-            current_plain = self.body.toPlainText()
-            changed_span: tuple[int, int] | None = None
-            if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
-                changed_span = (len(previous_plain), len(current_plain))
-            else:
-                changed_span = self._compute_changed_span(previous_plain, current_plain)
-            if changed_span is not None:
-                span_len = max(0, changed_span[1] - changed_span[0])
-                if span_len <= 420:
-                    self._animate_new_text_fade(changed_span[0], changed_span[1])
-                    self._last_fade_start = now
-
-        self._last_render_commit = time.perf_counter()
-        self._size_debounce.start(22)
-        if follow_bottom:
-            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
-        if self._display_chunk_count >= len(chunks) and self._display_markdown == target_markdown:
-            self._stream_timer.stop()
+        self._stream_timer.stop()
 
     def complete_stream(self) -> None:
-        target_markdown = self._target_markdown or self._last_markdown
-        self._stream_timer.stop()
-        self._stream_unit_credit = 0.0
-        self._last_stream_time = 0.0
-        self._last_render_commit = 0.0
-        self._last_fade_start = 0.0
-        if not target_markdown:
-            return
-        follow_bottom = self._should_follow_bottom()
-        previous_plain = self.body.toPlainText() if self.body.isVisible() else ""
-        self._display_markdown = target_markdown
-        self._display_chunk_count = len(self._split_stream_chunks(target_markdown))
-        if self.loading_label.isVisible():
-            self.loading_label.hide()
-            self.body.show()
-            self.copy_btn.show()
-            self._layout_overlay_elements()
-        self.body.setMarkdown(self._display_markdown)
-        current_plain = self.body.toPlainText()
-        if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
-            self._animate_new_text_fade(len(previous_plain), len(current_plain))
-        else:
-            self._stop_char_fades()
-        self._size_debounce.stop()
-        self._sync_size(animated=False)
-        if follow_bottom:
-            QTimer.singleShot(0, lambda: self.body.verticalScrollBar().setValue(self.body.verticalScrollBar().maximum()))
+        if self._target_markdown or self._last_markdown:
+            self.set_markdown(self._target_markdown or self._last_markdown)
 
     def ensure_stream_progress(self) -> None:
-        target_markdown = self._target_markdown or self._last_markdown
-        if not target_markdown:
-            return
-        if self.loading_label.isVisible():
-            self.loading_label.hide()
-            self.body.show()
-            self.copy_btn.show()
-            self._layout_overlay_elements()
-        if self._display_markdown != target_markdown:
-            previous_plain = self.body.toPlainText()
-            self._display_markdown = target_markdown
-            self.body.setMarkdown(self._display_markdown)
-            current_plain = self.body.toPlainText()
-            if current_plain.startswith(previous_plain) and len(current_plain) > len(previous_plain):
-                self._animate_new_text_fade(len(previous_plain), len(current_plain))
-            else:
-                self._stop_char_fades()
-        self._size_debounce.start(22)
+        if self._target_markdown or self._last_markdown:
+            self.set_markdown(self._target_markdown or self._last_markdown)
 
     def _set_fade_span_alpha(self, start: int, end: int, alpha: int) -> None:
         document = self.body.document()
@@ -1143,12 +1216,16 @@ class AiResponseOverlay(QWidget):
             self.body.document().setTextWidth(max(1, viewport_width))
             self.body.document().adjustSize()
             doc_height = int(self.body.document().size().height())
+            skeleton_height = 268
             compact_height = 90
             minimum_height = compact_height
             max_height = max(minimum_height, int(parent.height() * 0.7))
             collapsed_height = max(minimum_height, int(max_height * 0.5))
             header_height = 36
-            body_height = doc_height + header_height + surface_margins.top() + surface_margins.bottom() + 24
+            if self.response_stack.currentWidget() is self.skeleton:
+                body_height = skeleton_height + header_height + surface_margins.top() + surface_margins.bottom() + 24
+            else:
+                body_height = doc_height + header_height + surface_margins.top() + surface_margins.bottom() + 24
             total_height = compact_height if force_minimum or not self._streaming_started else max(compact_height, body_height + root_margins.top() + root_margins.bottom())
             expanded_height = min(max_height, total_height)
             if force_minimum:
@@ -1571,6 +1648,7 @@ class StudyTab(QWidget):
         self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
         self.ai_query_worker: AiSearchWorker | None = None
+        self._ai_query_workers: set[AiSearchWorker] = set()
         self.session_prep_dialog: SessionPrepDialog | None = None
         self.reinforcement_dialog: ReinforcementProgressDialog | None = None
         self.ai_response_overlay: AiResponseOverlay | None = None
@@ -2589,32 +2667,28 @@ class StudyTab(QWidget):
             profile_context=profile_context,
         )
         self.ai_query_worker = worker
-        worker.chunk.connect(self._on_ai_query_chunk)
+        self._ai_query_workers.add(worker)
         worker.failed.connect(self._on_ai_query_failed)
         worker.finished.connect(self._on_ai_query_finished)
         worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_query_worker(current))
-        worker.finished.connect(lambda _request_id, current=worker: self._cleanup_ai_query_worker(current))
+        worker.finished.connect(lambda _request_id, _markdown, current=worker: self._cleanup_ai_query_worker(current))
         worker.start()
-
-    def _on_ai_query_chunk(self, request_id: int, markdown_text: str) -> None:
-        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
-            return
-        self.ai_response_overlay.set_markdown(markdown_text)
 
     def _on_ai_query_failed(self, request_id: int, message: str) -> None:
         if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
             return
         self.ai_response_overlay.set_markdown(f"### Unable to answer\n- {message}")
-        self.ai_response_overlay.ensure_stream_progress()
 
-    def _on_ai_query_finished(self, request_id: int) -> None:
+    def _on_ai_query_finished(self, request_id: int, markdown_text: str) -> None:
         if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
             return
-        if not self.ai_response_overlay.has_markdown():
-            self.ai_response_overlay.set_markdown("### No answer\n- The model returned an empty response.")
-        self.ai_response_overlay.ensure_stream_progress()
+        cleaned = (markdown_text or "").strip()
+        if not cleaned:
+            cleaned = "### No answer\n- The model returned an empty response."
+        self.ai_response_overlay.set_markdown(cleaned)
 
     def _cleanup_ai_query_worker(self, worker: AiSearchWorker) -> None:
+        self._ai_query_workers.discard(worker)
         if self.ai_query_worker is not worker:
             worker.deleteLater()
             return

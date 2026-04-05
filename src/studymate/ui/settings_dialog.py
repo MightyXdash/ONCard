@@ -93,6 +93,7 @@ class SettingsDialog(QDialog):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_general_tab(), "General")
+        self.tabs.addTab(self._build_stats_tab(), "Stats")
         self.tabs.addTab(self._build_ai_tab(), "AI")
         self.tabs.addTab(self._build_performance_tab(), "Performance")
         root.addWidget(self.tabs, 1)
@@ -427,6 +428,42 @@ class SettingsDialog(QDialog):
         scroll.setWidget(host)
         return scroll
 
+    def _build_stats_tab(self) -> QWidget:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        intro = QLabel("Choose which time range is selected by default when opening View stats.")
+        intro.setObjectName("SectionText")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        surface = QFrame()
+        surface.setObjectName("Surface")
+        polish_surface(surface)
+        form = QFormLayout(surface)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(14)
+
+        self.stats_default_range = AnimatedComboBox()
+        self.stats_default_range.addItem("Hourly", "hourly")
+        self.stats_default_range.addItem("Daily 3 days", "daily")
+        self.stats_default_range.addItem("Weekly", "weekly")
+        self.stats_default_range.addItem("2 Weeks", "2weeks")
+        self.stats_default_range.addItem("Monthly", "monthly")
+        form.addRow("Default time range", self.stats_default_range)
+
+        note = QLabel("This only sets the initial selection. You can still switch range in View stats anytime.")
+        note.setObjectName("SmallMeta")
+        note.setWordWrap(True)
+
+        layout.addWidget(surface)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return host
+
     def _build_performance_tab(self) -> QWidget:
         host = QWidget()
         layout = QVBoxLayout(host)
@@ -575,6 +612,14 @@ class SettingsDialog(QDialog):
         self.background_workers.setValue(max(1, min(8, int(performance.get("background_workers", 2) or 2))))
         self.warm_cache_checkbox.setChecked(bool(performance.get("warm_cache_on_startup", True)))
         self.reduced_motion_checkbox.setChecked(bool(performance.get("reduced_motion", False)))
+        stats_setup = dict(setup.get("stats", {}))
+        default_stats_range = str(stats_setup.get("default_range", "daily")).strip().lower() or "daily"
+        stats_index = self.stats_default_range.findData(default_stats_range)
+        if stats_index < 0:
+            stats_index = self.stats_default_range.findData("daily")
+        if stats_index < 0:
+            stats_index = 1
+        self.stats_default_range.setCurrentIndex(stats_index)
         self._refresh_performance_mode()
         self._refresh_model_status()
 
@@ -626,6 +671,9 @@ class SettingsDialog(QDialog):
             "background_workers": self.background_workers.value(),
             "warm_cache_on_startup": self.warm_cache_checkbox.isChecked(),
             "reduced_motion": self.reduced_motion_checkbox.isChecked(),
+        }
+        setup["stats"] = {
+            "default_range": str(self.stats_default_range.currentData() or "daily"),
         }
         self.datastore.save_setup(setup)
         self.accept()
