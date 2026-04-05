@@ -1,123 +1,111 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
+import cv2
+from PySide6.QtCore import QThread, Qt, QRect, QSize, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QVBoxLayout, QWidget
 
 from studymate.ui.window_effects import polish_windows_window
 
 
-class SpinnerWidget(QWidget):
-    def __init__(self, parent: QWidget | None = None, *, size: int = 380) -> None:
+class VideoFrameWorker(QThread):
+    frame_ready = Signal(QImage)
+
+    def __init__(self, video_path: Path, target_size: QSize, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._cycle_ms = 1650
-        self._elapsed_ms = 0
-        self._color = QColor(71, 195, 248)
-        self.setFixedSize(size, size)
-        self.setObjectName("StartupSpinner")
+        self._video_path = Path(video_path)
+        self._target_size = QSize(target_size)
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(16)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
+    def run(self) -> None:
+        capture = cv2.VideoCapture(str(self._video_path))
+        if not capture.isOpened():
+            return
+        try:
+            fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            frame_interval = 1.0 / fps if fps > 1.0 else (1.0 / 30.0)
+            target_width = max(1, self._target_size.width())
+            target_height = max(1, self._target_size.height())
+            next_frame_at = time.perf_counter()
 
-    def _tick(self) -> None:
-        self._elapsed_ms = (self._elapsed_ms + self._timer.interval()) % self._cycle_ms
+            while not self.isInterruptionRequested():
+                ok, frame = capture.read()
+                if not ok:
+                    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+
+                if frame.shape[1] != target_width or frame.shape[0] != target_height:
+                    frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                image = QImage(
+                    rgb.data,
+                    rgb.shape[1],
+                    rgb.shape[0],
+                    rgb.shape[1] * rgb.shape[2],
+                    QImage.Format.Format_RGB888,
+                ).copy()
+                self.frame_ready.emit(image)
+
+                next_frame_at += frame_interval
+                delay = next_frame_at - time.perf_counter()
+                if delay > 0:
+                    self.msleep(max(1, int(delay * 1000)))
+                else:
+                    next_frame_at = time.perf_counter()
+        finally:
+            capture.release()
+
+
+class CroppedVideoFrame(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pixmap = QPixmap()
+
+    def setPixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
         self.update()
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
+    def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(Qt.PenStyle.NoPen)
-        side = float(min(self.width(), self.height()))
-        bar_width = side / 18.0
-        bar_height = side / 5.9
-        radius = bar_width / 2.0
-        center_x = self.width() / 2.0
-        center_y = self.height() / 2.0
-        base_rotations = (0.0, 90.0, -90.0, 180.0)
 
-        def eased_motion(phase_value: float) -> tuple[float, float, float]:
-            if phase_value <= 0.7:
-                travel = phase_value / 0.7
-            else:
-                travel = (1.0 - phase_value) / 0.3
-            travel = max(0.0, min(1.0, travel))
-            eased = travel * travel * (3.0 - 2.0 * travel)
-            return eased, bar_width * 4.8 * eased, bar_height * 1.25 * eased
+        rect = self.rect()
+        if rect.isEmpty():
+            return
 
-        def draw_segment(dx: float, dy: float, local_angle: float, alpha: int, scale: float) -> None:
-            glow = QColor(self._color)
-            glow.setAlpha(max(16, int(alpha * 0.5)))
-            painter.setBrush(glow)
-            painter.drawRoundedRect(
-                int((-bar_width * scale) / 2.0 - 2),
-                int((-bar_height * scale) / 2.0 - 2),
-                int(bar_width * scale + 4),
-                int(bar_height * scale + 4),
-                radius + 2.0,
-                radius + 2.0,
-            )
+        clip = QPainterPath()
+        radius = min(32.0, rect.width() * 0.12, rect.height() * 0.12)
+        clip.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(clip)
+        painter.fillPath(clip, QColor("#000000"))
 
-            fill = QColor(self._color)
-            fill.setAlpha(alpha)
-            painter.setBrush(fill)
-            painter.drawRoundedRect(
-                int((-bar_width * scale) / 2.0),
-                int((-bar_height * scale) / 2.0),
-                int(bar_width * scale),
-                int(bar_height * scale),
-                radius,
-                radius,
-            )
+        if self._pixmap.isNull():
+            return
 
-        now = self._elapsed_ms / self._cycle_ms
-        trail_offsets = (0.0, 0.05, 0.1, 0.15)
+        source_size = self._pixmap.size()
+        if source_size.isEmpty():
+            return
 
-        for base in base_rotations:
-            for trail_index, offset in enumerate(trail_offsets):
-                phase = (now - offset) % 1.0
-                eased, dx, dy = eased_motion(phase)
-                local_angle = 90.0 * eased
-                alpha = 255 - trail_index * 84
-                scale = 1.0 - trail_index * 0.12
-
-                painter.save()
-                painter.translate(center_x, center_y)
-                painter.rotate(base)
-                painter.translate(dx, dy)
-                painter.rotate(local_angle)
-                draw_segment(dx, dy, local_angle, alpha, scale)
-                painter.restore()
-
-            # Secondary layer adds more motion pieces for a richer look.
-            phase2 = (now + 0.32) % 1.0
-            eased2, dx2, dy2 = eased_motion(phase2)
-            painter.save()
-            painter.translate(center_x, center_y)
-            painter.rotate(base + 45.0)
-            painter.translate(dx2 * 0.72, dy2 * 0.72)
-            painter.rotate(90.0 * eased2)
-            draw_segment(dx2, dy2, 90.0 * eased2, 156, 0.72)
-            painter.restore()
-
-            phase3 = (now + 0.56) % 1.0
-            eased3, dx3, dy3 = eased_motion(phase3)
-            painter.save()
-            painter.translate(center_x, center_y)
-            painter.rotate(base - 30.0)
-            painter.translate(dx3 * 0.56, dy3 * 0.56)
-            painter.rotate(-110.0 * eased3)
-            draw_segment(dx3, dy3, -110.0 * eased3, 132, 0.58)
-            painter.restore()
+        scale = max(rect.width() / source_size.width(), rect.height() / source_size.height())
+        scaled_width = source_size.width() * scale
+        scaled_height = source_size.height() * scale
+        target = QRect(
+            int(round((rect.width() - scaled_width) / 2.0)),
+            int(round((rect.height() - scaled_height) / 2.0)),
+            int(round(scaled_width)),
+            int(round(scaled_height)),
+        )
+        painter.drawPixmap(target, self._pixmap)
 
 
 class StartupSplash(QWidget):
     def __init__(self, *, video_path: Path, app_icon: Path | None = None) -> None:
-        del video_path, app_icon
+        del app_icon
         super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("StartupSplash")
@@ -127,44 +115,35 @@ class StartupSplash(QWidget):
                 background: transparent;
                 border: none;
             }
-            QFrame#StartupMediaHost {
-                background: #ffffff;
-                border: none;
-                border-radius: 54px;
-            }
-            QWidget#StartupSpinnerWrap {
-                background: transparent;
-                border: none;
-            }
-            QWidget#StartupSpinner {
+            QWidget#StartupVideoShell {
                 background: transparent;
                 border: none;
             }
             """
         )
-        self.resize(520, 520)
+
+        self._video_path = Path(video_path)
+        self._frame_worker: VideoFrameWorker | None = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(0)
 
-        self._media_host = QFrame(self)
-        self._media_host.setObjectName("StartupMediaHost")
-        host_layout = QVBoxLayout(self._media_host)
-        host_layout.setContentsMargins(24, 24, 24, 24)
-        host_layout.setSpacing(0)
+        self._shell = QWidget(self)
+        self._shell.setObjectName("StartupVideoShell")
+        shell_shadow = QGraphicsDropShadowEffect(self._shell)
+        shell_shadow.setBlurRadius(50)
+        shell_shadow.setOffset(0, 10)
+        shell_shadow.setColor(QColor(15, 37, 57, 70))
+        self._shell.setGraphicsEffect(shell_shadow)
 
-        spinner_wrap = QWidget(self._media_host)
-        spinner_wrap.setObjectName("StartupSpinnerWrap")
-        spinner_layout = QVBoxLayout(spinner_wrap)
-        spinner_layout.setContentsMargins(0, 0, 0, 0)
-        spinner_layout.setSpacing(0)
-        spinner_layout.addStretch(1)
-        spinner_layout.addWidget(SpinnerWidget(spinner_wrap, size=380), 0, Qt.AlignmentFlag.AlignCenter)
-        spinner_layout.addStretch(1)
-        host_layout.addWidget(spinner_wrap, 1)
+        shell_layout = QVBoxLayout(self._shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
 
-        root.addWidget(self._media_host, 1)
+        self._video = CroppedVideoFrame(self._shell)
+        shell_layout.addWidget(self._video, 1)
+        root.addWidget(self._shell, 1)
 
         self._center_on_screen()
         self._apply_native_window_chrome()
@@ -179,13 +158,35 @@ class StartupSplash(QWidget):
         geometry = screen.availableGeometry()
         side = min(int(min(geometry.width(), geometry.height()) * 0.36), 560)
         side = max(360, side)
-        width = min(side, max(360, geometry.width() - 120))
-        height = min(side, max(360, geometry.height() - 120))
-        self.resize(width, height)
+        side = min(side, max(360, min(geometry.width(), geometry.height()) - 120))
+        self.resize(side, side)
         self.move(
-            geometry.x() + int((geometry.width() - width) / 2),
-            geometry.y() + int((geometry.height() - height) / 2),
+            geometry.x() + int((geometry.width() - side) / 2),
+            geometry.y() + int((geometry.height() - side) / 2),
         )
+
+    def _start_video_worker(self) -> None:
+        self._stop_video_worker()
+        if not self._video_path.exists():
+            return
+        target_size = self._shell.size()
+        if target_size.isEmpty():
+            target_size = QSize(520, 520)
+        worker = VideoFrameWorker(self._video_path, target_size, self)
+        worker.frame_ready.connect(self._set_frame)
+        worker.finished.connect(worker.deleteLater)
+        self._frame_worker = worker
+        worker.start()
+
+    def _stop_video_worker(self) -> None:
+        if self._frame_worker is None:
+            return
+        self._frame_worker.requestInterruption()
+        self._frame_worker.wait(1500)
+        self._frame_worker = None
+
+    def _set_frame(self, image: QImage) -> None:
+        self._video.setPixmap(QPixmap.fromImage(image))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -194,6 +195,16 @@ class StartupSplash(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._apply_native_window_chrome()
+        self._start_video_worker()
+
+    def hideEvent(self, event) -> None:
+        self._stop_video_worker()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._stop_video_worker()
+        super().closeEvent(event)
 
     def update_progress(self, phase: str, status: str, value: int) -> None:
+        del phase, status, value
         return

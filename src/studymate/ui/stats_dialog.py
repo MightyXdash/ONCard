@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from studymate.services.data_store import DataStore
 from studymate.services.ollama_service import OllamaService
 from studymate.services.stats_service import RANGE_CONFIGS, StatsService
-from studymate.ui.animated import polish_surface
+from studymate.ui.animated import AnimatedComboBox, polish_surface
 from studymate.workers.stats_summary_worker import StatsSummaryWorker
 
 
@@ -67,8 +67,8 @@ class AnimatedLineChart(QWidget):
         self._points: list[dict] = []
         self._progress = 0.0
         self._animation = QVariantAnimation(self)
-        self._animation.setDuration(920)
-        self._animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self._animation.setDuration(1420)
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.valueChanged.connect(self._on_progress)
@@ -117,22 +117,13 @@ class AnimatedLineChart(QWidget):
             points.append(QPointF(rect.right(), points[0].y()))
 
         progress = max(0.0, min(self._progress, 1.0))
-        segment_progress = (len(points) - 1) * progress
-        full_segments = int(segment_progress)
-        partial = segment_progress - full_segments
-        last_index = min(full_segments + 1, len(points))
-        visible = points[:last_index]
-        if full_segments + 1 < len(points):
-            a = points[full_segments]
-            b = points[full_segments + 1]
-            interp = QPointF(
-                a.x() + (b.x() - a.x()) * partial,
-                a.y() + (b.y() - a.y()) * partial,
+        visible = [
+            QPointF(
+                point.x(),
+                rect.bottom() - ((rect.bottom() - point.y()) * progress),
             )
-            if visible:
-                visible[-1] = interp
-            else:
-                visible.append(interp)
+            for point in points
+        ]
 
         if len(visible) >= 2:
             path = QPainterPath(visible[0])
@@ -493,13 +484,35 @@ class StatsDialog(QDialog):
         range_row.setSpacing(8)
         range_label = QLabel("Range")
         range_label.setObjectName("SectionTitle")
-        self.range_combo = QComboBox()
+        self.range_combo = AnimatedComboBox()
+        self.range_combo.setObjectName("StatsRangeCombo")
+        self.range_combo.setStyleSheet(
+            """
+            QComboBox#StatsRangeCombo QAbstractItemView {
+                border: none;
+                outline: none;
+                background-color: rgba(255, 255, 255, 0.98);
+                border-radius: 14px;
+                padding: 8px 6px;
+                selection-background-color: #e4eef8;
+                selection-color: #122131;
+            }
+            """
+        )
         self.range_combo.addItem("Hourly", "hourly")
         self.range_combo.addItem("Daily 3 days", "daily")
         self.range_combo.addItem("Weekly", "weekly")
         self.range_combo.addItem("2 Weeks", "2weeks")
         self.range_combo.addItem("Monthly", "monthly")
-        self.range_combo.setCurrentIndex(1)
+        setup = self.datastore.load_setup()
+        stats_setup = dict(setup.get("stats", {}))
+        default_range = str(stats_setup.get("default_range", "daily")).strip().lower() or "daily"
+        default_index = self.range_combo.findData(default_range)
+        if default_index < 0:
+            default_index = self.range_combo.findData("daily")
+        if default_index < 0:
+            default_index = 1
+        self.range_combo.setCurrentIndex(default_index)
         self.range_combo.currentIndexChanged.connect(self._refresh_stats)
         range_row.addWidget(range_label)
         range_row.addWidget(self.range_combo, 1)
@@ -622,7 +635,7 @@ class StatsDialog(QDialog):
         token = self._summary_token
         summary_payload = dict(snapshot.get("summary_payload", {}))
         context_length = int(snapshot.get("range", {}).get("context_length", 4000))
-        self._show_summary_skeleton(force=not self._has_summary_content())
+        self._show_summary_skeleton(force=True)
 
         worker = StatsSummaryWorker(
             ollama=self.ollama,

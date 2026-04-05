@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QRect, Qt, QVariantAnimation, QSize
-from PySide6.QtGui import QColor, QPainter, QPaintEvent
+from PySide6.QtCore import Property, QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QRect, Qt, QVariantAnimation, QSize, QTimer, QPointF
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -122,8 +122,8 @@ class AnimatedComboBox(QComboBox):
             return
         popup.setObjectName("ComboPopup")
         popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, False)
         popup.show()
 
 
@@ -505,3 +505,105 @@ class AnimatedToggle(QAbstractButton):
             painter.setPen(QColor("#7aa8dc"))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(focus_rect, radius + 1, radius + 1)
+
+
+class ConcentricRingLoader(QWidget):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        size: int = 60,
+        color: QColor | str = "#524656",
+        accent_color: QColor | str = "#CF4647",
+        stroke_width: float = 2.0,
+    ) -> None:
+        super().__init__(parent)
+        self._phase = 0.0
+        self._cycle_ms = 500.0
+        self._stroke_width = max(1.0, float(stroke_width))
+        self._color = QColor(color)
+        self._accent_color = QColor(accent_color)
+        self.setObjectName("ConcentricRingLoader")
+        self.setFixedSize(size, size)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def sizeHint(self) -> QSize:
+        return self.size()
+
+    def setColor(self, color: QColor | str) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def setAccentColor(self, color: QColor | str) -> None:
+        self._accent_color = QColor(color)
+        self.update()
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + (float(self._timer.interval()) / self._cycle_ms)) % 1.0
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        side = float(min(self.width(), self.height()))
+        width = side * 0.5
+        height = side
+        center_x = self.width() / 2.0
+        center_y = self.height() / 2.0
+        phase = self._phase
+
+        if phase <= 0.05:
+            rotation_progress = 0.0
+        elif phase >= 0.95:
+            rotation_progress = 1.0
+        else:
+            rotation_progress = (phase - 0.05) / 0.9
+        angle = -60.0 * max(0.0, min(1.0, rotation_progress))
+
+        if phase <= 0.02:
+            bounce = 0.0
+        elif phase >= 0.98:
+            bounce = 1.0
+        else:
+            bounce = (phase - 0.02) / 0.96
+        dot_lift = side * 0.002 * max(0.0, min(1.0, bounce))
+
+        diamond_size = width * 0.9
+        diamond_center_y = center_y + (height * 0.18)
+        dot_radius = max(3.0, width * 0.15)
+        dot_center_y = center_y - (height * 0.3) - dot_lift
+
+        painter.save()
+        painter.translate(center_x, diamond_center_y)
+        painter.rotate(angle)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._color)
+        half = diamond_size / 2.0
+        diamond = QPolygonF(
+            [
+                QPointF(0.0, -half),
+                QPointF(half, 0.0),
+                QPointF(0.0, half),
+                QPointF(-half, 0.0),
+            ]
+        )
+        painter.drawPolygon(diamond)
+        painter.restore()
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._accent_color)
+        painter.drawEllipse(
+            QRect(
+                int(round(center_x - dot_radius)),
+                int(round(dot_center_y - dot_radius)),
+                int(round(dot_radius * 2.0)),
+                int(round(dot_radius * 2.0)),
+            )
+        )

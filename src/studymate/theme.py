@@ -370,6 +370,19 @@ def app_stylesheet() -> str:
         border-color: rgba(122, 168, 220, 0.85);
         background: #fcfeff;
     }
+    QComboBox#AppIconAccountsCombo::drop-down {
+        width: 28px;
+        border: none;
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        background: transparent;
+    }
+    QComboBox#AppIconAccountsCombo::drop-down:hover {
+        background: transparent;
+    }
+    QComboBox#AppIconAccountsCombo::drop-down:on {
+        background: transparent;
+    }
     QToolButton#CollapseButton {
         background-color: transparent;
         border: none;
@@ -538,14 +551,20 @@ def app_stylesheet() -> str:
         border: 1px solid #0f2539;
     }
     QComboBox::drop-down {
-        width: 34px;
+        width: 32px;
         border: none;
         subcontrol-origin: padding;
         subcontrol-position: top right;
         background: transparent;
     }
+    QComboBox::drop-down:hover {
+        background: transparent;
+    }
+    QComboBox::drop-down:on {
+        background: transparent;
+    }
     QComboBox QAbstractItemView {
-        background-color: rgba(255, 255, 255, 0.98);
+        background-color: #ffffff;
         border: 1px solid rgba(166, 181, 197, 0.55);
         border-radius: 14px;
         padding: 8px 6px;
@@ -554,7 +573,7 @@ def app_stylesheet() -> str:
         selection-color: #122131;
     }
     QWidget#ComboPopup {
-        background-color: rgba(255, 255, 255, 0.98);
+        background-color: #ffffff;
         border: 1px solid rgba(166, 181, 197, 0.55);
         border-radius: 14px;
     }
@@ -656,7 +675,7 @@ def app_stylesheet() -> str:
         border-radius: 18px;
     }
     QMenu {
-        background-color: rgba(255, 255, 255, 0.98);
+        background-color: #ffffff;
         border: 1px solid rgba(166, 181, 197, 0.5);
         border-radius: 14px;
         padding: 6px;
@@ -680,7 +699,7 @@ def app_stylesheet() -> str:
         margin: 6px 8px;
     }
     QMenu#CardOptionsMenu {
-        background-color: rgba(255, 255, 255, 0.98);
+        background-color: #ffffff;
         border: 1px solid rgba(166, 181, 197, 0.5);
         border-radius: 14px;
         padding: 8px 6px;

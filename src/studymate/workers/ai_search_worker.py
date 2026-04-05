@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 from PySide6.QtCore import QThread, Signal
 
 from studymate.services.ollama_service import OllamaError, OllamaService
@@ -9,9 +7,8 @@ from studymate.workers.prompt_context import with_oncard_context
 
 
 class AiSearchWorker(QThread):
-    chunk = Signal(int, str)
     failed = Signal(int, str)
-    finished = Signal(int)
+    finished = Signal(int, str)
 
     def __init__(
         self,
@@ -71,9 +68,6 @@ class AiSearchWorker(QThread):
             f"User query:\n{self.prompt.strip()}"
         )
         markdown = ""
-        last_emit = 0.0
-        last_emitted_markdown = ""
-        emit_interval = 1.0 / 45.0
         try:
             for piece in self.ollama.stream_chat(
                 model=self.model,
@@ -91,20 +85,9 @@ class AiSearchWorker(QThread):
                 if self._stop_requested:
                     return
                 markdown += piece
-                now = time.perf_counter()
-                if (
-                    (now - last_emit) >= emit_interval
-                    or piece.endswith("\n")
-                    or len(markdown) - len(last_emitted_markdown) >= 32
-                ):
-                    self.chunk.emit(self.request_id, markdown)
-                    last_emitted_markdown = markdown
-                    last_emit = now
         except OllamaError as exc:
             if not self._stop_requested:
                 self.failed.emit(self.request_id, str(exc))
             return
         if not self._stop_requested:
-            if markdown and markdown != last_emitted_markdown:
-                self.chunk.emit(self.request_id, markdown)
-            self.finished.emit(self.request_id)
+            self.finished.emit(self.request_id, markdown.strip())

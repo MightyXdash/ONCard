@@ -98,6 +98,9 @@ class DataStore:
                 "warm_cache_on_startup": True,
                 "reduced_motion": False,
             },
+            "stats": {
+                "default_range": "daily",
+            },
             "updated_at": cls.now_iso(),
         }
 
