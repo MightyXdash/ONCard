@@ -13,7 +13,6 @@ from studymate.services.files_to_cards_service import (
     normalize_sources,
     paper_ctx_for_units,
 )
-from studymate.services.model_registry import MODELS
 from studymate.services.ollama_service import OllamaService
 from studymate.utils.markdown import cleanup_plain_text
 from studymate.workers.prompt_context import with_oncard_context
@@ -33,6 +32,8 @@ class FilesToCardsJob:
     custom_instructions: str
     use_ocr: bool
     background_workers: int = 2
+    text_model_tag: str = "gemma3:4b"
+    text_model_label: str = "Gemma3:4b"
 
 
 class FilesToCardsWorker(QThread):
@@ -76,14 +77,14 @@ class FilesToCardsWorker(QThread):
         total_units = len(normalized)
         if self.job.use_ocr:
             source_text_parts: list[str] = []
-            self._emit_status("Gemma OCR is extracting page text...")
+            self._emit_status(f"{self.job.text_model_label} OCR is extracting page text...")
             for page in normalized:
                 self._ensure_running()
                 page_text = self._ocr_page(page)
                 source_text_parts.append(f"{page.label}\n{page_text}".strip())
             paper = self._run_paper_stage(source_text_parts, total_units)
         else:
-            self._emit_status("OCR is off. Gemma Vision is building the paper directly from the pages...")
+            self._emit_status(f"OCR is off. {self.job.text_model_label} is building the paper directly from the pages...")
             paper = self._run_vision_paper_stage(normalized)
         self._ensure_running()
         questions = self._run_gemma_stage(paper)
@@ -92,14 +93,14 @@ class FilesToCardsWorker(QThread):
 
     def _ocr_page(self, page) -> str:
         entry_key = f"{self.job.run_id}:ocr:{page.unit_index}"
-        self._emit_status(f"OCR {page.unit_index}/{page.total_units}: {page.label}")
+        self._emit_status(f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
 
         while True:
             self._ensure_running()
             parts: list[str] = []
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=MODELS["gemma3_4b"].primary_tag,
+                model=self.job.text_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are a careful OCR assistant. "
@@ -127,7 +128,7 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"Gemma OCR {page.unit_index}/{page.total_units}",
+                    title=f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(combined, threshold=8) or _has_consecutive_repeated_line(
@@ -135,7 +136,7 @@ class FilesToCardsWorker(QThread):
                     threshold=4,
                 ):
                     restart_requested = True
-                    self._emit_status(f"Gemma OCR repetition detected on {page.label}. Restarting this page...")
+                    self._emit_status(f"{self.job.text_model_label} OCR repetition detected on {page.label}. Restarting this page...")
                     break
 
             if not restart_requested:
@@ -208,14 +209,14 @@ class FilesToCardsWorker(QThread):
         )
         if custom_block:
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
-        self._emit_status(f"Gemma Vision is building paper section {batch_index}/{total_batches}...")
+        self._emit_status(f"{self.job.text_model_label} is building paper section {batch_index}/{total_batches}...")
 
         while True:
             self._ensure_running()
             paper_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=MODELS["gemma3_4b"].primary_tag,
+                model=self.job.text_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer reading images directly. "
@@ -242,12 +243,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"Gemma Vision Paper {batch_index}/{total_batches}",
+                    title=f"{self.job.text_model_label} Vision Paper {batch_index}/{total_batches}",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status(f"Gemma repeated itself on vision batch {batch_index}. Restarting that batch...")
+                    self._emit_status(f"{self.job.text_model_label} repeated itself on vision batch {batch_index}. Restarting that batch...")
                     break
             if not restart_requested:
                 break
@@ -284,14 +285,14 @@ class FilesToCardsWorker(QThread):
         if custom_block:
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
         user_prompt += f"\nPartial paper sections:\n{sections}\n"
-        self._emit_status("Merging direct-vision paper sections...")
+        self._emit_status(f"Merging direct-vision paper sections with {self.job.text_model_label}...")
 
         while True:
             self._ensure_running()
             merged_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=MODELS["gemma3_4b"].primary_tag,
+                model=self.job.text_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer. "
@@ -313,12 +314,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title="Gemma Vision Paper Merge",
+                    title=f"{self.job.text_model_label} Vision Paper Merge",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status("Gemma repeated itself while merging the direct-vision paper. Restarting merge...")
+                    self._emit_status(f"{self.job.text_model_label} repeated itself while merging the direct-vision paper. Restarting merge...")
                     break
             if not restart_requested:
                 break
@@ -355,14 +356,14 @@ class FilesToCardsWorker(QThread):
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
         user_prompt += f"\nSource notes:\n{source_block}\n"
         entry_key = f"{self.job.run_id}:paper"
-        self._emit_status("Gemma is building the paper...")
+        self._emit_status(f"{self.job.text_model_label} is building the paper...")
 
         while True:
             self._ensure_running()
             paper_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=MODELS["gemma3_4b"].primary_tag,
+                model=self.job.text_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer. "
@@ -383,12 +384,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title="Gemma Paper",
+                    title=f"{self.job.text_model_label} Paper",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status("Gemma repeated itself. Restarting the paper stage...")
+                    self._emit_status(f"{self.job.text_model_label} repeated itself. Restarting the paper stage...")
                     break
             if not restart_requested:
                 break
@@ -416,7 +417,7 @@ class FilesToCardsWorker(QThread):
             batch_index += 1
             batch_size = min(4, remaining)
             ctx = gemma_ctx_for_batch(batch_index)
-            self._emit_status(f"Generating question batch {batch_index}...")
+            self._emit_status(f"Generating question batch {batch_index} with {self.job.text_model_label}...")
             batch_questions = self._collect_gemma_batch(
                 research_paper=research_paper,
                 existing_questions=questions,
@@ -454,9 +455,9 @@ class FilesToCardsWorker(QThread):
             if self.job.custom_instructions.strip():
                 prompt += f"\nOptional guidance:\n{self.job.custom_instructions.strip()}\n"
 
-            self._emit_status(f"Gemma batch attempt {attempt}: collecting {needed} more question(s)...")
+            self._emit_status(f"{self.job.text_model_label} batch attempt {attempt}: collecting {needed} more question(s)...")
             result = self.ollama.stream_structured_chat(
-                model=MODELS["gemma3_4b"].primary_tag,
+                model=self.job.text_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "Return only strict JSON matching the schema. "
@@ -491,7 +492,7 @@ class FilesToCardsWorker(QThread):
                 collected = collected[:batch_size]
 
             if added_this_round == 0 and attempt >= 8:
-                raise RuntimeError("Gemma could not generate enough unique questions after multiple retries.")
+                raise RuntimeError(f"{self.job.text_model_label} could not generate enough unique questions after multiple retries.")
 
         return collected[:batch_size]
 

@@ -19,9 +19,9 @@ def app_stylesheet() -> str:
         background-color: #edf2f7;
     }
     QWidget#AppShell {
-        background-color: #edf2f7;
-        border: 1px solid rgba(176, 189, 204, 0.2);
-        border-radius: 30px;
+        background: transparent;
+        border: none;
+        border-radius: 0px;
     }
     QWidget#AppShell[windowMaximized="true"] {
         border-radius: 0px;
@@ -197,6 +197,16 @@ def app_stylesheet() -> str:
     QPushButton#PrimaryButton:hover {
         background-color: #13314b;
         border-color: #13314b;
+    }
+    QPushButton#WizardActionButton {
+        background-color: #3f739b;
+        color: #ffffff;
+        border: 1px solid #3f739b;
+        border-radius: 18px;
+    }
+    QPushButton#WizardActionButton:hover {
+        background-color: #0f2539;
+        border-color: #0f2539;
     }
     QPushButton#DangerlessButton {
         background-color: #f4f6f8;
@@ -590,8 +600,19 @@ def app_stylesheet() -> str:
         background: #e4eef8;
         color: #122131;
     }
+    QSlider {
+        background: transparent;
+    }
     QSlider::groove:horizontal {
         height: 6px;
+        border-radius: 4px;
+        background: #d4deea;
+    }
+    QSlider::sub-page:horizontal {
+        border-radius: 4px;
+        background: #d4deea;
+    }
+    QSlider::add-page:horizontal {
         border-radius: 4px;
         background: #d4deea;
     }

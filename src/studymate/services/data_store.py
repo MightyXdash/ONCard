@@ -124,8 +124,12 @@ class DataStore:
     def default_ai_settings(cls) -> dict:
         return {
             "assistant_tone": "",
+            "ask_ai_tone": "warm",
+            "ask_ai_emoji_level": 2,
+            "use_selected_llm_for_text_features": False,
+            "selected_text_llm_key": "gemma3_4b",
             "discuss_context_length": 8192,
-            "followup_context_length": 8192,
+            "followup_context_length": 9216,
             "reinforcement_context_length": 8192,
             "files_to_cards_ocr": True,
             "updated_at": cls.now_iso(),

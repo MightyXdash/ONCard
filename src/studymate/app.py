@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 from PySide6.QtCore import QTimer, Qt
@@ -49,6 +50,7 @@ class SessionController:
         self.backup_service: BackupService | None = None
         self._switching = False
         self._startup_ready = False
+        self._background_model_sync_threads: list[threading.Thread] = []
 
         self.app.aboutToQuit.connect(self._on_about_to_quit)
 
@@ -259,6 +261,7 @@ class SessionController:
             session_controller=self,
         )
         self.window.show()
+        self._schedule_background_model_sync()
 
         if self.window is not None and self.update_service is not None and self.datastore is not None and self.paths is not None:
             window = self.window
@@ -280,6 +283,30 @@ class SessionController:
             QTimer.singleShot(1200, lambda: _check_for_updates(self.app, window, update_service))
         self._startup_ready = True
         return True
+
+    def _schedule_background_model_sync(self) -> None:
+        if self.preflight is None:
+            return
+
+        def run_sync() -> None:
+            preflight = self.preflight
+            if preflight is None:
+                return
+            try:
+                preflight.snapshot(force=True)
+                preflight.invalidate()
+            except Exception:
+                return
+
+        def launch_sync_thread() -> None:
+            thread = threading.Thread(target=run_sync, daemon=True)
+            self._background_model_sync_threads.append(thread)
+            thread.start()
+            self._background_model_sync_threads = [item for item in self._background_model_sync_threads if item.is_alive()]
+
+        # Post-launch retries: catches cases where Ollama starts a bit later than the UI.
+        QTimer.singleShot(1200, launch_sync_thread)
+        QTimer.singleShot(4500, launch_sync_thread)
 
     def _sync_account_name_from_profile(self) -> None:
         if self.datastore is None:

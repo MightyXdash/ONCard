@@ -12,6 +12,7 @@ from studymate.services.embedding_service import EmbeddingService
 from studymate.services.recommendation_service import build_global_recommendations
 from studymate.services.study_intelligence import build_session_state, enqueue_similar_cards, refresh_topic_clusters, register_grade_result
 from studymate.ui.study_tab import AiResponseOverlay, StudyTab
+from studymate.utils.markdown import markdown_to_html
 from studymate.utils.paths import AppPaths
 
 
@@ -309,6 +310,96 @@ class NnaServiceTests(unittest.TestCase):
         self.assertRegex(normalized, r"(?m)^- \[x\] done task$")
         self.assertRegex(normalized, r"(?m)^> quoted text$")
         self.assertIn("\n---\n", normalized)
+
+    def test_ai_overlay_normalize_markdown_repairs_emphasized_section_labels(self) -> None:
+        raw = (
+            "Study guide\n"
+            "**Summary:**This section keeps the explanation on the same line.\n"
+            "**Takeaway**:Keep practicing the core steps."
+        )
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("# Study guide", normalized)
+        self.assertIn("## Summary", normalized)
+        self.assertIn("This section keeps the explanation on the same line.", normalized)
+        self.assertIn("## Takeaway", normalized)
+        self.assertRegex(normalized, r"(?m)^- Keep practicing the core steps\.$")
+        self.assertNotIn("**Summary:**", normalized)
+        self.assertNotIn("**Takeaway**:", normalized)
+
+    def test_ai_overlay_normalize_markdown_splits_inline_numbered_steps(self) -> None:
+        raw = "Next steps\n1)First thing 2)Second thing 3)Third thing"
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertIn("## Next Steps", normalized)
+        self.assertRegex(normalized, r"(?m)^1\. First thing$")
+        self.assertRegex(normalized, r"(?m)^2\. Second thing$")
+        self.assertRegex(normalized, r"(?m)^3\. Third thing$")
+
+    def test_ai_overlay_normalize_markdown_preserves_table_blocks(self) -> None:
+        raw = "| Topic | Score |\n| --- | --- |\n| Math | 9/10 |"
+
+        normalized = AiResponseOverlay._normalize_markdown(raw)
+
+        self.assertFalse(normalized.startswith("# "))
+        self.assertIn("| Topic | Score |", normalized)
+        self.assertIn("| --- | --- |", normalized)
+        self.assertIn("| Math | 9/10 |", normalized)
+
+    def test_markdown_to_html_renders_headings_lists_and_rules(self) -> None:
+        markdown = (
+            "Intro line\n"
+            "\n"
+            "---\n"
+            "\n"
+            "# Step 1: Roots Soak Up Water + Minerals\n"
+            "- First point\n"
+            "- Second point with **bold** text\n"
+        )
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn("<hr />", rendered)
+        self.assertIn("<h1>Step 1: Roots Soak Up Water + Minerals</h1>", rendered)
+        self.assertIn("<ul><li>First point</li><li>Second point with <strong>bold</strong> text</li></ul>", rendered)
+        self.assertNotIn("# Step 1", rendered)
+
+    def test_markdown_to_html_renders_tables(self) -> None:
+        markdown = "| Topic | Score |\n| --- | --- |\n| Math | 9/10 |"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn("<table>", rendered)
+        self.assertIn("<th>Topic</th>", rendered)
+        self.assertIn("<th>Score</th>", rendered)
+        self.assertIn("<td>Math</td>", rendered)
+        self.assertIn("<td>9/10</td>", rendered)
+
+    def test_markdown_to_html_renders_heading_without_required_space(self) -> None:
+        markdown = "##Step 1: Heading still renders"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn("<h2>Step 1: Heading still renders</h2>", rendered)
+        self.assertNotIn("##Step 1", rendered)
+
+    def test_markdown_to_html_ignores_zero_width_chars_before_heading(self) -> None:
+        markdown = "\ufeff# Step 1: Clean heading"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn("<h1>Step 1: Clean heading</h1>", rendered)
+        self.assertNotIn("# Step 1", rendered)
+
+    def test_markdown_to_html_strips_nested_heading_marker_from_heading_text(self) -> None:
+        markdown = "## # 1. Master the 2-Minute Rule"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn("<h2>1. Master the 2-Minute Rule</h2>", rendered)
+        self.assertNotIn("># 1. Master the 2-Minute Rule<", rendered)
 
 
 if __name__ == "__main__":

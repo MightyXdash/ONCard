@@ -149,7 +149,7 @@ class AutofillWorker(QThread):
     def run(self) -> None:
         self.progress.emit("Analyzing your question...")
         self.progress.emit("Planning card metadata...")
-        self.progress.emit("Generating JSON response with Gemma...")
+        self.progress.emit(f"Generating JSON response with {self.model}...")
         try:
             payload = generate_card_payload(
                 question=self.question,

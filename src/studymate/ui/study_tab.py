@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 import random
 import re
 import time
@@ -11,6 +12,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPain
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
@@ -37,6 +39,7 @@ from studymate.constants import SUBJECT_TAXONOMY
 from studymate.constants import SEMANTIC_SEARCH_MIN_SCORE, SEMANTIC_SEARCH_SCORE_MARGIN
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
+from studymate.services.model_registry import resolve_active_text_llm_spec
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.services.recommendation_service import (
@@ -55,6 +58,7 @@ from studymate.services.study_intelligence import (
     queue_reinforcement_cards,
     register_grade_result,
 )
+from studymate.utils.markdown import markdown_to_html
 from studymate.ui.animated import (
     AnimatedButton,
     AnimatedLineEdit,
@@ -69,7 +73,7 @@ from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.followup_worker import FollowUpWorker
 from studymate.workers.grade_worker import GradeWorker
 from studymate.workers.reinforcement_worker import ReinforcementWorker
-from studymate.workers.ai_search_worker import AiSearchWorker
+from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker
 
 
 class PromptTextEdit(QTextEdit):
@@ -135,6 +139,7 @@ class AiTagChip(QWidget):
 class AiQueryLineEdit(AnimatedLineEdit):
     aiModeChanged = Signal(bool)
     historyRequested = Signal()
+    imageDropped = Signal(str)
 
     TRIGGER_TOKENS = {"/ai", "#ai"}
 
@@ -148,6 +153,7 @@ class AiQueryLineEdit(AnimatedLineEdit):
         self._tag_reveal.setDuration(180)
         self._tag_reveal.setEasingCurve(QEasingCurve.Type.Linear)
         self._tag_chip.hide()
+        self.setAcceptDrops(True)
         self._update_text_margins()
 
     def ai_mode_active(self) -> bool:
@@ -214,6 +220,41 @@ class AiQueryLineEdit(AnimatedLineEdit):
         super().resizeEvent(event)
         self._update_text_margins()
 
+    @staticmethod
+    def _first_image_path(event) -> str:
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return ""
+        for url in mime.urls():
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            suffix = Path(path).suffix.lower()
+            if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+                return path
+        return ""
+
+    def dragEnterEvent(self, event) -> None:
+        if self._ai_mode and self._first_image_path(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._ai_mode and self._first_image_path(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if self._ai_mode:
+            path = self._first_image_path(event)
+            if path:
+                self.imageDropped.emit(path)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
     def _tag_rect(self):
         contents = self.contentsRect()
         tag_height = max(22, min(contents.height() - 4, 24))
@@ -234,9 +275,23 @@ class AiResponseSkeleton(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._phase = 0.0
+        self._reasoning_blocks: list[str] = []
+        self._visible_reasoning_count = 0
+        self._active_reasoning_index = -1
+        self._reasoning_progress = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(24)
         self._timer.timeout.connect(self._advance)
+        self._reasoning_anim = QVariantAnimation(self)
+        self._reasoning_anim.setDuration(520)
+        self._reasoning_anim.setStartValue(0.0)
+        self._reasoning_anim.setEndValue(1.0)
+        self._reasoning_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._reasoning_anim.valueChanged.connect(self._set_reasoning_progress)
+        self._reasoning_anim.finished.connect(self._queue_next_reasoning_block)
+        self._reasoning_queue_timer = QTimer(self)
+        self._reasoning_queue_timer.setSingleShot(True)
+        self._reasoning_queue_timer.timeout.connect(self._reveal_next_reasoning_block)
         self.setMinimumHeight(268)
 
     def start(self) -> None:
@@ -246,6 +301,56 @@ class AiResponseSkeleton(QWidget):
 
     def stop(self) -> None:
         self._timer.stop()
+        self._reasoning_anim.stop()
+        self._reasoning_queue_timer.stop()
+
+    def clear_research_message(self) -> None:
+        self._reasoning_anim.stop()
+        self._reasoning_queue_timer.stop()
+        self._reasoning_blocks = []
+        self._visible_reasoning_count = 0
+        self._active_reasoning_index = -1
+        self._reasoning_progress = 0.0
+        self.update()
+
+    def show_research_message(self, text: str) -> None:
+        self.show_reasoning_messages([text])
+
+    def show_reasoning_messages(self, messages: list[str]) -> None:
+        cleaned = [" ".join(str(message or "").strip().split()) for message in messages]
+        self._reasoning_blocks = [message for message in cleaned if message]
+        self._visible_reasoning_count = 0
+        self._active_reasoning_index = -1
+        self._reasoning_progress = 0.0
+        self._reasoning_anim.stop()
+        self._reasoning_queue_timer.stop()
+        if not self._reasoning_blocks:
+            self.update()
+            return
+        self._reveal_next_reasoning_block()
+
+    def _set_reasoning_progress(self, value) -> None:
+        try:
+            self._reasoning_progress = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._reasoning_progress = 1.0
+        self.update()
+
+    def _reveal_next_reasoning_block(self) -> None:
+        if self._visible_reasoning_count >= len(self._reasoning_blocks):
+            return
+        self._active_reasoning_index = self._visible_reasoning_count
+        self._visible_reasoning_count += 1
+        self._reasoning_progress = 0.0
+        self._reasoning_anim.stop()
+        self._reasoning_anim.setStartValue(0.0)
+        self._reasoning_anim.setEndValue(1.0)
+        self._reasoning_anim.start()
+        self.update()
+
+    def _queue_next_reasoning_block(self) -> None:
+        if self._visible_reasoning_count < len(self._reasoning_blocks):
+            self._reasoning_queue_timer.start(120)
 
     def _advance(self) -> None:
         self._phase = (self._phase + 0.025) % 1.0
@@ -263,9 +368,49 @@ class AiResponseSkeleton(QWidget):
         content = rect.adjusted(18, 18, -18, -18)
         line_height = 14
         gap = 10
+        message_bottom = content.top()
+        if self._visible_reasoning_count > 0:
+            message_font = QFont(self.font())
+            message_font.setPointSize(10)
+            message_font.setWeight(QFont.Weight.Medium)
+            painter.setFont(message_font)
+            text_flags = int(Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap)
+            block_width = content.width() * 0.9
+            y = float(content.top())
+            for index, text in enumerate(self._reasoning_blocks[: self._visible_reasoning_count]):
+                block_height = 42.0
+                block_rect = QRectF(content.left(), y, block_width, block_height)
+                text_rect = block_rect.adjusted(12.0, 0.0, -12.0, 0.0)
+                block_progress = self._reasoning_progress if index == self._active_reasoning_index else 1.0
+                clip_height = max(0.0, text_rect.height() * block_progress)
+                if clip_height > 0.0:
+                    painter.save()
+                    painter.setClipRect(QRectF(text_rect.left(), text_rect.top(), text_rect.width(), clip_height))
+                    painter.setPen(QColor("#21415F"))
+                    painter.drawText(text_rect, text_flags, text)
+                    shimmer_width = max(220.0, text_rect.width() * 0.72)
+                    track = max(1.0, text_rect.width() + shimmer_width)
+                    x = text_rect.left() - shimmer_width + (track * self._phase)
+                    highlight = QRectF(x, text_rect.top() - 8.0, shimmer_width, text_rect.height() + 16.0)
+                    shimmer = QLinearGradient(highlight.left(), 0, highlight.right(), 0)
+                    shimmer.setColorAt(0.0, QColor(255, 255, 255, 0))
+                    shimmer.setColorAt(0.14, QColor(234, 243, 255, 18))
+                    shimmer.setColorAt(0.28, QColor(241, 247, 255, 48))
+                    shimmer.setColorAt(0.42, QColor(248, 251, 255, 96))
+                    shimmer.setColorAt(0.5, QColor(255, 255, 255, 178 if index == self._active_reasoning_index else 146))
+                    shimmer.setColorAt(0.58, QColor(248, 251, 255, 96))
+                    shimmer.setColorAt(0.72, QColor(241, 247, 255, 48))
+                    shimmer.setColorAt(0.86, QColor(234, 243, 255, 18))
+                    shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+                    painter.fillRect(highlight, shimmer)
+                    painter.restore()
+                y = block_rect.bottom() + 8.0
+            message_bottom = int(y) + 4
+
         widths = [0.74, 0.92, 0.87, 0.95, 0.68, 0.90, 0.84, 0.57, 0.93, 0.88, 0.79, 0.64]
         for index, ratio in enumerate(widths):
-            top = int(content.top() + index * (line_height + gap))
+            top = int(message_bottom + index * (line_height + gap))
             if top + line_height > content.bottom():
                 break
             bar = QRectF(content.left(), top, content.width() * ratio, line_height)
@@ -283,6 +428,63 @@ class AiResponseSkeleton(QWidget):
             gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.setBrush(gradient)
             painter.drawRoundedRect(bar, 8.0, 8.0)
+
+
+class AiAttachmentChip(QFrame):
+    removed = Signal()
+
+    def __init__(self, icons: IconHelper, parent=None) -> None:
+        super().__init__(parent)
+        self._path = ""
+        self.setObjectName("AiAttachmentChip")
+        self.setFixedHeight(34)
+        self.setStyleSheet(
+            """
+            QFrame#AiAttachmentChip {
+                background: rgba(242, 246, 251, 0.96);
+                border: 1px solid rgba(215, 219, 226, 0.96);
+                border-radius: 12px;
+            }
+            """
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 4, 6, 4)
+        layout.setSpacing(6)
+
+        self.preview = QLabel(self)
+        self.preview.setFixedSize(24, 24)
+        self.preview.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.preview, 0, Qt.AlignVCenter)
+
+        self.remove_btn = AnimatedToolButton()
+        self.remove_btn.setIcon(icons.icon("common", "close", "X"))
+        self.remove_btn.setIconSize(QSize(12, 12))
+        self.remove_btn.setCursor(Qt.PointingHandCursor)
+        self.remove_btn.setAutoRaise(True)
+        self.remove_btn.setFixedSize(18, 18)
+        self.remove_btn.clicked.connect(self.removed.emit)
+        layout.addWidget(self.remove_btn, 0, Qt.AlignVCenter)
+        self.hide()
+
+    def path(self) -> str:
+        return self._path
+
+    def set_image(self, path: str) -> bool:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return False
+        thumb = pixmap.scaled(24, 24, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        self.preview.setPixmap(thumb)
+        self.preview.setToolTip(Path(path).name)
+        self._path = path
+        self.show()
+        return True
+
+    def clear_image(self) -> None:
+        self._path = ""
+        self.preview.clear()
+        self.preview.setToolTip("")
+        self.hide()
 
 
 class AiRevealOverlay(QWidget):
@@ -472,6 +674,27 @@ class AiResponseOverlay(QWidget):
         self.body.setStyleSheet(
             'background: transparent; border: none; color: #1A1A1A; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; font-weight: 300;'
         )
+        self.body.verticalScrollBar().setStyleSheet(
+            """
+            QScrollBar:vertical {
+                width: 8px;
+                margin: 2px 0 2px 0;
+                background: transparent;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(158, 168, 184, 0.42);
+                border-radius: 4px;
+                min-height: 28px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
+                height: 0px;
+            }
+            """
+        )
         self.body.document().setDocumentMargin(0)
         self.body.document().setDefaultStyleSheet(
             """
@@ -529,6 +752,9 @@ class AiResponseOverlay(QWidget):
             }
             """
         )
+        document_layout = self.body.document().documentLayout()
+        if document_layout is not None:
+            document_layout.documentSizeChanged.connect(self._on_body_document_size_changed)
         base_font = QFont(self.font())
         base_font.setWeight(QFont.Weight.Light)
         self.body.setFont(base_font)
@@ -576,6 +802,7 @@ class AiResponseOverlay(QWidget):
         self._stream_timer.stop()
         self._stop_char_fades()
         self.body.clear()
+        self.skeleton.clear_research_message()
         self.skeleton.start()
         self.response_stack.setCurrentWidget(self.skeleton)
         self.reveal_overlay.hide()
@@ -591,15 +818,32 @@ class AiResponseOverlay(QWidget):
         self._layout_overlay_elements()
         self._animate_in()
 
+    def show_research_message(self, message: str) -> None:
+        self.show_reasoning_messages([message])
+
+    def show_reasoning_messages(self, messages: list[str]) -> None:
+        self._stream_timer.stop()
+        self._stop_char_fades()
+        self.body.clear()
+        self.copy_btn.hide()
+        self.response_stack.setCurrentWidget(self.skeleton)
+        self.skeleton.start()
+        self.skeleton.show_reasoning_messages(messages)
+        self.reveal_overlay.hide()
+        self._layout_overlay_elements()
+        self._sync_size(animated=False)
+
     def set_markdown(self, markdown_text: str) -> None:
         cleaned = self._normalize_markdown(markdown_text)
         self._last_markdown = cleaned
         self._target_markdown = cleaned
         self._display_markdown = cleaned
-        self.body.setMarkdown(self._display_markdown)
+        self.body.setHtml(markdown_to_html(self._display_markdown))
+        self.body.document().adjustSize()
         bar = self.body.verticalScrollBar()
         if bar is not None:
-            bar.setValue(bar.maximum())
+            bar.setValue(0)
+        self.skeleton.clear_research_message()
         self.skeleton.stop()
         animate_reveal = self.response_stack.currentWidget() is self.skeleton
         self.response_stack.setCurrentWidget(self.body_container)
@@ -609,8 +853,16 @@ class AiResponseOverlay(QWidget):
         self._sync_size(animated=False)
         if animate_reveal:
             self._start_reveal_animation()
+            QTimer.singleShot(0, lambda: self._sync_size(animated=False))
             return
         self.reveal_overlay.hide()
+        self._size_debounce.start(22)
+
+    def _on_body_document_size_changed(self, _size) -> None:
+        if self.response_stack.currentWidget() is not self.body_container:
+            return
+        if not self.isVisible():
+            return
         self._size_debounce.start(22)
 
     def set_stream_settings(self, mode: str, tps: float, fade_seconds: float) -> None:
@@ -691,6 +943,7 @@ class AiResponseOverlay(QWidget):
         self._closing = True
         self._stream_timer.stop()
         self._stop_char_fades()
+        self.skeleton.clear_research_message()
         self.skeleton.stop()
         self.reveal_overlay.hide()
         animation = QPropertyAnimation(self, b"pos", self)
@@ -778,6 +1031,28 @@ class AiResponseOverlay(QWidget):
         }
         section_pattern = "|".join(re.escape(label) for label in sorted(section_label_modes, key=len, reverse=True))
         url_pattern = re.compile(r"(?:https?://|www\.)\S+")
+        htmlish_pattern = re.compile(r"^\s*</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^>]*)?>")
+
+        def rewrite_emphasized_section_label(value: str) -> str:
+            line = value
+            patterns = (
+                rf"^(?P<indent>\s*)(?P<em>\*\*|__)\s*(?P<label>{section_pattern})\s*:\s*(?P=em)\s*(?P<content>.*)$",
+                rf"^(?P<indent>\s*)(?P<em>\*\*|__)\s*(?P<label>{section_pattern})\s*(?P=em)\s*:\s*(?P<content>.*)$",
+                rf"^(?P<indent>\s*)(?P<em>\*\*|__)\s*(?P<label>{section_pattern})\s*:\s*(?P<content>.*)$",
+                rf"^(?P<indent>\s*)(?P<em>\*\*|__)\s*(?P<label>{section_pattern})\s*(?P=em)\s*$",
+                rf"^(?P<indent>\s*)(?P<em>\*\*|__)\s*(?P<label>{section_pattern})\s*$",
+            )
+            for pattern in patterns:
+                match = re.match(pattern, line, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                indent = match.group("indent") or ""
+                label = match.group("label") or ""
+                content = " ".join(str(match.groupdict().get("content", "") or "").split())
+                if content:
+                    return f"{indent}{label}: {content}"
+                return f"{indent}{label}"
+            return line
 
         def close_unbalanced_leading_emphasis(value: str) -> str:
             stripped_value = value.lstrip()
@@ -812,6 +1087,7 @@ class AiResponseOverlay(QWidget):
         )
         normalized = re.sub(rf"(?<=[.!?])\s*(?=[{bullet_chars}]\s+\S)", "\n", normalized)
         normalized = re.sub(r"(?<=[.!?])\s*(?=\d{1,3}[.)-]\s+\S)", "\n", normalized)
+        normalized = re.sub(r"(?<=\S)\s+(?=\d{1,3}[.)](?=\S))", "\n", normalized)
 
         # Convert setext headings to ATX headings.
         setext_converted: list[str] = []
@@ -884,6 +1160,7 @@ class AiResponseOverlay(QWidget):
                 line = re.sub(r"^\[([xX ])\]\s+(?=\S)", r"- [\1] ", line)
                 line = re.sub(r"(\*\*[^*\n]{1,120}:\*\*)(?=\S)", r"\1 ", line)
                 line = re.sub(r"([:;,!?])(?=[A-Za-z])", r"\1 ", line)
+                line = rewrite_emphasized_section_label(line)
                 def _unglue_token(token: str) -> str:
                     if not token or token.isspace():
                         return token
@@ -1053,8 +1330,9 @@ class AiResponseOverlay(QWidget):
         if first_content_idx >= 0:
             first = cleaned[first_content_idx].strip()
             first_is_heading = first.startswith("#")
-            first_is_list_like = first.startswith(("```", "-", "*", ">", "1.", "2.", "3."))
-            looks_like_title = bool(first) and not bool(re.search(r"[.!?]$", first))
+            first_is_list_like = first.startswith(("```", "-", "*", ">", "1.", "2.", "3.", "|"))
+            first_is_htmlish = bool(htmlish_pattern.match(first))
+            looks_like_title = bool(first) and not first_is_htmlish and not bool(re.search(r"[.!?]$", first))
             if (not first_is_heading and not first_is_list_like and looks_like_title) and (
                 has_subheading_after_first or not saw_heading
             ):
@@ -1063,6 +1341,11 @@ class AiResponseOverlay(QWidget):
         collapsed: list[str] = []
         blank_count = 0
         for line in cleaned:
+            stripped_line = line.strip()
+            if re.fullmatch(r"-\s*(?:\*\*|__)?\s*", stripped_line):
+                continue
+            if stripped_line in {"**", "__", "- **", "- __"}:
+                continue
             if line.strip() == "":
                 blank_count += 1
                 if blank_count > 2:
@@ -1232,7 +1515,28 @@ class AiResponseOverlay(QWidget):
                 final_height = minimum_height
             else:
                 final_height = max(collapsed_height, expanded_height)
-            self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            available_body_height = max(
+                96,
+                final_height
+                - root_margins.top()
+                - root_margins.bottom()
+                - surface_margins.top()
+                - surface_margins.bottom()
+                - header_height
+                - 24,
+            )
+            # Constrain the shared response host viewport instead of the text browser
+            # itself to avoid clipped-content/scroll-range mismatches.
+            self.response_host.setMinimumHeight(available_body_height)
+            self.response_host.setMaximumHeight(available_body_height)
+            self.body.setMinimumHeight(0)
+            self.body.setMaximumHeight(16777215)
+            if self.response_stack.currentWidget() is self.skeleton:
+                self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            else:
+                # Let QTextBrowser decide overflow from actual rendered layout.
+                # Estimated doc height can be stale and incorrectly hide scroll.
+                self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             target_rect = QRect(self._target_pos(), QSize(width, final_height))
             if not self.isVisible() or force_minimum or not animated:
                 self._size_animation.stop()
@@ -1249,10 +1553,24 @@ class AiResponseOverlay(QWidget):
                 self._size_animation.setStartValue(current_rect)
                 self._size_animation.setEndValue(target_rect)
                 self._size_animation.start()
+            # Re-sync the document width after layout has settled so scroll range
+            # is based on the actual viewport width, not an estimate.
+            QTimer.singleShot(0, self._refresh_body_metrics_from_viewport)
             self._layout_overlay_elements()
             self.raise_()
         finally:
             self._syncing_size = False
+
+    def _refresh_body_metrics_from_viewport(self) -> None:
+        if self.response_stack.currentWidget() is not self.body_container:
+            return
+        viewport = self.body.viewport().width()
+        if viewport <= 0:
+            return
+        text_width = self.body.document().textWidth()
+        if abs(text_width - viewport) >= 1.0:
+            self.body.document().setTextWidth(max(1, viewport))
+        self.body.document().adjustSize()
 
     def _target_width(self) -> int:
         parent = self.parentWidget()
@@ -1647,8 +1965,12 @@ class StudyTab(QWidget):
         self.session_prep_worker: SessionPrepWorker | None = None
         self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
-        self.ai_query_worker: AiSearchWorker | None = None
-        self._ai_query_workers: set[AiSearchWorker] = set()
+        self.ai_query_planner_worker: AiSearchPlannerWorker | None = None
+        self.ai_query_answer_worker: AiSearchAnswerWorker | None = None
+        self.ai_query_tool_worker: CardSearchWorker | None = None
+        self._ai_query_workers: set[QThread] = set()
+        self._pending_ai_query_plans: dict[int, dict] = {}
+        self.ai_query_image_path = ""
         self.session_prep_dialog: SessionPrepDialog | None = None
         self.reinforcement_dialog: ReinforcementProgressDialog | None = None
         self.ai_response_overlay: AiResponseOverlay | None = None
@@ -1709,6 +2031,9 @@ class StudyTab(QWidget):
         sounds = getattr(parent, "sounds", None)
         if sounds is not None:
             sounds.play(name)
+
+    def _active_text_llm_spec(self):
+        return resolve_active_text_llm_spec(self.datastore.load_ai_settings())
 
     def _surface(self, sidebar: bool = False) -> QFrame:
         frame = QFrame()
@@ -1809,8 +2134,21 @@ class StudyTab(QWidget):
         self.card_search_input.returnPressed.connect(self._execute_card_search)
         self.card_search_input.aiModeChanged.connect(self._on_card_search_ai_mode_changed)
         self.card_search_input.historyRequested.connect(self._restore_previous_ai_query)
+        self.card_search_input.imageDropped.connect(self._attach_ai_image)
         self.card_search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.card_search_input.installEventFilter(self)
+        self.card_ai_attachment_chip = AiAttachmentChip(self.icons, self.card_search_shell)
+        self.card_ai_attachment_chip.removed.connect(self._clear_ai_image)
+        self.card_ai_attach_btn = AnimatedToolButton()
+        self.card_ai_attach_btn.setObjectName("SearchInputButton")
+        self.card_ai_attach_btn.setIcon(self.icons.icon("common", "cam", "C"))
+        self.card_ai_attach_btn.setIconSize(QSize(18, 18))
+        self.card_ai_attach_btn.setCursor(Qt.PointingHandCursor)
+        self.card_ai_attach_btn.setAutoRaise(True)
+        self.card_ai_attach_btn.setFixedSize(30, 30)
+        self.card_ai_attach_btn.setToolTip("Attach image")
+        self.card_ai_attach_btn.clicked.connect(self._pick_ai_image)
+        self.card_ai_attach_btn.hide()
         self.card_search_btn = AnimatedToolButton()
         self.card_search_btn.setObjectName("SearchInputButton")
         self.card_search_btn.setIcon(self._build_search_icon())
@@ -1822,6 +2160,8 @@ class StudyTab(QWidget):
         self.card_search_btn.setProperty("skipClickSfx", True)
         self.card_search_btn.clicked.connect(self._execute_card_search)
         search_shell_layout.addWidget(self.card_search_input, 1)
+        search_shell_layout.addWidget(self.card_ai_attachment_chip, 0, Qt.AlignVCenter)
+        search_shell_layout.addWidget(self.card_ai_attach_btn, 0, Qt.AlignVCenter)
         search_shell_layout.addWidget(self.card_search_btn, 0, Qt.AlignVCenter)
         search_layout.addWidget(self.card_search_shell, 1)
 
@@ -2539,9 +2879,39 @@ class StudyTab(QWidget):
     def _on_card_search_ai_mode_changed(self, active: bool) -> None:
         self.card_search_timer.stop()
         self._set_card_search_dropdown_visible(False)
+        self.card_ai_attach_btn.setVisible(active)
+        if not active:
+            self._clear_ai_image()
         if active:
             self.ai_query_history_index = len(self.ai_query_history)
             self.card_search_input.setFocus()
+
+    def _pick_ai_image(self) -> None:
+        self._play_sound("click")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Attach image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)",
+        )
+        if path:
+            self._attach_ai_image(path)
+
+    def _attach_ai_image(self, path: str) -> None:
+        if not self.card_search_input.ai_mode_active():
+            return
+        normalized = str(path or "").strip()
+        if not normalized:
+            return
+        if not self.card_ai_attachment_chip.set_image(normalized):
+            QMessageBox.warning(self, "Ask AI", "That image could not be loaded.")
+            return
+        self.ai_query_image_path = normalized
+        self.card_search_input.setFocus()
+
+    def _clear_ai_image(self) -> None:
+        self.ai_query_image_path = ""
+        self.card_ai_attachment_chip.clear_image()
 
     def _restore_previous_ai_query(self) -> None:
         if not self.card_search_input.ai_mode_active() or not self.ai_query_history:
@@ -2639,44 +3009,217 @@ class StudyTab(QWidget):
         if self.card_search_worker is worker:
             self.card_search_worker = None
 
+    def _stop_active_ai_workers(self) -> None:
+        for worker in (self.ai_query_planner_worker, self.ai_query_answer_worker):
+            if worker is not None and worker.isRunning():
+                worker.stop()
+
+    def _build_ai_card_context(self, scored_items: list[dict], *, limit: int = 6) -> list[dict]:
+        attempts = self.datastore.load_attempts()
+        attempts_by_card: dict[str, list[dict]] = {}
+        for attempt in attempts:
+            card_id = str(attempt.get("card_id", "")).strip()
+            if not card_id:
+                continue
+            attempts_by_card.setdefault(card_id, []).append(attempt)
+
+        payload: list[dict] = []
+        for item in scored_items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            card = item.get("card")
+            if not isinstance(card, dict):
+                continue
+            card_id = str(card.get("id", "")).strip()
+            history = list(attempts_by_card.get(card_id, []))
+            graded = [attempt for attempt in history if attempt.get("marks_out_of_10") is not None]
+            latest = graded[-1] if graded else (history[-1] if history else None)
+            average_marks = None
+            if graded:
+                average_marks = round(
+                    sum(float(attempt.get("marks_out_of_10", 0.0) or 0.0) for attempt in graded) / len(graded),
+                    2,
+                )
+            latest_feedback = None
+            if isinstance(latest, dict):
+                latest_feedback = {
+                    "marks_out_of_10": latest.get("marks_out_of_10"),
+                    "how_good": latest.get("how_good"),
+                    "what_went_good": latest.get("what_went_good"),
+                    "what_went_bad": latest.get("what_went_bad"),
+                    "what_to_improve": latest.get("what_to_improve"),
+                    "state": latest.get("state"),
+                    "timestamp": latest.get("timestamp"),
+                }
+            payload.append(
+                {
+                    "card_id": card_id,
+                    "title": str(card.get("title", "")).strip(),
+                    "question": str(card.get("question", "")).strip(),
+                    "answer": str(card.get("answer", "")).strip(),
+                    "subject": str(card.get("subject", "")).strip(),
+                    "difficulty": card.get("natural_difficulty"),
+                    "match_source": str(item.get("source", "")).strip(),
+                    "match_score": round(float(item.get("score", 0.0) or 0.0), 4),
+                    "performance": {
+                        "attempt_count": len(history),
+                        "graded_attempt_count": len(graded),
+                        "latest_marks_out_of_10": latest.get("marks_out_of_10") if isinstance(latest, dict) else None,
+                        "latest_how_good": latest.get("how_good") if isinstance(latest, dict) else None,
+                        "average_marks_out_of_10": average_marks,
+                        "latest_feedback": latest_feedback,
+                    },
+                }
+            )
+        return payload
+
+    def _start_ai_answer_worker(
+        self,
+        request_id: int,
+        *,
+        query: str,
+        retrieved_cards: list[dict],
+        retrieval_query: str,
+        image_paths: list[str] | None = None,
+        image_analysis: dict | None = None,
+    ) -> None:
+        ai_settings = self.datastore.load_ai_settings()
+        profile_context = self.datastore.load_profile()
+        model_spec = self._active_text_llm_spec()
+        worker = AiSearchAnswerWorker(
+            request_id=request_id,
+            ollama=self.ollama,
+            model=model_spec.primary_tag,
+            prompt=query,
+            context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
+            profile_context=profile_context,
+            retrieved_cards=retrieved_cards,
+            retrieval_query=retrieval_query,
+            tone=str(ai_settings.get("ask_ai_tone", ai_settings.get("assistant_tone", ""))).strip().lower(),
+            emoji_level=max(1, min(4, int(ai_settings.get("ask_ai_emoji_level", 2) or 2))),
+            image_paths=list(image_paths or []),
+            image_analysis=dict(image_analysis or {}),
+        )
+        self.ai_query_answer_worker = worker
+        self._ai_query_workers.add(worker)
+        worker.failed.connect(self._on_ai_query_failed)
+        worker.finished.connect(self._on_ai_query_finished)
+        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_answer_worker(current))
+        worker.finished.connect(lambda _request_id, _markdown, current=worker: self._cleanup_ai_answer_worker(current))
+        worker.start()
+
     def _submit_ai_query(self, query: str) -> None:
+        image_path = self.ai_query_image_path.strip()
+        if image_path and not query:
+            QMessageBox.information(self, "Ask AI", "Add some text with the image so Ask AI knows what you want.")
+            return
         if not query:
             return
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Ask AI"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Ask AI"):
             return
         if not self.ai_query_history or self.ai_query_history[-1] != query:
             self.ai_query_history.append(query)
         self.ai_query_history_index = len(self.ai_query_history)
-        if self.ai_query_worker is not None and self.ai_query_worker.isRunning():
-            self.ai_query_worker.stop()
+        self._stop_active_ai_workers()
         self.ai_query_request_id += 1
         request_id = self.ai_query_request_id
+        self._pending_ai_query_plans.clear()
         with QSignalBlocker(self.card_search_input):
             self.card_search_input.clear()
+        self._clear_ai_image()
         self.card_search_input.set_ai_mode(False)
         ai_settings = self.datastore.load_ai_settings()
         profile_context = self.datastore.load_profile()
         if self.ai_response_overlay is not None:
             self.ai_response_overlay.begin_stream()
-        worker = AiSearchWorker(
+        worker = AiSearchPlannerWorker(
             request_id=request_id,
             ollama=self.ollama,
-            model="gemma3:4b",
+            model=model_spec.primary_tag,
             prompt=query,
-            context_length=int(ai_settings.get("followup_context_length", 8192)),
+            context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
             profile_context=profile_context,
+            image_paths=[image_path] if image_path else [],
+            use_native_tools=bool(model_spec.supports_native_tools),
         )
-        self.ai_query_worker = worker
+        self.ai_query_planner_worker = worker
         self._ai_query_workers.add(worker)
         worker.failed.connect(self._on_ai_query_failed)
-        worker.finished.connect(self._on_ai_query_finished)
-        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_query_worker(current))
-        worker.finished.connect(lambda _request_id, _markdown, current=worker: self._cleanup_ai_query_worker(current))
+        worker.planned.connect(
+            lambda _request_id, plan, original=query, images=[image_path] if image_path else []: self._on_ai_query_planned(
+                _request_id, original, plan, images
+            )
+        )
+        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_planner_worker(current))
+        worker.planned.connect(lambda _request_id, _plan, current=worker: self._cleanup_ai_planner_worker(current))
         worker.start()
+
+    def _on_ai_query_planned(self, request_id: int, original_query: str, plan: dict, image_paths: list[str] | None = None) -> None:
+        if request_id != self.ai_query_request_id:
+            return
+        needs_show_cards = bool(plan.get("needs_show_cards", False))
+        search_query = " ".join(str(plan.get("search_query", "")).strip().split())
+        research_message = " ".join(str(plan.get("research_message", "")).strip().split())
+        reasoning_steps = [
+            " ".join(str(message or "").strip().split())
+            for message in plan.get("reasoning_steps", [])
+            if str(message or "").strip()
+        ][:2]
+        overlay_messages = reasoning_steps + ([research_message] if needs_show_cards and research_message else [])
+        if self.ai_response_overlay is not None and overlay_messages:
+            self.ai_response_overlay.show_reasoning_messages(overlay_messages)
+        if not needs_show_cards or str(plan.get("tool_name", "")).strip() != "ShowCards":
+            self._start_ai_answer_worker(
+                request_id,
+                query=original_query,
+                retrieved_cards=[],
+                retrieval_query="",
+                image_paths=image_paths,
+                image_analysis=dict(plan.get("image_analysis", {}) or {}),
+            )
+            return
+        self._pending_ai_query_plans[request_id] = {
+            "original_query": original_query,
+            "search_query": search_query or original_query,
+            "research_message": research_message,
+            "image_paths": list(image_paths or []),
+            "image_analysis": dict(plan.get("image_analysis", {}) or {}),
+        }
+        worker = CardSearchWorker(
+            request_id=request_id,
+            query=search_query or original_query,
+            cards=self.cards,
+            embedding_service=self.embedding_service,
+            limit=6,
+            allow_semantic=True,
+        )
+        self.ai_query_tool_worker = worker
+        worker.finished.connect(self._on_ai_show_cards_finished)
+        worker.finished.connect(lambda _request_id, _query, _results, current=worker: self._cleanup_ai_tool_worker(current))
+        worker.start()
+
+    def _on_ai_show_cards_finished(self, request_id: int, query: str, scored_items: object) -> None:
+        if request_id != self.ai_query_request_id:
+            return
+        plan = self._pending_ai_query_plans.pop(request_id, None)
+        if not isinstance(plan, dict):
+            return
+        results = scored_items if isinstance(scored_items, list) else []
+        retrieved_cards = self._build_ai_card_context(results, limit=6)
+        self._start_ai_answer_worker(
+            request_id,
+            query=str(plan.get("original_query", "")).strip(),
+            retrieved_cards=retrieved_cards,
+            retrieval_query=" ".join(str(query or plan.get("search_query", "")).strip().split()),
+            image_paths=list(plan.get("image_paths", []) or []),
+            image_analysis=dict(plan.get("image_analysis", {}) or {}),
+        )
 
     def _on_ai_query_failed(self, request_id: int, message: str) -> None:
         if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
             return
+        self._pending_ai_query_plans.pop(request_id, None)
         self.ai_response_overlay.set_markdown(f"### Unable to answer\n- {message}")
 
     def _on_ai_query_finished(self, request_id: int, markdown_text: str) -> None:
@@ -2687,17 +3230,31 @@ class StudyTab(QWidget):
             cleaned = "### No answer\n- The model returned an empty response."
         self.ai_response_overlay.set_markdown(cleaned)
 
-    def _cleanup_ai_query_worker(self, worker: AiSearchWorker) -> None:
+    def _cleanup_ai_planner_worker(self, worker: AiSearchPlannerWorker) -> None:
         self._ai_query_workers.discard(worker)
-        if self.ai_query_worker is not worker:
+        if self.ai_query_planner_worker is not worker:
             worker.deleteLater()
             return
-        self.ai_query_worker = None
+        self.ai_query_planner_worker = None
+        worker.deleteLater()
+
+    def _cleanup_ai_answer_worker(self, worker: AiSearchAnswerWorker) -> None:
+        self._ai_query_workers.discard(worker)
+        if self.ai_query_answer_worker is not worker:
+            worker.deleteLater()
+            return
+        self.ai_query_answer_worker = None
+        worker.deleteLater()
+
+    def _cleanup_ai_tool_worker(self, worker: CardSearchWorker) -> None:
+        if self.ai_query_tool_worker is worker:
+            self.ai_query_tool_worker = None
         worker.deleteLater()
 
     def _close_ai_overlay(self) -> None:
-        if self.ai_query_worker is not None and self.ai_query_worker.isRunning():
-            self.ai_query_worker.stop()
+        self.ai_query_request_id += 1
+        self._pending_ai_query_plans.clear()
+        self._stop_active_ai_workers()
 
     @staticmethod
     def _fallback_text_search(query: str, cards: list[dict]) -> list[dict]:
@@ -3576,12 +4133,14 @@ class StudyTab(QWidget):
                 continue
             entry["status"] = "grading"
             self.active_queue_entry_index = entry_index
+            model_spec = self._active_text_llm_spec()
             worker = GradeWorker(
                 question=card.get("question", ""),
                 expected_answer=card.get("answer", ""),
                 user_answer=str(entry.get("answer_text", "")).strip(),
                 difficulty=int(card.get("natural_difficulty", 5)),
                 ollama=self.ollama,
+                model=model_spec.primary_tag,
                 profile_context=self.datastore.load_profile(),
                 stream_preview=False,
             )
@@ -3618,7 +4177,8 @@ class StudyTab(QWidget):
         entry = self._current_history_entry()
         if entry is None or not self.current_card:
             return False
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Grading"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Grading"):
             return False
         self._sync_current_entry_snapshot()
         user_answer = str(entry.get("answer_text", "")).strip()
@@ -3641,6 +4201,7 @@ class StudyTab(QWidget):
             user_answer=user_answer,
             difficulty=int(self.current_card.get("natural_difficulty", 5)),
             ollama=self.ollama,
+            model=model_spec.primary_tag,
             profile_context=self.datastore.load_profile(),
             stream_preview=True,
         )
@@ -3722,7 +4283,8 @@ class StudyTab(QWidget):
     def _run_reinforcement(self, cluster_key: str) -> None:
         if not self.current_card or not self.study_state:
             return
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Reinforcement"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Reinforcement"):
             return
         related_cards = self._cluster_cards(cluster_key)
         recent_incorrect = [
@@ -3747,6 +4309,7 @@ class StudyTab(QWidget):
             profile_context=self.datastore.load_profile(),
             assistant_tone=str(ai_settings.get("assistant_tone", "")),
             context_length=int(ai_settings.get("reinforcement_context_length", 8192)),
+            model=model_spec.primary_tag,
         )
         self.reinforcement_worker = worker
 
@@ -3879,7 +4442,8 @@ class StudyTab(QWidget):
             return
         if not self.current_card:
             return
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Follow-up help"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Follow-up help"):
             return
         prompt = (auto_prompt or self.followup_input.toPlainText()).strip()
         if not prompt:
@@ -3893,7 +4457,7 @@ class StudyTab(QWidget):
         profile_context = self.datastore.load_profile()
         self.followup_worker = FollowUpWorker(
             ollama=self.ollama,
-            model="gemma3:4b",
+            model=model_spec.primary_tag,
             prompt=prompt,
             context=context,
             context_length=int(ai_settings.get("followup_context_length", 8192)),

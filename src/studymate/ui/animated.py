@@ -338,19 +338,21 @@ class AnimatedButton(QPushButton, _MotionMixin):
         self._init_motion()
 
     def mousePressEvent(self, event) -> None:
-        self._animate_press_state(True)
+        if self.property("disablePressMotion") is not True:
+            self._animate_press_state(True)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
-        self._animate_press_state(False)
+        if self.property("disablePressMotion") is not True:
+            self._animate_press_state(False)
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
         self.setProperty("hovered", False)
         _refresh_style(self)
         self._animate_hover_state(False)
-        if not self.isDown():
+        if not self.isDown() and self.property("disablePressMotion") is not True:
             self._animate_press_state(False)
 
     def enterEvent(self, event) -> None:
@@ -386,19 +388,21 @@ class AnimatedToolButton(QToolButton, _MotionMixin):
         self._init_motion()
 
     def mousePressEvent(self, event) -> None:
-        self._animate_press_state(True)
+        if self.property("disablePressMotion") is not True:
+            self._animate_press_state(True)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
-        self._animate_press_state(False)
+        if self.property("disablePressMotion") is not True:
+            self._animate_press_state(False)
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
         self.setProperty("hovered", False)
         _refresh_style(self)
         self._animate_hover_state(False)
-        if not self.isDown():
+        if not self.isDown() and self.property("disablePressMotion") is not True:
             self._animate_press_state(False)
 
     def enterEvent(self, event) -> None:
