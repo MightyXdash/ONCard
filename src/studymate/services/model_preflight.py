@@ -26,7 +26,7 @@ class ModelPreflightSnapshot:
         spec = MODELS.get(model_key)
         if spec is None:
             return False
-        if any(tag in self.installed_tags for tag in [spec.primary_tag, *spec.candidate_tags, spec.primary_tag.split(":")[0]]):
+        if any(tag in self.installed_tags for tag in [spec.primary_tag, *spec.candidate_tags]):
             return True
         return bool(self.installed_models.get(model_key, False))
 
@@ -59,9 +59,17 @@ class ModelPreflightService:
             setup = self.datastore.load_setup()
             installed_models = dict(setup.get("installed_models", {}))
             for key, spec in MODELS.items():
-                installed_models[key] = installed_models.get(key, False) or any(
-                    tag in installed_tags for tag in [spec.primary_tag, *spec.candidate_tags, spec.primary_tag.split(":")[0]]
+                detected = any(
+                    tag in installed_tags for tag in [spec.primary_tag, *spec.candidate_tags]
                 )
+                if cli_available and not error:
+                    # Source of truth: live installed-tag list from Ollama.
+                    installed_models[key] = detected
+                elif cli_available and error:
+                    # If live lookup failed, avoid stale "installed" flags.
+                    installed_models[key] = False
+                else:
+                    installed_models[key] = bool(installed_models.get(key, False))
 
             if installed_models != dict(setup.get("installed_models", {})):
                 setup["installed_models"] = installed_models

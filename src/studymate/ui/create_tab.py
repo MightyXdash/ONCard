@@ -37,6 +37,7 @@ from studymate.services.files_to_cards_service import (
     files_to_cards_limit,
     files_to_cards_question_cap,
 )
+from studymate.services.model_registry import resolve_active_text_llm_spec
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, polish_surface
@@ -383,6 +384,9 @@ class CreateTab(QWidget):
         if sounds is not None:
             sounds.play(name)
 
+    def _active_text_llm_spec(self):
+        return resolve_active_text_llm_spec(self.datastore.load_ai_settings())
+
     def _surface(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Surface")
@@ -721,7 +725,8 @@ class CreateTab(QWidget):
     def _process_next_question(self) -> None:
         if self.active_job is not None or not self.pending_jobs:
             return
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Card generation"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Card generation"):
             return
 
         self.active_job = self.pending_jobs.pop(0)
@@ -733,6 +738,7 @@ class CreateTab(QWidget):
         self.autofill_worker = AutofillWorker(
             question,
             self.ollama,
+            model=model_spec.primary_tag,
             profile_context=self.datastore.load_profile(),
         )
         self.autofill_worker.progress.connect(lambda message: self._add_activity(kind="status", title="Autofill", text=message))
@@ -993,7 +999,8 @@ class CreateTab(QWidget):
     def _start_files_to_cards(self) -> None:
         if not self.selected_source_files or self.ftc_run is not None:
             return
-        if not self.preflight.require_model("gemma3_4b", parent=self, feature_name="Files To Cards"):
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Files To Cards"):
             return
 
         total_units = sum(source.unit_count for source in self.selected_source_files)
@@ -1018,6 +1025,8 @@ class CreateTab(QWidget):
             custom_instructions=self.instructions_edit.toPlainText().strip(),
             use_ocr=self.use_ocr,
             background_workers=background_workers,
+            text_model_tag=model_spec.primary_tag,
+            text_model_label=model_spec.display_name,
         )
         self.ftc_worker = FilesToCardsWorker(
             job=job,

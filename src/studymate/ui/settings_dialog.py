@@ -28,17 +28,33 @@ from PySide6.QtWidgets import (
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
-from studymate.services.model_registry import MODELS, ModelSpec
+from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
 from studymate.workers.install_worker import ModelInstallWorker
 
 
-FOLLOWUP_CONTEXT_MIN = 8192
+FOLLOWUP_CONTEXT_MIN = 9216
 REINFORCEMENT_CONTEXT_MIN = 8192
 MAX_CONTEXT_LENGTH = 65536
+ASK_AI_TONE_OPTIONS = [
+    ("Warm", "warm"),
+    ("Funny", "funny"),
+    ("Sarcastic", "sarcastic"),
+    ("Glazer", "glazer"),
+    ("Shakespeare", "shakespeare"),
+]
+ASK_AI_EMOJI_LABELS = {
+    1: "Emoji usage: none",
+    2: "Emoji usage: some",
+    3: "Emoji usage: good amount",
+    4: "Emoji usage: a lot",
+}
 MODEL_ROLE_COPY = {
     "gemma3_4b": "Create cards, Files To Cards, grading, follow-up help, and reinforcement generation.",
+    "ministral_3_3b": "Optional lightweight LLM with native tool calling for Ask AI and other text features.",
+    "ministral_3_8b": "Optional balanced LLM with native tool calling for Ask AI and other text features.",
+    "ministral_3_14b": "Optional larger LLM with native tool calling for Ask AI and other text features.",
     "nomic_embed_text_v2_moe": "Semantic search, recommendations, topic clustering, and adaptive study features.",
 }
 
@@ -64,6 +80,8 @@ class SettingsDialog(QDialog):
         self._account_action_buttons: list[QPushButton] = []
         self._sfx_ready = False
         self._last_attention_value = 5
+        self._last_ask_ai_emoji_value = 2
+        self._model_worker_action = "install"
 
         self.setWindowTitle("Settings")
         self.setObjectName("SettingsDialog")
@@ -412,8 +430,61 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setRange(REINFORCEMENT_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
         self.reinforcement_ctx.setSingleStep(1024)
         self.reinforcement_ctx.setSuffix(" tokens")
+        self.ask_ai_tone = AnimatedComboBox()
+        for label, value in ASK_AI_TONE_OPTIONS:
+            self.ask_ai_tone.addItem(label, value)
+        self.ask_ai_emoji_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ask_ai_emoji_slider.setObjectName("SettingsAskAiEmojiSlider")
+        self.ask_ai_emoji_slider.setRange(1, 4)
+        self.ask_ai_emoji_slider.setSingleStep(1)
+        self.ask_ai_emoji_slider.setPageStep(1)
+        self.ask_ai_emoji_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.ask_ai_emoji_slider.setTickInterval(1)
+        self.ask_ai_emoji_slider.setStyleSheet(
+            """
+            QSlider#SettingsAskAiEmojiSlider {
+                min-height: 28px;
+                background: transparent;
+            }
+            QSlider#SettingsAskAiEmojiSlider::groove:horizontal {
+                height: 6px;
+                border-radius: 3px;
+                background: rgba(15, 37, 57, 0.10);
+            }
+            QSlider#SettingsAskAiEmojiSlider::sub-page:horizontal {
+                border-radius: 3px;
+                background: #0f2539;
+            }
+            QSlider#SettingsAskAiEmojiSlider::add-page:horizontal {
+                border-radius: 3px;
+                background: rgba(15, 37, 57, 0.18);
+            }
+            QSlider#SettingsAskAiEmojiSlider::handle:horizontal {
+                width: 20px;
+                height: 20px;
+                margin: -7px 0;
+                border-radius: 10px;
+                background: #0f2539;
+            }
+            """
+        )
+        self.ask_ai_emoji_slider.valueChanged.connect(self._on_ask_ai_emoji_changed)
+        self.ask_ai_emoji_value = QLabel(ASK_AI_EMOJI_LABELS[2])
+        self.ask_ai_emoji_value.setObjectName("SectionText")
+        self.selected_text_llm = AnimatedComboBox()
+        emoji_shell = QWidget()
+        emoji_shell.setObjectName("SettingsAskAiEmojiShell")
+        emoji_shell.setStyleSheet("QWidget#SettingsAskAiEmojiShell { background: transparent; }")
+        emoji_layout = QVBoxLayout(emoji_shell)
+        emoji_layout.setContentsMargins(0, 0, 0, 0)
+        emoji_layout.setSpacing(6)
+        emoji_layout.addWidget(self.ask_ai_emoji_value)
+        emoji_layout.addWidget(self.ask_ai_emoji_slider)
         form.addRow("Follow-up context length", self.followup_ctx)
         form.addRow("Reinforcement context length", self.reinforcement_ctx)
+        form.addRow("AI text model", self.selected_text_llm)
+        form.addRow("Ask AI tone", self.ask_ai_tone)
+        form.addRow("Ask AI emoji level", emoji_shell)
         ai_layout.addLayout(form)
 
         minimum_note = QLabel(
@@ -422,6 +493,18 @@ class SettingsDialog(QDialog):
         minimum_note.setObjectName("SmallMeta")
         minimum_note.setWordWrap(True)
         ai_layout.addWidget(minimum_note)
+        tone_note = QLabel(
+            "Ask AI can use a saved tone preset and emoji intensity. The model still adapts to the situation, but this sets the default style."
+        )
+        tone_note.setObjectName("SmallMeta")
+        tone_note.setWordWrap(True)
+        ai_layout.addWidget(tone_note)
+        model_note = QLabel(
+            "Default setup installs only Gemma3:4b and Nomic Embed. Ministral models are optional and can be installed later here. The dropdown below uses installed text models only."
+        )
+        model_note.setObjectName("SmallMeta")
+        model_note.setWordWrap(True)
+        ai_layout.addWidget(model_note)
         layout.addWidget(ai_surface)
 
         layout.addStretch(1)
@@ -549,17 +632,28 @@ class SettingsDialog(QDialog):
         side_col.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         status_label = QLabel("Checking...")
         status_label.setObjectName("CardMetaPill")
-        button = AnimatedButton("Install")
-        button.clicked.connect(lambda _checked=False, key=spec.key: self._install_model(key))
+        install_btn = AnimatedButton("Install")
+        reinstall_btn = AnimatedButton("Reinstall")
+        delete_btn = AnimatedButton("Delete")
+        install_btn.clicked.connect(lambda _checked=False, key=spec.key: self._install_model(key))
+        reinstall_btn.clicked.connect(lambda _checked=False, key=spec.key: self._install_model(key))
+        delete_btn.clicked.connect(lambda _checked=False, key=spec.key: self._delete_model(key))
+        reinstall_btn.setVisible(False)
+        delete_btn.setVisible(False)
         side_col.addWidget(status_label, 0, Qt.AlignRight)
-        side_col.addWidget(button, 0, Qt.AlignRight)
+        side_col.addWidget(install_btn, 0, Qt.AlignRight)
+        side_col.addWidget(reinstall_btn, 0, Qt.AlignRight)
+        side_col.addWidget(delete_btn, 0, Qt.AlignRight)
 
         layout.addLayout(copy_col, 1)
         layout.addLayout(side_col)
         return {
             "container": container,
             "status": status_label,
-            "button": button,
+            "install_btn": install_btn,
+            "reinstall_btn": reinstall_btn,
+            "delete_btn": delete_btn,
+            "spec": spec,
         }
 
     def _load(self) -> None:
@@ -588,6 +682,17 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setValue(
             max(REINFORCEMENT_CONTEXT_MIN, int(ai_settings.get("reinforcement_context_length", REINFORCEMENT_CONTEXT_MIN)))
         )
+        tone_value = str(ai_settings.get("ask_ai_tone", ai_settings.get("assistant_tone", "warm"))).strip().lower() or "warm"
+        tone_index = self.ask_ai_tone.findData(tone_value)
+        if tone_index < 0:
+            tone_index = self.ask_ai_tone.findData("warm")
+        if tone_index < 0:
+            tone_index = 0
+        self.ask_ai_tone.setCurrentIndex(tone_index)
+        emoji_value = max(1, min(4, int(ai_settings.get("ask_ai_emoji_level", 2) or 2)))
+        self.ask_ai_emoji_slider.setValue(emoji_value)
+        self._last_ask_ai_emoji_value = emoji_value
+        self._update_ask_ai_emoji_label(emoji_value)
         setup = self.datastore.load_setup()
         ftc_setup = dict(setup.get("ftc", {}))
         default_mode = str(ftc_setup.get("default_mode", "standard"))
@@ -652,6 +757,13 @@ class SettingsDialog(QDialog):
         ai_settings = self.datastore.load_ai_settings()
         ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
         ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
+        ai_settings["use_selected_llm_for_text_features"] = True
+        selected_key = str(self.selected_text_llm.currentData() or "").strip()
+        if selected_key:
+            ai_settings["selected_text_llm_key"] = selected_key
+        ai_settings["ask_ai_tone"] = str(self.ask_ai_tone.currentData() or "warm")
+        ai_settings["assistant_tone"] = ai_settings["ask_ai_tone"]
+        ai_settings["ask_ai_emoji_level"] = max(1, min(4, self.ask_ai_emoji_slider.value()))
         self.datastore.save_ai_settings(ai_settings)
 
         setup = self.datastore.load_setup()
@@ -696,6 +808,50 @@ class SettingsDialog(QDialog):
         is_custom = self.gender_combo.currentText().strip().lower() == "custom"
         self.gender_custom_edit.setVisible(is_custom)
 
+    def _on_ask_ai_emoji_changed(self, value: int) -> None:
+        if value != self._last_ask_ai_emoji_value:
+            self._play_click_sound(volume_scale=1.1)
+        self._last_ask_ai_emoji_value = value
+        self._update_ask_ai_emoji_label(value)
+
+    def _refresh_text_model_choices(self, snap=None) -> None:
+        snapshot = snap or self.preflight.snapshot(force=False)
+        ai_settings = self.datastore.load_ai_settings()
+        saved_key = str(ai_settings.get("selected_text_llm_key", "")).strip()
+        installed_keys = [key for key in non_embedding_llm_keys() if self._is_model_installed_ui(snapshot, key)]
+        current_key = str(self.selected_text_llm.currentData() or saved_key).strip()
+        target_key = saved_key if saved_key in installed_keys else (installed_keys[0] if installed_keys else "")
+        self.selected_text_llm.blockSignals(True)
+        self.selected_text_llm.clear()
+        for key in installed_keys:
+            spec = MODELS.get(key)
+            if spec is None:
+                continue
+            self.selected_text_llm.addItem(spec.display_name, key)
+        selected_index = self.selected_text_llm.findData(target_key)
+        if selected_index < 0:
+            selected_index = self.selected_text_llm.findData(current_key)
+        if selected_index < 0 and self.selected_text_llm.count() > 0:
+            selected_index = 0
+        if selected_index >= 0:
+            self.selected_text_llm.setCurrentIndex(selected_index)
+        self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0)
+        self.selected_text_llm.blockSignals(False)
+
+    def _is_model_installed_ui(self, snapshot, model_key: str) -> bool:
+        spec = MODELS.get(model_key)
+        if spec is None:
+            return False
+        if snapshot.cli_available:
+            # Prefer live tag inspection whenever Ollama is present.
+            if snapshot.installed_tags:
+                probe_tags = [spec.primary_tag, *spec.candidate_tags]
+                return any(tag in snapshot.installed_tags for tag in probe_tags)
+            # If CLI exists but tag lookup failed, avoid stale reinstall/delete states.
+            if snapshot.error:
+                return False
+        return bool(snapshot.installed_models.get(model_key, False))
+
     def _set_gender_from_profile(self, gender_value: str) -> None:
         gender = str(gender_value or "").strip()
         normalized = gender.lower()
@@ -721,6 +877,9 @@ class SettingsDialog(QDialog):
 
     def _update_attention_label(self, value: int) -> None:
         self.attention_value.setText(f"Attention span per question: {value} min")
+
+    def _update_ask_ai_emoji_label(self, value: int) -> None:
+        self.ask_ai_emoji_value.setText(ASK_AI_EMOJI_LABELS.get(int(value), ASK_AI_EMOJI_LABELS[2]))
 
     def _set_account_actions_enabled(self, enabled: bool) -> None:
         for button in self._account_action_buttons:
@@ -895,16 +1054,24 @@ class SettingsDialog(QDialog):
         installing = bool(self._install_worker and self._install_worker.isRunning())
         for key, spec in MODELS.items():
             row = self._model_rows[key]
-            button = row["button"]
             status_label = row["status"]
-            is_installed = snap.has_model(key)
+            install_btn = row["install_btn"]
+            reinstall_btn = row["reinstall_btn"]
+            delete_btn = row["delete_btn"]
+            is_installed = self._is_model_installed_ui(snap, key)
             if snap.error and not snap.installed_tags and snap.cli_available:
                 status_text = "Saved installed" if is_installed else "Status unavailable"
             else:
                 status_text = "Installed" if is_installed else "Not installed"
             status_label.setText(status_text)
-            button.setText("Reinstall" if is_installed else "Install")
-            button.setEnabled(snap.cli_available and not installing)
+            install_btn.setVisible(not is_installed)
+            reinstall_btn.setVisible(is_installed)
+            delete_btn.setVisible(is_installed)
+            enabled = snap.cli_available and not installing
+            install_btn.setEnabled(enabled)
+            reinstall_btn.setEnabled(enabled)
+            delete_btn.setEnabled(enabled)
+        self._refresh_text_model_choices(snap)
 
     def _install_model(self, model_key: str) -> None:
         if self._install_worker and self._install_worker.isRunning():
@@ -916,13 +1083,47 @@ class SettingsDialog(QDialog):
             return
 
         self._install_target_key = model_key
+        self._model_worker_action = "install"
         self.install_log.clear()
         self.install_log.append(f"Installing {MODELS[model_key].display_name}...")
+        self.install_log.append("Press Ctrl + C twice in the terminal if you need to cancel the running Ollama action.")
         self._set_install_buttons_enabled(False)
         self.save_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
 
-        worker = ModelInstallWorker([model_key], self.ollama)
+        worker = ModelInstallWorker([model_key], self.ollama, action="install")
+        self._install_worker = worker
+        worker.line.connect(self.install_log.append)
+        worker.complete.connect(self._on_install_complete)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _delete_model(self, model_key: str) -> None:
+        if self._install_worker and self._install_worker.isRunning():
+            return
+        spec = MODELS.get(model_key)
+        if spec is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete model",
+            f"Remove {spec.display_name} from Ollama?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        self._install_target_key = model_key
+        self._model_worker_action = "remove"
+        self.install_log.clear()
+        self.install_log.append(f"Removing {spec.display_name}...")
+        self.install_log.append("Press Ctrl + C twice in the terminal if you need to cancel the running Ollama action.")
+        self._set_install_buttons_enabled(False)
+        self.save_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+
+        worker = ModelInstallWorker([model_key], self.ollama, action="remove")
         self._install_worker = worker
         worker.line.connect(self.install_log.append)
         worker.complete.connect(self._on_install_complete)
@@ -933,10 +1134,26 @@ class SettingsDialog(QDialog):
         updated_setup = self.datastore.load_setup()
         installed_models = dict(updated_setup.get("installed_models", {}))
         selected_models = list(updated_setup.get("selected_models", []))
+        ai_settings = self.datastore.load_ai_settings()
 
         successes = []
         failures = []
         for key, ok in status.items():
+            if self._model_worker_action == "remove":
+                if ok:
+                    installed_models[key] = False
+                    selected_models = [item for item in selected_models if item != key]
+                    if str(ai_settings.get("selected_text_llm_key", "")).strip() == key:
+                        replacement = ""
+                        for llm_key in non_embedding_llm_keys():
+                            if llm_key != key and bool(installed_models.get(llm_key, False)):
+                                replacement = llm_key
+                                break
+                        ai_settings["selected_text_llm_key"] = replacement
+                    successes.append(MODELS[key].display_name)
+                else:
+                    failures.append(MODELS[key].display_name)
+                continue
             installed_models[key] = bool(ok)
             if ok and key not in selected_models:
                 selected_models.append(key)
@@ -949,30 +1166,38 @@ class SettingsDialog(QDialog):
         updated_setup["installed_models"] = installed_models
         updated_setup["selected_models"] = selected_models
         self.datastore.save_setup(updated_setup)
+        self.datastore.save_ai_settings(ai_settings)
         self.preflight.invalidate()
 
         self._install_worker = None
+        completed_action = self._model_worker_action
+        self._model_worker_action = "install"
         self._set_install_buttons_enabled(True)
         self.save_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
         self._refresh_model_status()
 
-        if successes and not failures:
+        if completed_action == "remove" and successes and not failures:
+            QMessageBox.information(self, "Model removed", f"{', '.join(successes)} removed successfully.")
+        elif successes and not failures:
             QMessageBox.information(self, "Model installed", f"{', '.join(successes)} installed successfully.")
         elif failures and not successes:
-            QMessageBox.warning(self, "Install failed", f"Could not install {', '.join(failures)}.")
+            title = "Remove failed" if completed_action == "remove" else "Install failed"
+            verb = "remove" if completed_action == "remove" else "install"
+            QMessageBox.warning(self, title, f"Could not {verb} {', '.join(failures)}.")
         elif successes and failures:
             QMessageBox.warning(
                 self,
-                "Install partially failed",
-                f"Installed: {', '.join(successes)}\nFailed: {', '.join(failures)}",
+                "Action partially failed",
+                f"Completed: {', '.join(successes)}\nFailed: {', '.join(failures)}",
             )
 
     def _set_install_buttons_enabled(self, enabled: bool) -> None:
         cli_installed = shutil.which("ollama") is not None
         for row in self._model_rows.values():
-            button = row["button"]
-            button.setEnabled(enabled and cli_installed)
+            row["install_btn"].setEnabled(enabled and cli_installed)
+            row["reinstall_btn"].setEnabled(enabled and cli_installed)
+            row["delete_btn"].setEnabled(enabled and cli_installed)
         self.refresh_models_btn.setEnabled(enabled)
 
     def _refresh_performance_mode(self) -> None:

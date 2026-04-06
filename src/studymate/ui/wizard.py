@@ -1,15 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 from pathlib import Path
+import re
 import shutil
 import webbrowser
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QRect, Qt, QTimer, Signal, QVariantAnimation
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsBlurEffect,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -31,6 +36,7 @@ from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLine
 from studymate.ui.audio import UiSoundBank
 from studymate.ui.banner_widget import BannerWidget
 from studymate.ui.icon_helper import IconHelper
+from studymate.ui.window_effects import polish_windows_window
 from studymate.workers.install_worker import ModelInstallWorker
 from studymate.workers.performance_worker import PerformanceWorker
 
@@ -53,15 +59,18 @@ class OnboardingPage(QWidget):
 
     def __init__(self, *, title: str, body: str, banner_path: Path, banner_name: str) -> None:
         super().__init__()
+        self.setObjectName("OnboardingPage")
         self._banner = BannerWidget(banner_path=banner_path, placeholder_text=banner_name, height=196, radius=26)
         self._body_layout = QVBoxLayout()
         self._body_layout.setSpacing(12)
 
         title_label = QLabel(title)
         title_label.setObjectName("PageTitle")
+        title_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         body_label = QLabel(body)
         body_label.setObjectName("SectionText")
         body_label.setWordWrap(True)
+        body_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -93,6 +102,123 @@ class FieldBlock(QWidget):
         layout.addWidget(widget)
 
 
+class StartupPopupDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None = None,
+        message: str,
+        buttons: list[str],
+        default_button: str | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._choice = ""
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._applied_blur: QGraphicsBlurEffect | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(44, 44, 44, 44)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("StartupPopupCard")
+        card.setStyleSheet(
+            """
+            QFrame#StartupPopupCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(220, 228, 236, 0.85);
+                border-radius: 28px;
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(44)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(13, 26, 39, 110))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(22, 20, 22, 18)
+        body.setSpacing(14)
+
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        message_label.setObjectName("SectionText")
+        body.addWidget(message_label)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addStretch(1)
+        for label in buttons:
+            button = AnimatedButton(label)
+            button.setProperty("disablePressMotion", True)
+            if default_button and label == default_button:
+                button.setObjectName("PrimaryButton")
+            button.clicked.connect(lambda _checked=False, value=label: self._on_choice(value))
+            actions.addWidget(button)
+        body.addLayout(actions)
+
+        self.setFixedSize(760, 300)
+
+    def _on_choice(self, value: str) -> None:
+        self._choice = value
+        self.accept()
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            self.exec()
+            return self._choice
+        finally:
+            self._clear_backdrop()
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+        self._applied_blur = blur
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._applied_blur = None
+        self._previous_effect = None
+
+
 class ProfilePage(OnboardingPage):
     import_profile_requested = Signal()
     remove_import_requested = Signal()
@@ -107,6 +233,9 @@ class ProfilePage(OnboardingPage):
         self.sounds = sounds
         self._last_attention_value = 5
         self._import_archive_path = ""
+        self._imported_profile_active = False
+        self._allow_import_removal = True
+        self._profile_name_auto_sync = True
 
         surface = QFrame()
         surface.setObjectName("Surface")
@@ -153,6 +282,7 @@ class ProfilePage(OnboardingPage):
 
         self.name_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.name_edit.textChanged.connect(self._on_name_changed)
+        self.profile_name_edit.textEdited.connect(self._on_profile_name_edited)
         self.age_spin.valueChanged.connect(lambda *_: self.changed.emit())
         self.grade_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
         self.gender_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
@@ -175,8 +305,10 @@ class ProfilePage(OnboardingPage):
         controls.setContentsMargins(0, 2, 0, 0)
         controls.setSpacing(8)
         self.import_profile_btn = AnimatedButton("Import profile")
+        self.import_profile_btn.setProperty("disablePressMotion", True)
         self.import_profile_btn.clicked.connect(self.import_profile_requested.emit)
         self.remove_zip_btn = AnimatedButton("remove zip file")
+        self.remove_zip_btn.setProperty("disablePressMotion", True)
         self.remove_zip_btn.clicked.connect(self.remove_import_requested.emit)
         self.remove_zip_btn.hide()
         controls.addWidget(self.import_profile_btn, 0, Qt.AlignLeft)
@@ -195,8 +327,11 @@ class ProfilePage(OnboardingPage):
         self.changed.emit()
 
     def _on_name_changed(self) -> None:
-        if not self.profile_name_edit.text().strip():
+        if self._profile_name_auto_sync:
             self.profile_name_edit.setText(self.name_edit.text().strip())
+
+    def _on_profile_name_edited(self, text: str) -> None:
+        self._profile_name_auto_sync = text.strip() == self.name_edit.text().strip()
 
     def _on_gender_mode_changed(self) -> None:
         is_custom = self.gender_combo.currentText().strip().lower() == "custom"
@@ -226,6 +361,8 @@ class ProfilePage(OnboardingPage):
         return mode
 
     def can_continue(self) -> bool:
+        if self._imported_profile_active:
+            return True
         if not self.name_edit.text().strip():
             return False
         if self.gender_combo.currentText().strip().lower() == "custom":
@@ -247,9 +384,11 @@ class ProfilePage(OnboardingPage):
 
     def set_imported_profile(self, profile: dict, *, archive_path: str) -> None:
         self._import_archive_path = str(archive_path)
+        self._imported_profile_active = True
         imported_name = str(profile.get("name", "")).strip()
         self.name_edit.setText(imported_name)
         self.profile_name_edit.setText(str(profile.get("profile_name", "")).strip() or imported_name)
+        self._profile_name_auto_sync = False
         try:
             age = int(str(profile.get("age", "")).strip() or 16)
         except ValueError:
@@ -261,7 +400,10 @@ class ProfilePage(OnboardingPage):
             self.grade_combo.setCurrentText(grade)
         self._set_gender_from_profile(str(profile.get("gender", "")).strip())
         self.hobbies_edit.setText(str(profile.get("hobbies", "")).strip())
-        attention_value = int(profile.get("attention_span_minutes", profile.get("question_focus_level", 5)) or 5)
+        try:
+            attention_value = int(profile.get("attention_span_minutes", profile.get("question_focus_level", 5)) or 5)
+        except ValueError:
+            attention_value = 5
         attention_value = max(self.attention_slider.minimum(), min(attention_value, self.attention_slider.maximum()))
         self.attention_slider.setValue(attention_value)
         self._set_form_locked(True)
@@ -269,6 +411,8 @@ class ProfilePage(OnboardingPage):
 
     def clear_imported_profile(self) -> None:
         self._import_archive_path = ""
+        self._imported_profile_active = False
+        self._profile_name_auto_sync = True
         self._set_form_locked(False)
         self.changed.emit()
 
@@ -289,7 +433,12 @@ class ProfilePage(OnboardingPage):
         self.hobbies_edit.setEnabled(not locked)
         self.attention_slider.setEnabled(not locked)
         self.import_profile_btn.setVisible(not locked)
-        self.remove_zip_btn.setVisible(locked)
+        self.remove_zip_btn.setVisible(locked and self._allow_import_removal)
+
+    def set_allow_import_removal(self, allow: bool) -> None:
+        self._allow_import_removal = bool(allow)
+        if self._import_archive_path:
+            self.remove_zip_btn.setVisible(self._allow_import_removal)
 
 
 class AboutPage(OnboardingPage):
@@ -304,20 +453,25 @@ class AboutPage(OnboardingPage):
         surface = QFrame()
         surface.setObjectName("Surface")
         polish_surface(surface)
+        surface.setStyleSheet("QFrame#Surface { border: none; background: transparent; }")
         layout = QVBoxLayout(surface)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
         for line in [
-            "Free and open-source app to study with flashcards.",
-            "AI-powered features to help you out.",
-            "No rate limits or subscriptions. The whole app is completely free.",
-            "Your experience means a lot for this app.",
+            "ONCard is a free and open-source study app designed to help you build strong understanding through focused flashcard practice, clear feedback loops, and a workflow that stays simple even as your card library grows.",
+            "The app includes AI-assisted tools to speed up drafting, improving, and organizing your study material, while still keeping your learning process in your control so you can adapt every card and session to your own pace.",
+            "There are no subscriptions, no hidden unlock tiers, and no artificial limits on your usage. You can keep building your study system without worrying about paywalls, and your feedback directly helps shape future improvements for everyone.",
         ]:
-            label = QLabel(line)
+            label = QLabel()
             label.setObjectName("SectionText")
             label.setWordWrap(True)
+            label.setTextFormat(Qt.RichText)
+            label.setText(f"<div style='text-align: justify;'>{html.escape(line)}</div>")
+            label.setAlignment(Qt.AlignTop)
+            label.setFixedWidth(500)
             layout.addWidget(label)
+            layout.setAlignment(label, Qt.AlignHCenter)
 
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
@@ -338,6 +492,15 @@ class ModelInstallerPage(OnboardingPage):
         self.install_worker: ModelInstallWorker | None = None
         self.installed_models: dict[str, bool] = {}
         self.last_selected: list[str] = []
+        self._progress_queue: list[int] = []
+        self._progress_busy = False
+        self._progress_animation = QVariantAnimation(self)
+        self._progress_animation.setDuration(430)
+        self._progress_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._progress_animation.valueChanged.connect(
+            lambda value: self.progress.setValue(int(round(float(value))))
+        )
+        self._progress_animation.finished.connect(self._on_progress_animation_finished)
 
         surface = QFrame()
         surface.setObjectName("Surface")
@@ -348,25 +511,55 @@ class ModelInstallerPage(OnboardingPage):
 
         self.summary_label = QLabel()
         self.summary_label.setObjectName("SectionTitle")
+        self.summary_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.size_label = QLabel()
         self.size_label.setObjectName("SectionText")
+        self.size_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.warning_label = QLabel()
         self.warning_label.setObjectName("SmallMeta")
         self.warning_label.setWordWrap(True)
+        self.warning_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.ollama_label = QLabel("Ollama is not installed yet. Install it first, then come back here.")
         self.ollama_label.setObjectName("SmallMeta")
         self.ollama_label.setWordWrap(True)
+        self.ollama_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.ollama_button = AnimatedButton("Open Ollama website")
+        self.ollama_button.setProperty("disablePressMotion", True)
         self.ollama_button.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
         if self.ollama_installed:
             self.ollama_label.hide()
             self.ollama_button.hide()
 
         self.install_button = AnimatedButton("Install selected models")
-        self.install_button.setObjectName("PrimaryButton")
+        self.install_button.setProperty("disablePressMotion", True)
+        self.install_button.setObjectName("WizardActionButton")
+        self.install_button.set_motion_scale_range(0.0)
+        self.install_button.set_motion_hover_grow(0, 0)
+        self.install_button.set_motion_lift(0.0)
+        self.install_button.set_motion_press_scale(0.0)
+        self.install_button.setMinimumWidth(320)
+        self.install_button.setMaximumWidth(360)
         self.install_button.clicked.connect(self._install_models)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(8)
+        self.progress.setObjectName("InstallerThinProgress")
+        self.progress.setStyleSheet(
+            """
+            QProgressBar#InstallerThinProgress {
+                background: rgba(184, 200, 216, 0.45);
+                border: none;
+                border-radius: 4px;
+            }
+            QProgressBar#InstallerThinProgress::chunk {
+                background: #0f2539;
+                border-radius: 4px;
+            }
+            """
+        )
+
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(84)
@@ -378,7 +571,7 @@ class ModelInstallerPage(OnboardingPage):
         layout.addWidget(self.warning_label)
         layout.addWidget(self.ollama_label)
         layout.addWidget(self.ollama_button, 0, Qt.AlignLeft)
-        layout.addWidget(self.install_button)
+        layout.addWidget(self.install_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
         layout.addWidget(self.log)
 
@@ -440,7 +633,7 @@ class ModelInstallerPage(OnboardingPage):
             return
 
         self.last_selected = selected
-        self.progress.setValue(0)
+        self._reset_progress_sequence(0)
         self.log.clear()
         self.install_button.setEnabled(False)
 
@@ -457,12 +650,48 @@ class ModelInstallerPage(OnboardingPage):
         self._append_log(f"[{marker}] {MODELS[key].display_name} via {tag}")
         if self.last_selected:
             done = len(self.installed_models.keys())
-            self.progress.setValue(int((done / len(self.last_selected)) * 100))
+            progress_value = int((done / len(self.last_selected)) * 100)
+            self._enqueue_progress(progress_value)
         self.changed.emit()
 
     def _on_install_complete(self, _: dict) -> None:
         self.install_button.setEnabled(True)
+        self._enqueue_progress(100)
         self.changed.emit()
+
+    def _reset_progress_sequence(self, value: int) -> None:
+        self._progress_animation.stop()
+        self._progress_queue.clear()
+        self._progress_busy = False
+        self.progress.setValue(max(0, min(value, 100)))
+
+    def _enqueue_progress(self, target: int) -> None:
+        value = max(0, min(int(target), 100))
+        if self._progress_queue and self._progress_queue[-1] == value:
+            return
+        self._progress_queue.append(value)
+        self._run_next_progress_step()
+
+    def _run_next_progress_step(self) -> None:
+        if self._progress_busy or not self._progress_queue:
+            return
+        target = self._progress_queue.pop(0)
+        current = self.progress.value()
+        self._progress_busy = True
+        if target == current:
+            QTimer.singleShot(1000, self._after_progress_pause)
+            return
+        self._progress_animation.stop()
+        self._progress_animation.setStartValue(current)
+        self._progress_animation.setEndValue(target)
+        self._progress_animation.start()
+
+    def _on_progress_animation_finished(self) -> None:
+        QTimer.singleShot(1000, self._after_progress_pause)
+
+    def _after_progress_pause(self) -> None:
+        self._progress_busy = False
+        self._run_next_progress_step()
 
     def can_continue(self) -> bool:
         if self.ram_gb < 7:
@@ -500,6 +729,15 @@ class PerformancePage(OnboardingPage):
         self.worker: PerformanceWorker | None = None
         self.avg_tps: float | None = None
         self.tier = ""
+        self._progress_queue: list[int] = []
+        self._progress_busy = False
+        self._progress_animation = QVariantAnimation(self)
+        self._progress_animation.setDuration(420)
+        self._progress_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._progress_animation.valueChanged.connect(
+            lambda value: self.progress.setValue(int(round(float(value))))
+        )
+        self._progress_animation.finished.connect(self._on_progress_animation_finished)
 
         surface = QFrame()
         surface.setObjectName("Surface")
@@ -509,10 +747,33 @@ class PerformancePage(OnboardingPage):
         layout.setSpacing(10)
 
         self.run_button = AnimatedButton("Run 4-question TPS test")
-        self.run_button.setObjectName("PrimaryButton")
+        self.run_button.setProperty("disablePressMotion", True)
+        self.run_button.setObjectName("WizardActionButton")
+        self.run_button.set_motion_scale_range(0.0)
+        self.run_button.set_motion_hover_grow(0, 0)
+        self.run_button.set_motion_lift(0.0)
+        self.run_button.set_motion_press_scale(0.0)
+        self.run_button.setMinimumWidth(320)
+        self.run_button.setMaximumWidth(360)
         self.run_button.clicked.connect(self._run_benchmark)
         self.progress = QProgressBar()
-        self.progress.setRange(0, 4)
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(8)
+        self.progress.setObjectName("TesterThinProgress")
+        self.progress.setStyleSheet(
+            """
+            QProgressBar#TesterThinProgress {
+                background: rgba(184, 200, 216, 0.45);
+                border: none;
+                border-radius: 4px;
+            }
+            QProgressBar#TesterThinProgress::chunk {
+                background: #0f2539;
+                border-radius: 4px;
+            }
+            """
+        )
         self.result_title = QLabel("No test run yet.")
         self.result_title.setObjectName("SectionTitle")
         self.badge = QLabel("")
@@ -523,7 +784,7 @@ class PerformancePage(OnboardingPage):
         self.log.setMinimumHeight(84)
         self.log.setMaximumHeight(110)
 
-        layout.addWidget(self.run_button)
+        layout.addWidget(self.run_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
         layout.addWidget(self.result_title)
         layout.addWidget(self.badge)
@@ -547,7 +808,7 @@ class PerformancePage(OnboardingPage):
     def _run_benchmark(self) -> None:
         if self.worker and self.worker.isRunning():
             return
-        self.progress.setValue(0)
+        self._reset_progress_sequence(0)
         self.log.clear()
         self.result_title.setText("Running test...")
         self.badge.hide()
@@ -559,7 +820,7 @@ class PerformancePage(OnboardingPage):
         self.worker.start()
 
     def _on_sample(self, idx: int, tps: float) -> None:
-        self.progress.setValue(idx)
+        self._enqueue_progress(int((max(0, min(idx, 4)) / 4) * 100))
         self.log.append(f"Q{idx}: {tps} TPS")
 
     def _on_done(self, avg_tps: float, tier: str) -> None:
@@ -568,6 +829,7 @@ class PerformancePage(OnboardingPage):
         self.result_title.setText(f"Average TPS: {avg_tps}")
         self.badge.setText(tier)
         self.badge.show()
+        self._enqueue_progress(100)
         self._set_banner_by_tier(tier)
         self.changed.emit()
 
@@ -575,6 +837,40 @@ class PerformancePage(OnboardingPage):
         self.result_title.setText("Performance test failed.")
         self.log.append(message)
         self.changed.emit()
+
+    def _reset_progress_sequence(self, value: int) -> None:
+        self._progress_animation.stop()
+        self._progress_queue.clear()
+        self._progress_busy = False
+        self.progress.setValue(max(0, min(value, 100)))
+
+    def _enqueue_progress(self, target: int) -> None:
+        value = max(0, min(int(target), 100))
+        if self._progress_queue and self._progress_queue[-1] == value:
+            return
+        self._progress_queue.append(value)
+        self._run_next_progress_step()
+
+    def _run_next_progress_step(self) -> None:
+        if self._progress_busy or not self._progress_queue:
+            return
+        target = self._progress_queue.pop(0)
+        current = self.progress.value()
+        self._progress_busy = True
+        if target == current:
+            QTimer.singleShot(1000, self._after_progress_pause)
+            return
+        self._progress_animation.stop()
+        self._progress_animation.setStartValue(current)
+        self._progress_animation.setEndValue(target)
+        self._progress_animation.start()
+
+    def _on_progress_animation_finished(self) -> None:
+        QTimer.singleShot(1000, self._after_progress_pause)
+
+    def _after_progress_pause(self) -> None:
+        self._progress_busy = False
+        self._run_next_progress_step()
 
     def performance_payload(self) -> dict:
         if self.avg_tps is None:
@@ -641,6 +937,8 @@ class QuickStartPage(OnboardingPage):
 
 
 class OnboardingWizard(QDialog):
+    ARCHIVE_AGE_GRADE_PATTERN = re.compile(r"_A(?P<age>\d{1,2})_G(?P<grade>\d{1,2})\.zip$", re.IGNORECASE)
+
     def __init__(
         self,
         paths,
@@ -659,18 +957,54 @@ class OnboardingWizard(QDialog):
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
         self.current_index = 0
         self.import_archive_path = ""
+        self._import_flow_locked = False
 
         self.setWindowTitle("ONCard Setup")
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
         self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedSize(1040, 760)
+        self.setStyleSheet(
+            """
+            QFrame#OnboardingWindowShell {
+                background: #ffffff;
+                border: none;
+                border-radius: 30px;
+            }
+            QStackedWidget#OnboardingStack,
+            QWidget#OnboardingPage {
+                background: transparent;
+            }
+            """
+        )
 
-        shell = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        shell_surface = QFrame(self)
+        shell_surface.setObjectName("OnboardingWindowShell")
+        polish_surface(shell_surface)
+        root.addWidget(shell_surface, 1)
+
+        shell = QVBoxLayout(shell_surface)
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
 
+        blur_layer = QWidget(shell_surface)
+        blur_layer.setObjectName("OnboardingBlurLayer")
+        blur_layer.setAttribute(Qt.WA_StyledBackground, True)
+        blur_layer.setStyleSheet("QWidget#OnboardingBlurLayer { background: transparent; }")
+        self._popup_blur_target = blur_layer
+        blur_layout = QVBoxLayout(blur_layer)
+        blur_layout.setContentsMargins(0, 0, 0, 0)
+        blur_layout.setSpacing(12)
+
         self.stack = AnimatedStackedWidget()
+        self.stack.setObjectName("OnboardingStack")
         self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self.profile_page.set_allow_import_removal(False)
         self.about_page = AboutPage(self.paths.banners)
         self.model_page = ModelInstallerPage(self.paths.banners, self.icons, self.ollama)
         self.performance_page = PerformancePage(self.paths.banners, self.ollama)
@@ -687,16 +1021,20 @@ class OnboardingWizard(QDialog):
             self.stack.addWidget(page)
         self.profile_page.import_profile_requested.connect(self._import_profile_into_profile_page)
         self.profile_page.remove_import_requested.connect(self._remove_imported_profile)
-        shell.addWidget(self.stack, 1)
+        blur_layout.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
         nav.addStretch(1)
         self.back_btn = AnimatedButton("Back")
+        self.back_btn.setProperty("disablePressMotion", True)
         self.next_btn = AnimatedButton("Next")
+        self.next_btn.setProperty("disablePressMotion", True)
         self.next_btn.setObjectName("PrimaryButton")
         self.finish_btn = AnimatedButton("Finish")
+        self.finish_btn.setProperty("disablePressMotion", True)
         self.finish_btn.setObjectName("PrimaryButton")
         self.cancel_btn = AnimatedButton("Cancel")
+        self.cancel_btn.setProperty("disablePressMotion", True)
         self.back_btn.clicked.connect(self._go_back)
         self.next_btn.clicked.connect(self._go_next)
         self.finish_btn.clicked.connect(self.accept)
@@ -705,9 +1043,15 @@ class OnboardingWizard(QDialog):
         nav.addWidget(self.next_btn)
         nav.addWidget(self.finish_btn)
         nav.addWidget(self.cancel_btn)
-        shell.addLayout(nav)
+        blur_layout.addLayout(nav)
+        shell.addWidget(blur_layer, 1)
 
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
         self._show_page(0)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
 
     def _show_page(self, index: int) -> None:
         self.current_index = index
@@ -718,13 +1062,21 @@ class OnboardingWizard(QDialog):
     def _refresh_nav(self) -> None:
         last = self.current_index == len(self.pages) - 1
         current = self.pages[self.current_index]
-        self.back_btn.setEnabled(self.current_index > 0)
+        model_index = self.pages.index(self.model_page)
+        if self._import_flow_locked:
+            self.back_btn.setEnabled(self.current_index > model_index)
+        else:
+            self.back_btn.setEnabled(self.current_index > 0)
         self.next_btn.setVisible(not last)
         self.finish_btn.setVisible(last)
         self.next_btn.setEnabled(current.can_continue())
         self.finish_btn.setEnabled(current.can_continue())
 
     def _go_back(self) -> None:
+        if self._import_flow_locked:
+            model_index = self.pages.index(self.model_page)
+            if self.current_index <= model_index:
+                return
         if self.current_index > 0:
             self._show_page(self.current_index - 1)
 
@@ -736,6 +1088,18 @@ class OnboardingWizard(QDialog):
         if self.archive_service is None:
             QMessageBox.warning(self, "Import profile", "Import service is not available right now.")
             return
+        confirm_choice = StartupPopupDialog(
+            parent=self,
+            blur_target=self._popup_blur_target,
+            message=(
+                'Hey there. Pressing "Browse account" will open the menu to locate your old account file. '
+                "Once you select it, we will handle the rest for you."
+            ),
+            buttons=["Cancel", "Browse account"],
+            default_button="Browse account",
+        ).exec_with_backdrop()
+        if confirm_choice != "Browse account":
+            return
         archive_file, _ = QFileDialog.getOpenFileName(self, "Import profile zip", "", "Zip files (*.zip)")
         if not archive_file:
             return
@@ -743,9 +1107,99 @@ class OnboardingWizard(QDialog):
         if not inspection.valid:
             QMessageBox.warning(self, "Import profile", inspection.error or "This profile zip is not valid.")
             return
-        self.profile_page.set_imported_profile(inspection.profile, archive_path=archive_file)
+        imported_profile = self._normalized_import_profile(inspection=inspection, archive_file=archive_file)
+        self.profile_page.set_imported_profile(imported_profile, archive_path=archive_file)
         self.import_archive_path = archive_file
+        self._import_flow_locked = True
+        imported_name = str(imported_profile.get("name", "")).strip() or "there"
+        StartupPopupDialog(
+            parent=self,
+            blur_target=self._popup_blur_target,
+            message=(
+                f'Hello, {imported_name}, welcome back! We have set up your profile into this ONCard app. '
+                'You can press "okay" to continue.'
+            ),
+            buttons=["okay"],
+            default_button="okay",
+        ).exec_with_backdrop()
+        self._show_page(self.pages.index(self.model_page))
         self._refresh_nav()
+
+    def _normalized_import_profile(self, *, inspection, archive_file: str) -> dict:
+        manifest = inspection.manifest if isinstance(inspection.manifest, dict) else {}
+        raw_profile = inspection.profile if isinstance(inspection.profile, dict) else {}
+        manifest_profile = manifest.get("profile", {}) if isinstance(manifest.get("profile", {}), dict) else {}
+        setup_payload = manifest.get("setup", {}) if isinstance(manifest.get("setup", {}), dict) else {}
+
+        sources = [raw_profile, manifest_profile, setup_payload, manifest]
+
+        def _first_text(keys: tuple[str, ...]) -> str:
+            for source in sources:
+                for key in keys:
+                    value = source.get(key, None)
+                    if value is None:
+                        continue
+                    text = str(value).strip()
+                    if text:
+                        return text
+            return ""
+
+        def _first_int(keys: tuple[str, ...]) -> int | None:
+            for source in sources:
+                for key in keys:
+                    value = source.get(key, None)
+                    if value is None:
+                        continue
+                    try:
+                        return int(str(value).strip())
+                    except ValueError:
+                        continue
+            return None
+
+        name = _first_text(("name", "user_name", "username", "student_name", "account_name"))
+        if not name:
+            name = str(manifest.get("account_name", "")).strip()
+        profile_name = _first_text(("profile_name", "display_name", "nickname"))
+        if not profile_name:
+            profile_name = name
+
+        archive_match = self.ARCHIVE_AGE_GRADE_PATTERN.search(str(archive_file).strip())
+        age_from_filename = int(archive_match.group("age")) if archive_match else None
+        grade_from_filename = int(archive_match.group("grade")) if archive_match else None
+
+        age_number = _first_int(("age", "user_age", "student_age"))
+        if age_number is None:
+            age_number = age_from_filename
+        if age_number is None:
+            age_text = ""
+        else:
+            age_text = str(max(4, min(age_number, 99)))
+
+        grade_text = _first_text(("grade", "class_grade", "school_grade", "class", "year"))
+        if not grade_text and grade_from_filename is not None:
+            grade_text = f"Grade {grade_from_filename}"
+        if grade_text:
+            digits = "".join(ch for ch in grade_text if ch.isdigit())
+            if digits:
+                grade_text = f"Grade {digits[:2]}"
+
+        gender_text = _first_text(("gender", "sex", "user_gender"))
+        hobbies_text = _first_text(("hobbies", "hobby", "interests", "about", "bio"))
+        focus_value = _first_int(("attention_span_minutes", "question_focus_level", "attention", "focus_minutes", "focus_time"))
+        if focus_value is None:
+            focus_value = 5
+        focus_value = max(1, min(focus_value, 10))
+
+        return {
+            "name": name,
+            "profile_name": profile_name,
+            "age": age_text,
+            "grade": grade_text,
+            "gender": gender_text,
+            "hobbies": hobbies_text,
+            "attention_span_minutes": focus_value,
+            "question_focus_level": focus_value,
+        }
 
     def _remove_imported_profile(self) -> None:
         self.profile_page.clear_imported_profile()
@@ -843,3 +1297,4 @@ class ProfileMakerDialog(QDialog):
 
     def profile_payload(self) -> dict:
         return self.profile_page.profile_payload()
+

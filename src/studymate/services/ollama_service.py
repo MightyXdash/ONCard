@@ -44,6 +44,26 @@ class OllamaService:
                     on_output(line.strip())
         return process.wait() == 0
 
+    def remove_model(self, model_tag: str, on_output=None) -> bool:
+        cmd = ["ollama", "rm", model_tag]
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+            )
+        except FileNotFoundError:
+            if on_output:
+                on_output("Ollama CLI not found. Install Ollama and restart setup.")
+            return False
+        if process.stdout:
+            for line in process.stdout:
+                if on_output:
+                    on_output(line.strip())
+        return process.wait() == 0
+
     def installed_tags(self, timeout: int = 5) -> set[str]:
         try:
             response = requests.get(f"{self.host}/api/tags", timeout=timeout)
@@ -58,7 +78,6 @@ class OllamaService:
             if not tag:
                 continue
             tags.add(tag)
-            tags.add(tag.split(":")[0])
         return tags
 
     @staticmethod
@@ -107,6 +126,35 @@ class OllamaService:
             response.raise_for_status()
             body = response.json()
             return str(body.get("message", {}).get("content", "")).strip()
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            raise OllamaError(f"Chat failed: {exc}") from exc
+
+    def chat_messages(
+        self,
+        model: str,
+        messages: list[dict],
+        *,
+        temperature: float = 0.2,
+        extra_options: dict | None = None,
+        timeout: int = 180,
+        tools: list[dict] | None = None,
+        response_format: dict | None = None,
+        stream: bool = False,
+    ) -> dict:
+        payload = {
+            "model": model,
+            "stream": stream,
+            "options": self._build_options(temperature, extra_options),
+            "messages": messages,
+        }
+        if tools:
+            payload["tools"] = tools
+        if response_format is not None:
+            payload["format"] = response_format
+        try:
+            response = requests.post(f"{self.host}/api/chat", json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
         except (requests.RequestException, json.JSONDecodeError) as exc:
             raise OllamaError(f"Chat failed: {exc}") from exc
 

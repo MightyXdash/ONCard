@@ -131,11 +131,7 @@ class StartupSplash(QWidget):
 
         self._shell = QWidget(self)
         self._shell.setObjectName("StartupVideoShell")
-        shell_shadow = QGraphicsDropShadowEffect(self._shell)
-        shell_shadow.setBlurRadius(50)
-        shell_shadow.setOffset(0, 10)
-        shell_shadow.setColor(QColor(15, 37, 57, 70))
-        self._shell.setGraphicsEffect(shell_shadow)
+        self._shell.setGraphicsEffect(None)
 
         shell_layout = QVBoxLayout(self._shell)
         shell_layout.setContentsMargins(0, 0, 0, 0)
