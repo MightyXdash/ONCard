@@ -7,8 +7,8 @@ import re
 import shutil
 import webbrowser
 
-from PySide6.QtCore import QEasingCurve, QPoint, QRect, Qt, QTimer, Signal, QVariantAnimation
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRegularExpression, QSize, Qt, QTimer, Signal, QVariantAnimation
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -21,7 +21,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSlider,
-    QSpinBox,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -54,6 +57,83 @@ class SetupState:
     performance_arena: dict | None = None
 
 
+def _normalized_import_profile_payload(*, inspection, archive_file: str, archive_age_grade_pattern: re.Pattern[str]) -> dict:
+    manifest = inspection.manifest if isinstance(inspection.manifest, dict) else {}
+    raw_profile = inspection.profile if isinstance(inspection.profile, dict) else {}
+    manifest_profile = manifest.get("profile", {}) if isinstance(manifest.get("profile", {}), dict) else {}
+    setup_payload = manifest.get("setup", {}) if isinstance(manifest.get("setup", {}), dict) else {}
+
+    sources = [raw_profile, manifest_profile, setup_payload, manifest]
+
+    def _first_text(keys: tuple[str, ...]) -> str:
+        for source in sources:
+            for key in keys:
+                value = source.get(key, None)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+        return ""
+
+    def _first_int(keys: tuple[str, ...]) -> int | None:
+        for source in sources:
+            for key in keys:
+                value = source.get(key, None)
+                if value is None:
+                    continue
+                try:
+                    return int(str(value).strip())
+                except ValueError:
+                    continue
+        return None
+
+    name = _first_text(("name", "user_name", "username", "student_name", "account_name"))
+    if not name:
+        name = str(manifest.get("account_name", "")).strip()
+    profile_name = _first_text(("profile_name", "display_name", "nickname"))
+    if not profile_name:
+        profile_name = name
+
+    archive_match = archive_age_grade_pattern.search(str(archive_file).strip())
+    age_from_filename = int(archive_match.group("age")) if archive_match else None
+    grade_from_filename = int(archive_match.group("grade")) if archive_match else None
+
+    age_number = _first_int(("age", "user_age", "student_age"))
+    if age_number is None:
+        age_number = age_from_filename
+    if age_number is None:
+        age_text = ""
+    else:
+        age_text = str(max(4, min(age_number, 99)))
+
+    grade_text = _first_text(("grade", "class_grade", "school_grade", "class", "year"))
+    if not grade_text and grade_from_filename is not None:
+        grade_text = f"Grade {grade_from_filename}"
+    if grade_text:
+        digits = "".join(ch for ch in grade_text if ch.isdigit())
+        if digits:
+            grade_text = f"Grade {digits[:2]}"
+
+    gender_text = _first_text(("gender", "sex", "user_gender"))
+    hobbies_text = _first_text(("hobbies", "hobby", "interests", "about", "bio"))
+    focus_value = _first_int(("attention_span_minutes", "question_focus_level", "attention", "focus_minutes", "focus_time"))
+    if focus_value is None:
+        focus_value = 5
+    focus_value = max(1, min(focus_value, 10))
+
+    return {
+        "name": name,
+        "profile_name": profile_name,
+        "age": age_text,
+        "grade": grade_text,
+        "gender": gender_text,
+        "hobbies": hobbies_text,
+        "attention_span_minutes": focus_value,
+        "question_focus_level": focus_value,
+    }
+
+
 class OnboardingPage(QWidget):
     changed = Signal()
 
@@ -74,9 +154,11 @@ class OnboardingPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        has_body = bool(body.strip())
+        root.setSpacing(8 if not has_body else 12)
         root.addWidget(title_label)
-        root.addWidget(body_label)
+        if has_body:
+            root.addWidget(body_label)
         root.addWidget(self._banner, 0, Qt.AlignHCenter)
         root.addLayout(self._body_layout, 1)
 
@@ -93,13 +175,261 @@ class OnboardingPage(QWidget):
 class FieldBlock(QWidget):
     def __init__(self, title: str, widget: QWidget) -> None:
         super().__init__()
-        title_label = QLabel(title)
-        title_label.setObjectName("SectionTitle")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        layout.addWidget(title_label)
+        has_title = bool(str(title).strip())
+        layout.setSpacing(6 if has_title else 0)
+        if has_title:
+            title_label = QLabel(title)
+            title_label.setObjectName("SectionTitle")
+            layout.addWidget(title_label)
         layout.addWidget(widget)
+
+
+class FadingIconButton(AnimatedButton):
+    def __init__(
+        self,
+        *,
+        icon_path: Path,
+        tooltip: str,
+        button_size: int = 36,
+        icon_size: int = 14,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._hover_fill = 0.0
+        self._press_fill = 0.0
+        self.setProperty("disablePressMotion", True)
+        self.setObjectName("WizardIconButton")
+        self.setText("")
+        self.setIcon(QIcon(str(icon_path)))
+        self.setIconSize(QSize(icon_size, icon_size))
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(button_size, button_size)
+        self.setStyleSheet(
+            """
+            QPushButton#WizardIconButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 12px;
+                padding: 0px;
+            }
+            QPushButton#WizardIconButton:disabled {
+                background: transparent;
+                border: 1px solid transparent;
+            }
+            """
+        )
+
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(180)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._hover_anim.valueChanged.connect(self._set_hover_fill)
+
+        self._press_anim = QVariantAnimation(self)
+        self._press_anim.setDuration(110)
+        self._press_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._press_anim.valueChanged.connect(self._set_press_fill)
+
+    def _set_hover_fill(self, value) -> None:
+        self._hover_fill = float(value)
+        self.update()
+
+    def _set_press_fill(self, value) -> None:
+        self._press_fill = float(value)
+        self.update()
+
+    def _animate_fill(self, animation: QVariantAnimation, target: float) -> None:
+        animation.stop()
+        current = float(animation.currentValue()) if animation.currentValue() is not None else (
+            self._hover_fill if animation is self._hover_anim else self._press_fill
+        )
+        animation.setStartValue(current)
+        animation.setEndValue(float(target))
+        animation.start()
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        if self.isEnabled():
+            self._animate_fill(self._hover_anim, 1.0)
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self._animate_fill(self._hover_anim, 0.0)
+        self._animate_fill(self._press_anim, 0.0)
+
+    def mousePressEvent(self, event) -> None:
+        if self.isEnabled():
+            self._animate_fill(self._press_anim, 1.0)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._animate_fill(self._press_anim, 0.0)
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        if not enabled:
+            self._hover_fill = 0.0
+            self._press_fill = 0.0
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.isEnabled():
+            return
+        fill_strength = max(self._hover_fill * 0.42, self._press_fill * 0.72)
+        if fill_strength <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(19, 49, 75, int(255 * min(0.22, fill_strength))))
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(rect, 12, 12)
+
+
+class PlaceholderComboBox(AnimatedComboBox):
+    def __init__(self, placeholder: str, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._placeholder = placeholder
+        self.setCurrentIndex(-1)
+
+    def paintEvent(self, event) -> None:
+        if self.currentIndex() >= 0:
+            super().paintEvent(event)
+            return
+
+        del event
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.currentText = self._placeholder
+        option.palette.setColor(QPalette.ColorRole.ButtonText, QColor("#8f9dad"))
+        option.palette.setColor(QPalette.ColorRole.Text, QColor("#8f9dad"))
+        option.state = option.state & ~QStyle.StateFlag.State_HasFocus
+
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+
+class PrefixedHobbyLineEdit(AnimatedLineEdit):
+    def __init__(self, *, prefix: str = "I like ", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._prefix = prefix
+        self._syncing_prefix = False
+        self._intro_running = False
+        self.textChanged.connect(self._enforce_prefix)
+
+        self._intro_anim = QVariantAnimation(self)
+        self._intro_anim.setDuration(850)
+        self._intro_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._intro_anim.valueChanged.connect(self._on_intro_progress)
+        self._intro_anim.finished.connect(self._on_intro_finished)
+
+    def _prefix_len(self) -> int:
+        return len(self._prefix)
+
+    def _with_sync(self, fn) -> None:
+        if self._syncing_prefix:
+            return
+        self._syncing_prefix = True
+        try:
+            fn()
+        finally:
+            self._syncing_prefix = False
+
+    def _on_intro_progress(self, value) -> None:
+        progress = float(value)
+        count = int(round(progress * self._prefix_len()))
+        alpha = max(0.0, min(1.0, progress))
+
+        def _apply() -> None:
+            self.setText(self._prefix[:count])
+            self.setCursorPosition(len(self.text()))
+            self.setStyleSheet(f"QLineEdit {{ color: rgba(22, 32, 43, {int(255 * alpha)}); }}")
+
+        self._with_sync(_apply)
+
+    def _on_intro_finished(self) -> None:
+        self._intro_running = False
+
+        def _apply() -> None:
+            self.setReadOnly(False)
+            self.setText(self._prefix)
+            self.setCursorPosition(self._prefix_len())
+            self.setStyleSheet("")
+
+        self._with_sync(_apply)
+
+    def _start_intro_if_needed(self) -> None:
+        if self._intro_running or self.text().strip():
+            return
+        self._intro_running = True
+        self.setReadOnly(True)
+        self._intro_anim.stop()
+        self._intro_anim.setStartValue(0.0)
+        self._intro_anim.setEndValue(1.0)
+        self._intro_anim.start()
+
+    def _apply_prefix_now(self) -> None:
+        if self.text().startswith(self._prefix):
+            if self.cursorPosition() < self._prefix_len():
+                self.setCursorPosition(self._prefix_len())
+            return
+
+        def _apply() -> None:
+            current = self.text().strip()
+            self.setText(f"{self._prefix}{current}" if current else self._prefix)
+            self.setCursorPosition(max(self._prefix_len(), len(self.text())))
+
+        self._with_sync(_apply)
+
+    def _enforce_prefix(self, _text: str) -> None:
+        if self._syncing_prefix or not self.hasFocus():
+            return
+        if self._intro_running:
+            return
+        self._apply_prefix_now()
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        if not self.text().strip():
+            self._start_intro_if_needed()
+        else:
+            self._apply_prefix_now()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if self.cursorPosition() < self._prefix_len():
+            self.setCursorPosition(self._prefix_len())
+
+    def keyPressEvent(self, event) -> None:
+        if self._intro_running:
+            event.ignore()
+            return
+        key = event.key()
+        has_selection = self.hasSelectedText()
+        selection_start = self.selectionStart()
+        if key == Qt.Key.Key_Backspace:
+            if (has_selection and selection_start < self._prefix_len()) or (
+                not has_selection and self.cursorPosition() <= self._prefix_len()
+            ):
+                return
+        if key == Qt.Key.Key_Delete:
+            if (has_selection and selection_start < self._prefix_len()) or (
+                not has_selection and self.cursorPosition() < self._prefix_len()
+            ):
+                return
+        if key == Qt.Key.Key_Home:
+            self.setCursorPosition(self._prefix_len())
+            return
+        if key == Qt.Key.Key_Left and not has_selection and self.cursorPosition() <= self._prefix_len():
+            return
+        super().keyPressEvent(event)
+        if self.cursorPosition() < self._prefix_len():
+            self.setCursorPosition(self._prefix_len())
 
 
 class StartupPopupDialog(QDialog):
@@ -226,7 +556,7 @@ class ProfilePage(OnboardingPage):
     def __init__(self, banners_root: Path, sounds: UiSoundBank | None = None) -> None:
         super().__init__(
             title="Welcome to ONCard",
-            body="Let us shape the app around how you study, with clean controls and less clutter from the start.",
+            body="",
             banner_path=banners_root / "onboarding_profile_banner_16x9.png",
             banner_name="onboarding_profile_banner_16x9.png",
         )
@@ -235,28 +565,52 @@ class ProfilePage(OnboardingPage):
         self._import_archive_path = ""
         self._imported_profile_active = False
         self._allow_import_removal = True
+        self._show_inline_import_control = True
         self._profile_name_auto_sync = True
+        self._banner.banner_height = 300
+        self._banner.banner_width = int(self._banner.banner_height * (16 / 9))
+        self._banner.radius = 30
+        self._banner.setFixedSize(self._banner.banner_width, self._banner.banner_height)
+        self._banner.update()
+        root_layout = self.layout()
+        if root_layout is not None:
+            root_layout.setSpacing(8)
+        self.body_layout().setContentsMargins(0, 22, 0, 0)
 
         surface = QFrame()
         surface.setObjectName("Surface")
         polish_surface(surface)
         surface_layout = QVBoxLayout(surface)
-        surface_layout.setContentsMargins(18, 18, 18, 18)
-        surface_layout.setSpacing(12)
+        surface_layout.setContentsMargins(18, 28, 18, 6)
+        surface_layout.setSpacing(0)
 
-        grid = QGridLayout()
+        grid_host = QWidget()
+        grid_host.setStyleSheet("background: transparent;")
+        grid_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
         self.name_edit = AnimatedLineEdit()
+        self.name_edit.setPlaceholderText("User name")
         self.profile_name_edit = AnimatedLineEdit()
-        self.age_spin = QSpinBox()
-        self.age_spin.setRange(4, 99)
-        self.age_spin.setValue(16)
-        self.grade_combo = AnimatedComboBox()
+        self.profile_name_edit.setPlaceholderText("Profile name")
+        self.age_edit = AnimatedLineEdit()
+        self.age_edit.setObjectName("WizardAgeEdit")
+        self.age_edit.setPlaceholderText("Age:")
+        self.age_edit.setMaxLength(2)
+        self.age_edit.setValidator(QRegularExpressionValidator(QRegularExpression("(?:[0-9]|[1-9][0-9])?"), self.age_edit))
+        self.grade_combo = PlaceholderComboBox("grade")
+        self.grade_combo.setObjectName("WizardGradeCombo")
         self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
-        self.gender_combo = AnimatedComboBox()
+        self.grade_combo.setMaxVisibleItems(6)
+        self.gender_combo = PlaceholderComboBox("gender")
+        self.gender_combo.setObjectName("WizardGenderCombo")
         self.gender_combo.addItems(["Male", "Female", "Custom"])
+        self.gender_combo.setMaxVisibleItems(6)
         self.gender_custom_edit = AnimatedLineEdit()
         self.gender_custom_edit.setMaxLength(20)
         self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
@@ -270,54 +624,120 @@ class ProfilePage(OnboardingPage):
         gender_layout.setSpacing(6)
         gender_layout.addWidget(self.gender_combo)
         gender_layout.addWidget(self.gender_custom_edit)
-        self.hobbies_edit = AnimatedLineEdit()
+        self.hobbies_edit = PrefixedHobbyLineEdit(prefix="I like ")
+        self.hobbies_edit.setPlaceholderText("Hobbies / interests")
 
         self.attention_slider = QSlider(Qt.Horizontal)
+        self.attention_slider.setObjectName("WizardAttentionSlider")
         self.attention_slider.setRange(1, 10)
         self.attention_slider.setSingleStep(1)
         self.attention_slider.setPageStep(1)
         self.attention_slider.setValue(5)
+        self.attention_slider.setFixedHeight(28)
+        self.attention_slider.setStyleSheet(
+            """
+            QSlider#WizardAttentionSlider {
+                background: transparent;
+            }
+            QSlider#WizardAttentionSlider::groove:horizontal {
+                height: 14px;
+                margin: 0 2px;
+                border: none;
+                border-radius: 7px;
+                background: #d4deea;
+            }
+            QSlider#WizardAttentionSlider::sub-page:horizontal {
+                border: none;
+                border-radius: 7px;
+                background: #d4deea;
+            }
+            QSlider#WizardAttentionSlider::add-page:horizontal {
+                border: none;
+                border-radius: 7px;
+                background: #d4deea;
+            }
+            QSlider#WizardAttentionSlider::handle:horizontal {
+                width: 16px;
+                height: 16px;
+                margin: -3px 0;
+                border-radius: 8px;
+                background: #0f2539;
+            }
+            """
+        )
         self.attention_value = QLabel("Attention span per question: 5 min")
         self.attention_value.setObjectName("SectionText")
+        self.attention_value.setContentsMargins(0, 0, 0, 0)
 
         self.name_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.name_edit.textChanged.connect(self._on_name_changed)
+        self.name_edit.textEdited.connect(lambda text: self._capitalize_first_letter(self.name_edit, text))
         self.profile_name_edit.textEdited.connect(self._on_profile_name_edited)
-        self.age_spin.valueChanged.connect(lambda *_: self.changed.emit())
+        self.profile_name_edit.textEdited.connect(lambda text: self._capitalize_first_letter(self.profile_name_edit, text))
+        self.age_edit.textChanged.connect(lambda *_: self.changed.emit())
+        self.age_edit.textChanged.connect(lambda *_: self._refresh_age_visual_state())
         self.grade_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.grade_combo.currentIndexChanged.connect(lambda *_: self._refresh_grade_visual_state())
         self.gender_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.gender_combo.currentIndexChanged.connect(lambda *_: self._refresh_gender_visual_state())
         self.gender_custom_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.hobbies_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.attention_slider.valueChanged.connect(self._on_attention_changed)
 
-        grid.addWidget(FieldBlock("User name", self.name_edit), 0, 0)
-        grid.addWidget(FieldBlock("Profile name", self.profile_name_edit), 0, 1)
-        grid.addWidget(FieldBlock("Age", self.age_spin), 1, 0)
-        grid.addWidget(FieldBlock("Grade", self.grade_combo), 1, 1)
-        grid.addWidget(FieldBlock("Hobbies / interests", self.hobbies_edit), 2, 0)
-        grid.addWidget(FieldBlock("Gender", gender_shell), 2, 1)
+        for control in (
+            self.name_edit,
+            self.profile_name_edit,
+            self.age_edit,
+            self.grade_combo,
+            self.gender_combo,
+            self.hobbies_edit,
+        ):
+            control.setFixedHeight(56)
+        self.gender_custom_edit.setFixedHeight(56)
 
-        surface_layout.addLayout(grid)
-        surface_layout.addWidget(self.attention_value)
-        surface_layout.addWidget(self.attention_slider)
+        grid.addWidget(FieldBlock("", self.name_edit), 0, 0)
+        grid.addWidget(FieldBlock("", self.profile_name_edit), 0, 1)
+        grid.addWidget(FieldBlock("", self.age_edit), 1, 0)
+        grid.addWidget(FieldBlock("", self.grade_combo), 1, 1)
+        grid.addWidget(FieldBlock("", self.hobbies_edit), 2, 0)
+        grid.addWidget(FieldBlock("", gender_shell), 2, 1)
+
+        attention_shell = QWidget()
+        attention_shell.setStyleSheet("background: transparent;")
+        attention_layout = QVBoxLayout(attention_shell)
+        attention_layout.setContentsMargins(0, 0, 0, 0)
+        attention_layout.setSpacing(0)
+        attention_layout.addWidget(self.attention_value)
+        attention_layout.addWidget(self.attention_slider)
+        attention_shell.setFixedHeight(52)
+        grid.addWidget(attention_shell, 3, 0, 1, 2)
+
+        surface_layout.addWidget(grid_host, 0, Qt.AlignTop)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 2, 0, 0)
         controls.setSpacing(8)
-        self.import_profile_btn = AnimatedButton("Import profile")
-        self.import_profile_btn.setProperty("disablePressMotion", True)
-        self.import_profile_btn.clicked.connect(self.import_profile_requested.emit)
-        self.remove_zip_btn = AnimatedButton("remove zip file")
+        self.import_handshake_btn = FadingIconButton(
+            icon_path=(banners_root.parent / "icons" / "common" / "handshake.png"),
+            tooltip="Import profile",
+            button_size=34,
+            icon_size=14,
+        )
+        self.import_handshake_btn.clicked.connect(self.import_profile_requested.emit)
+        self.remove_zip_btn = AnimatedButton("Remove")
         self.remove_zip_btn.setProperty("disablePressMotion", True)
         self.remove_zip_btn.clicked.connect(self.remove_import_requested.emit)
         self.remove_zip_btn.hide()
-        controls.addWidget(self.import_profile_btn, 0, Qt.AlignLeft)
+        controls.addWidget(self.import_handshake_btn, 0, Qt.AlignLeft)
         controls.addWidget(self.remove_zip_btn, 0, Qt.AlignLeft)
         controls.addStretch(1)
         surface_layout.addLayout(controls)
 
-        self.body_layout().addWidget(surface)
-        self.body_layout().addStretch(1)
+        self._refresh_age_visual_state()
+        self._refresh_grade_visual_state()
+        self._refresh_gender_visual_state()
+
+        self.body_layout().addWidget(surface, 1)
 
     def _on_attention_changed(self, value: int) -> None:
         if value != self._last_attention_value and self.sounds is not None:
@@ -330,12 +750,53 @@ class ProfilePage(OnboardingPage):
         if self._profile_name_auto_sync:
             self.profile_name_edit.setText(self.name_edit.text().strip())
 
+    def _capitalize_first_letter(self, widget: AnimatedLineEdit, text: str) -> None:
+        if not text:
+            return
+        trimmed = text.lstrip()
+        if not trimmed:
+            return
+        first = trimmed[0]
+        upper_first = first.upper()
+        if first == upper_first:
+            return
+        offset = len(text) - len(trimmed)
+        updated = f"{text[:offset]}{upper_first}{trimmed[1:]}"
+        cursor = widget.cursorPosition()
+        widget.blockSignals(True)
+        widget.setText(updated)
+        widget.blockSignals(False)
+        widget.setCursorPosition(min(cursor, len(updated)))
+        if widget is self.name_edit:
+            self._on_name_changed()
+        self.changed.emit()
+
     def _on_profile_name_edited(self, text: str) -> None:
         self._profile_name_auto_sync = text.strip() == self.name_edit.text().strip()
 
     def _on_gender_mode_changed(self) -> None:
         is_custom = self.gender_combo.currentText().strip().lower() == "custom"
         self.gender_custom_edit.setVisible(is_custom)
+
+    def _refresh_age_visual_state(self) -> None:
+        is_placeholder = not self.age_edit.text().strip()
+        self._set_widget_text_tint(self.age_edit, muted=is_placeholder)
+
+    def _refresh_grade_visual_state(self) -> None:
+        self.grade_combo.update()
+
+    def _refresh_gender_visual_state(self) -> None:
+        self.gender_combo.update()
+
+    def _set_widget_text_tint(self, widget: QWidget, *, muted: bool) -> None:
+        color = QColor("#8f9dad") if muted else QColor("#16202b")
+        palette = widget.palette()
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            palette.setColor(group, QPalette.ColorRole.Text, color)
+            palette.setColor(group, QPalette.ColorRole.ButtonText, color)
+            palette.setColor(group, QPalette.ColorRole.WindowText, color)
+        widget.setPalette(palette)
+        widget.update()
 
     def _set_gender_from_profile(self, gender_value: str) -> None:
         gender = str(gender_value or "").strip()
@@ -350,12 +811,15 @@ class ProfilePage(OnboardingPage):
             self.gender_combo.setCurrentText("Custom")
             self.gender_custom_edit.setText(gender[:20])
         else:
-            self.gender_combo.setCurrentText("Male")
+            self.gender_combo.setCurrentIndex(-1)
             self.gender_custom_edit.clear()
         self._on_gender_mode_changed()
+        self._refresh_gender_visual_state()
 
     def _effective_gender(self) -> str:
         mode = self.gender_combo.currentText().strip()
+        if not mode:
+            return ""
         if mode.lower() == "custom":
             return self.gender_custom_edit.text().strip()[:20]
         return mode
@@ -365,19 +829,36 @@ class ProfilePage(OnboardingPage):
             return True
         if not self.name_edit.text().strip():
             return False
+        if not self.profile_name_edit.text().strip():
+            return False
+        if not self.age_edit.text().strip():
+            return False
+        if self.grade_combo.currentIndex() < 0:
+            return False
+        if self.gender_combo.currentIndex() < 0:
+            return False
+        hobbies_text = self.hobbies_edit.text().strip()
+        if hobbies_text.lower().startswith("i like "):
+            hobbies_text = hobbies_text[7:].strip()
+        if not hobbies_text:
+            return False
         if self.gender_combo.currentText().strip().lower() == "custom":
             return bool(self.gender_custom_edit.text().strip())
         return True
 
     def profile_payload(self) -> dict:
         user_name = self.name_edit.text().strip()
+        age_text = self.age_edit.text().strip()
+        hobbies_text = self.hobbies_edit.text().strip()
+        if hobbies_text.lower().startswith("i like "):
+            hobbies_text = hobbies_text[7:].strip()
         return {
             "name": user_name,
             "profile_name": self.profile_name_edit.text().strip() or user_name,
-            "age": str(self.age_spin.value()),
-            "grade": self.grade_combo.currentText(),
+            "age": age_text,
+            "grade": "" if self.grade_combo.currentIndex() < 0 else self.grade_combo.currentText(),
             "gender": self._effective_gender(),
-            "hobbies": self.hobbies_edit.text().strip(),
+            "hobbies": hobbies_text,
             "attention_span_minutes": self.attention_slider.value(),
             "question_focus_level": self.attention_slider.value(),
         }
@@ -393,11 +874,15 @@ class ProfilePage(OnboardingPage):
             age = int(str(profile.get("age", "")).strip() or 16)
         except ValueError:
             age = 16
-        age = max(self.age_spin.minimum(), min(age, self.age_spin.maximum()))
-        self.age_spin.setValue(age)
+        age = max(0, min(age, 9))
+        self.age_edit.setText(str(age) if age > 0 else "")
+        self._refresh_age_visual_state()
         grade = str(profile.get("grade", "")).strip()
         if grade:
             self.grade_combo.setCurrentText(grade)
+        else:
+            self.grade_combo.setCurrentIndex(-1)
+        self._refresh_grade_visual_state()
         self._set_gender_from_profile(str(profile.get("gender", "")).strip())
         self.hobbies_edit.setText(str(profile.get("hobbies", "")).strip())
         try:
@@ -422,7 +907,7 @@ class ProfilePage(OnboardingPage):
     def _set_form_locked(self, locked: bool) -> None:
         self.name_edit.setEnabled(not locked)
         self.profile_name_edit.setEnabled(not locked)
-        self.age_spin.setEnabled(not locked)
+        self.age_edit.setEnabled(not locked)
         self.grade_combo.setEnabled(not locked)
         self.gender_combo.setEnabled(not locked)
         self.gender_custom_edit.setEnabled(not locked and self.gender_combo.currentText().strip().lower() == "custom")
@@ -432,13 +917,17 @@ class ProfilePage(OnboardingPage):
             self._on_gender_mode_changed()
         self.hobbies_edit.setEnabled(not locked)
         self.attention_slider.setEnabled(not locked)
-        self.import_profile_btn.setVisible(not locked)
+        self.import_handshake_btn.setVisible((not locked) and self._show_inline_import_control)
         self.remove_zip_btn.setVisible(locked and self._allow_import_removal)
 
     def set_allow_import_removal(self, allow: bool) -> None:
         self._allow_import_removal = bool(allow)
         if self._import_archive_path:
             self.remove_zip_btn.setVisible(self._allow_import_removal)
+
+    def set_inline_import_control_visible(self, visible: bool) -> None:
+        self._show_inline_import_control = bool(visible)
+        self.import_handshake_btn.setVisible(self._show_inline_import_control and not self._imported_profile_active)
 
 
 class AboutPage(OnboardingPage):
@@ -1005,6 +1494,7 @@ class OnboardingWizard(QDialog):
         self.stack.setObjectName("OnboardingStack")
         self.profile_page = ProfilePage(self.paths.banners, self.sounds)
         self.profile_page.set_allow_import_removal(False)
+        self.profile_page.set_inline_import_control_visible(False)
         self.about_page = AboutPage(self.paths.banners)
         self.model_page = ModelInstallerPage(self.paths.banners, self.icons, self.ollama)
         self.performance_page = PerformancePage(self.paths.banners, self.ollama)
@@ -1024,21 +1514,41 @@ class OnboardingWizard(QDialog):
         blur_layout.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
-        nav.addStretch(1)
-        self.back_btn = AnimatedButton("Back")
-        self.back_btn.setProperty("disablePressMotion", True)
-        self.next_btn = AnimatedButton("Next")
-        self.next_btn.setProperty("disablePressMotion", True)
-        self.next_btn.setObjectName("PrimaryButton")
+        nav.setSpacing(8)
+        self.nav_import_handshake_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "handshake.png",
+            tooltip="Import profile",
+            button_size=34,
+            icon_size=14,
+        )
+        self.nav_import_handshake_btn.clicked.connect(self._import_profile_into_profile_page)
+        self.back_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "angle-left.png",
+            tooltip="Back",
+            button_size=34,
+            icon_size=13,
+        )
+        self.next_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "angle-right.png",
+            tooltip="Next",
+            button_size=34,
+            icon_size=13,
+        )
         self.finish_btn = AnimatedButton("Finish")
         self.finish_btn.setProperty("disablePressMotion", True)
         self.finish_btn.setObjectName("PrimaryButton")
-        self.cancel_btn = AnimatedButton("Cancel")
-        self.cancel_btn.setProperty("disablePressMotion", True)
+        self.cancel_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "cross_two.png",
+            tooltip="Cancel",
+            button_size=34,
+            icon_size=12,
+        )
         self.back_btn.clicked.connect(self._go_back)
         self.next_btn.clicked.connect(self._go_next)
         self.finish_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
+        nav.addWidget(self.nav_import_handshake_btn)
+        nav.addStretch(1)
         nav.addWidget(self.back_btn)
         nav.addWidget(self.next_btn)
         nav.addWidget(self.finish_btn)
@@ -1067,6 +1577,8 @@ class OnboardingWizard(QDialog):
             self.back_btn.setEnabled(self.current_index > model_index)
         else:
             self.back_btn.setEnabled(self.current_index > 0)
+        on_profile_page = self.current_index == self.pages.index(self.profile_page)
+        self.nav_import_handshake_btn.setVisible(on_profile_page and not self._import_flow_locked)
         self.next_btn.setVisible(not last)
         self.finish_btn.setVisible(last)
         self.next_btn.setEnabled(current.can_continue())
@@ -1126,80 +1638,11 @@ class OnboardingWizard(QDialog):
         self._refresh_nav()
 
     def _normalized_import_profile(self, *, inspection, archive_file: str) -> dict:
-        manifest = inspection.manifest if isinstance(inspection.manifest, dict) else {}
-        raw_profile = inspection.profile if isinstance(inspection.profile, dict) else {}
-        manifest_profile = manifest.get("profile", {}) if isinstance(manifest.get("profile", {}), dict) else {}
-        setup_payload = manifest.get("setup", {}) if isinstance(manifest.get("setup", {}), dict) else {}
-
-        sources = [raw_profile, manifest_profile, setup_payload, manifest]
-
-        def _first_text(keys: tuple[str, ...]) -> str:
-            for source in sources:
-                for key in keys:
-                    value = source.get(key, None)
-                    if value is None:
-                        continue
-                    text = str(value).strip()
-                    if text:
-                        return text
-            return ""
-
-        def _first_int(keys: tuple[str, ...]) -> int | None:
-            for source in sources:
-                for key in keys:
-                    value = source.get(key, None)
-                    if value is None:
-                        continue
-                    try:
-                        return int(str(value).strip())
-                    except ValueError:
-                        continue
-            return None
-
-        name = _first_text(("name", "user_name", "username", "student_name", "account_name"))
-        if not name:
-            name = str(manifest.get("account_name", "")).strip()
-        profile_name = _first_text(("profile_name", "display_name", "nickname"))
-        if not profile_name:
-            profile_name = name
-
-        archive_match = self.ARCHIVE_AGE_GRADE_PATTERN.search(str(archive_file).strip())
-        age_from_filename = int(archive_match.group("age")) if archive_match else None
-        grade_from_filename = int(archive_match.group("grade")) if archive_match else None
-
-        age_number = _first_int(("age", "user_age", "student_age"))
-        if age_number is None:
-            age_number = age_from_filename
-        if age_number is None:
-            age_text = ""
-        else:
-            age_text = str(max(4, min(age_number, 99)))
-
-        grade_text = _first_text(("grade", "class_grade", "school_grade", "class", "year"))
-        if not grade_text and grade_from_filename is not None:
-            grade_text = f"Grade {grade_from_filename}"
-        if grade_text:
-            digits = "".join(ch for ch in grade_text if ch.isdigit())
-            if digits:
-                grade_text = f"Grade {digits[:2]}"
-
-        gender_text = _first_text(("gender", "sex", "user_gender"))
-        hobbies_text = _first_text(("hobbies", "hobby", "interests", "about", "bio"))
-        focus_value = _first_int(("attention_span_minutes", "question_focus_level", "attention", "focus_minutes", "focus_time"))
-        if focus_value is None:
-            focus_value = 5
-        focus_value = max(1, min(focus_value, 10))
-
-        return {
-            "name": name,
-            "profile_name": profile_name,
-            "age": age_text,
-            "grade": grade_text,
-            "gender": gender_text,
-            "hobbies": hobbies_text,
-            "attention_span_minutes": focus_value,
-            "question_focus_level": focus_value,
-        }
+        return _normalized_import_profile_payload(
+            inspection=inspection,
+            archive_file=archive_file,
+            archive_age_grade_pattern=self.ARCHIVE_AGE_GRADE_PATTERN,
+        )
 
     def _remove_imported_profile(self) -> None:
         self.profile_page.clear_imported_profile()
@@ -1226,6 +1669,8 @@ class OnboardingWizard(QDialog):
 
 
 class ProfileMakerDialog(QDialog):
+    ARCHIVE_AGE_GRADE_PATTERN = re.compile(r"_A(?P<age>\d{1,2})_G(?P<grade>\d{1,2})\.zip$", re.IGNORECASE)
+
     def __init__(
         self,
         paths,
@@ -1257,7 +1702,7 @@ class ProfileMakerDialog(QDialog):
 
         nav = QHBoxLayout()
         nav.addStretch(1)
-        self.create_btn = AnimatedButton("Create account")
+        self.create_btn = AnimatedButton("Add profile")
         self.create_btn.setObjectName("PrimaryButton")
         self.cancel_btn = AnimatedButton("Cancel")
         self.create_btn.clicked.connect(self._accept_if_valid)
@@ -1277,8 +1722,18 @@ class ProfileMakerDialog(QDialog):
         if not inspection.valid:
             QMessageBox.warning(self, "Import profile", inspection.error or "This profile zip is not valid.")
             return
-        self.profile_page.set_imported_profile(inspection.profile, archive_path=archive_file)
+        imported_profile = _normalized_import_profile_payload(
+            inspection=inspection,
+            archive_file=archive_file,
+            archive_age_grade_pattern=self.ARCHIVE_AGE_GRADE_PATTERN,
+        )
+        self.profile_page.set_imported_profile(imported_profile, archive_path=archive_file)
         self.import_archive_path = archive_file
+        QMessageBox.information(
+            self,
+            "Import profile",
+            'Profile cached successfully! press "Add profile" to add the account',
+        )
 
     def _remove_imported_profile(self) -> None:
         self.profile_page.clear_imported_profile()
