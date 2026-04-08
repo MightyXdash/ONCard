@@ -123,8 +123,9 @@ class AnimatedComboBox(QComboBox):
         popup.setObjectName("ComboPopup")
         popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        popup.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        popup.setAutoFillBackground(True)
         popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, False)
-        popup.show()
 
 
 class AnimatedStackedWidget(QStackedWidget):
