@@ -616,12 +616,32 @@ class GradePickerDialog(QDialog):
         root.addWidget(card)
 
         body = QVBoxLayout(card)
-        body.setContentsMargins(18, 14, 18, 16)
-        body.setSpacing(6)
+        body.setContentsMargins(18, 16, 18, 20)
+        body.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
 
         title = QLabel("Choose your grade")
         title.setObjectName("GradePickerTitle")
-        body.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+
+        icon_root = getattr(getattr(parent, "paths", None), "icons", None)
+        if isinstance(icon_root, Path):
+            close_icon = icon_root / "common" / "cross_two.png"
+            self.close_btn = FadingIconButton(
+                icon_path=close_icon,
+                tooltip="Close",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.close_btn.clicked.connect(self.reject)
+            header.addWidget(self.close_btn, 0, Qt.AlignTop)
+
+        body.addLayout(header)
 
         meta = QLabel("Pick the grade that matches your current school level.")
         meta.setObjectName("GradePickerMeta")
@@ -656,7 +676,7 @@ class GradePickerDialog(QDialog):
             grid.addWidget(_button_for(option), 1, column, alignment=Qt.AlignCenter)
 
         body.addLayout(grid)
-        self.setFixedSize(690, 214)
+        self.setFixedSize(690, 228)
 
     def _on_choice(self, value: str) -> None:
         self._choice = value
@@ -672,6 +692,289 @@ class GradePickerDialog(QDialog):
             self._clear_backdrop()
 
     def _position_below_anchor(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        x = int(parent_rect.center().x() - (self.width() / 2))
+        y = int(parent_rect.center().y() - (self.height() / 2))
+        self.move(x, y)
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+        self._applied_blur = blur
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._applied_blur = None
+        self._previous_effect = None
+
+
+class GenderPickerDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        current_value: str = "",
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._applied_blur: QGraphicsBlurEffect | None = None
+        self._choice = ""
+        self._selected_preset = ""
+        self._fallback_preset = ""
+
+        normalized = current_value.strip()
+        lowered = normalized.lower()
+        if lowered == "male":
+            self._selected_preset = "Male"
+            self._fallback_preset = "Male"
+        elif lowered == "female":
+            self._selected_preset = "Female"
+            self._fallback_preset = "Female"
+        else:
+            self._choice = normalized
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("GenderPickerCard")
+        card.setStyleSheet(
+            """
+            QFrame#GenderPickerCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(216, 225, 234, 0.88);
+                border-radius: 30px;
+            }
+            QLabel#GenderPickerTitle {
+                color: #142130;
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QLabel#GenderPickerMeta {
+                color: #6d7c8b;
+                font-size: 12px;
+            }
+            QPushButton#GenderPresetOption {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QPushButton#GenderPresetOption:hover {
+                background: rgba(237, 244, 250, 0.98);
+                border: 1px solid rgba(154, 180, 206, 0.92);
+            }
+            QPushButton#GenderPresetOption[optionSelected="true"] {
+                background: rgba(221, 234, 247, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+                color: #102131;
+            }
+            QLineEdit#GenderCustomInput {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+            }
+            QLineEdit#GenderCustomInput:focus {
+                background: rgba(252, 254, 255, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(42)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(13, 26, 39, 78))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(18, 14, 18, 16)
+        body.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        title = QLabel("Choose your gender")
+        title.setObjectName("GenderPickerTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        icon_root = getattr(getattr(parent, "paths", None), "icons", None)
+        if isinstance(icon_root, Path):
+            check_icon = icon_root / "common" / "check.png"
+            self.confirm_btn = FadingIconButton(
+                icon_path=check_icon,
+                tooltip="Apply",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.confirm_btn.clicked.connect(self._accept_current_choice)
+            header.addWidget(self.confirm_btn, 0, Qt.AlignTop)
+
+            close_icon = icon_root / "common" / "cross_two.png"
+            self.close_btn = FadingIconButton(
+                icon_path=close_icon,
+                tooltip="Close",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.close_btn.clicked.connect(self.reject)
+            header.addWidget(self.close_btn, 0, Qt.AlignTop)
+
+        body.addLayout(header)
+
+        meta = QLabel("Select one, or write your gender and pronouns below.")
+        meta.setObjectName("GenderPickerMeta")
+        body.addWidget(meta)
+
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, 8, 0, 2)
+        preset_row.setSpacing(10)
+
+        self.male_btn = AnimatedButton("Male")
+        self.male_btn.setObjectName("GenderPresetOption")
+        self.male_btn.setProperty("disablePressMotion", True)
+        self.male_btn.setFixedHeight(40)
+        self.male_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.male_btn.setProperty("optionSelected", self._selected_preset == "Male")
+        self.male_btn.set_motion_scale_range(0.0)
+        self.male_btn.set_motion_hover_grow(0, 0)
+        self.male_btn.set_motion_lift(0.0)
+        self.male_btn.set_motion_press_scale(0.0)
+        self.male_btn.clicked.connect(lambda: self._select_preset("Male"))
+
+        self.female_btn = AnimatedButton("Female")
+        self.female_btn.setObjectName("GenderPresetOption")
+        self.female_btn.setProperty("disablePressMotion", True)
+        self.female_btn.setFixedHeight(40)
+        self.female_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.female_btn.setProperty("optionSelected", self._selected_preset == "Female")
+        self.female_btn.set_motion_scale_range(0.0)
+        self.female_btn.set_motion_hover_grow(0, 0)
+        self.female_btn.set_motion_lift(0.0)
+        self.female_btn.set_motion_press_scale(0.0)
+        self.female_btn.clicked.connect(lambda: self._select_preset("Female"))
+
+        preset_row.addWidget(self.male_btn)
+        preset_row.addWidget(self.female_btn)
+        body.addLayout(preset_row)
+
+        self.custom_input = AnimatedLineEdit(card)
+        self.custom_input.setObjectName("GenderCustomInput")
+        self.custom_input.setPlaceholderText("Gender | Pronoun(s)")
+        self.custom_input.setFixedHeight(40)
+        self.custom_input.setText(self._choice)
+        self.custom_input.textEdited.connect(self._on_custom_text_edited)
+        body.addWidget(self.custom_input)
+
+        self.setFixedSize(430, 246)
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _select_preset(self, value: str) -> None:
+        self._selected_preset = value
+        self._fallback_preset = value
+        self._choice = ""
+        self.custom_input.blockSignals(True)
+        self.custom_input.clear()
+        self.custom_input.blockSignals(False)
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _on_custom_text_edited(self, text: str) -> None:
+        self._choice = text.strip()
+        if self._choice:
+            self._selected_preset = ""
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _valid_custom_choice(self) -> str:
+        candidate = self.custom_input.text().strip()
+        if not candidate:
+            return ""
+        gender_part, separator, pronoun_part = candidate.partition("|")
+        if separator != "|":
+            return ""
+        gender = gender_part.strip()
+        pronouns = pronoun_part.strip()
+        if not gender or not pronouns:
+            return ""
+        return f"{gender} | {pronouns}"
+
+    def _refresh_selection_state(self) -> None:
+        self.male_btn.setProperty("optionSelected", self._selected_preset == "Male")
+        self.female_btn.setProperty("optionSelected", self._selected_preset == "Female")
+        for button in (self.male_btn, self.female_btn):
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _refresh_confirm_state(self) -> None:
+        has_choice = bool(self._valid_custom_choice() or self._selected_preset or self._fallback_preset)
+        if hasattr(self, "confirm_btn"):
+            self.confirm_btn.setEnabled(has_choice)
+
+    def _accept_current_choice(self) -> None:
+        valid_custom = self._valid_custom_choice()
+        if valid_custom:
+            self._choice = valid_custom
+        elif self._selected_preset:
+            self._choice = self._selected_preset
+        else:
+            self._choice = self._fallback_preset
+        if not self._choice:
+            return
+        self.accept()
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            self.exec()
+            return self._choice
+        finally:
+            self._clear_backdrop()
+
+    def _center_on_parent(self) -> None:
         parent_widget = self.parentWidget()
         if parent_widget is None:
             return
@@ -772,9 +1075,10 @@ class ProfilePage(OnboardingPage):
         self.gender_combo.setObjectName("WizardGenderCombo")
         self.gender_combo.addItems(["Male", "Female", "Custom"])
         self.gender_combo.setMaxVisibleItems(6)
+        self.gender_combo.set_popup_handler(self._open_gender_picker)
         self.gender_custom_edit = AnimatedLineEdit()
-        self.gender_custom_edit.setMaxLength(20)
-        self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
+        self.gender_custom_edit.setMaxLength(64)
+        self.gender_custom_edit.setPlaceholderText("Gender | Pronoun(s)")
         self.gender_custom_edit.setVisible(False)
         self.gender_combo.currentIndexChanged.connect(self._on_gender_mode_changed)
         gender_shell = QWidget()
@@ -801,26 +1105,26 @@ class ProfilePage(OnboardingPage):
                 background: transparent;
             }
             QSlider#WizardAttentionSlider::groove:horizontal {
-                height: 14px;
+                height: 8px;
                 margin: 0 2px;
                 border: none;
-                border-radius: 7px;
+                border-radius: 4px;
                 background: #d4deea;
             }
             QSlider#WizardAttentionSlider::sub-page:horizontal {
                 border: none;
-                border-radius: 7px;
+                border-radius: 4px;
                 background: #d4deea;
             }
             QSlider#WizardAttentionSlider::add-page:horizontal {
                 border: none;
-                border-radius: 7px;
+                border-radius: 4px;
                 background: #d4deea;
             }
             QSlider#WizardAttentionSlider::handle:horizontal {
                 width: 16px;
                 height: 16px;
-                margin: -3px 0;
+                margin: -4px 0;
                 border-radius: 8px;
                 background: #0f2539;
             }
@@ -866,11 +1170,11 @@ class ProfilePage(OnboardingPage):
         attention_shell = QWidget()
         attention_shell.setStyleSheet("background: transparent;")
         attention_layout = QVBoxLayout(attention_shell)
-        attention_layout.setContentsMargins(0, 0, 0, 0)
-        attention_layout.setSpacing(0)
+        attention_layout.setContentsMargins(0, 14, 0, 10)
+        attention_layout.setSpacing(8)
         attention_layout.addWidget(self.attention_value)
         attention_layout.addWidget(self.attention_slider)
-        attention_shell.setFixedHeight(52)
+        attention_shell.setFixedHeight(84)
         grid.addWidget(attention_shell, 3, 0, 1, 2)
 
         surface_layout.addWidget(grid_host, 0, Qt.AlignTop)
@@ -936,14 +1240,14 @@ class ProfilePage(OnboardingPage):
         self._profile_name_auto_sync = text.strip() == self.name_edit.text().strip()
 
     def _on_gender_mode_changed(self) -> None:
-        is_custom = self.gender_combo.currentText().strip().lower() == "custom"
-        self.gender_custom_edit.setVisible(is_custom)
+        self.gender_custom_edit.setVisible(False)
 
     def _refresh_age_visual_state(self) -> None:
         is_placeholder = not self.age_edit.text().strip()
         self._set_widget_text_tint(self.age_edit, muted=is_placeholder)
 
     def _refresh_grade_visual_state(self) -> None:
+        self._set_widget_text_tint(self.grade_combo, muted=self.grade_combo.currentIndex() < 0)
         self.grade_combo.update()
 
     def _open_grade_picker(self) -> None:
@@ -965,7 +1269,34 @@ class ProfilePage(OnboardingPage):
         self.grade_combo.setCurrentText(selected)
         self.grade_combo.setFocus()
 
+    def _open_gender_picker(self) -> None:
+        if not self.gender_combo.isEnabled():
+            return
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        current_value = self._effective_gender()
+        selected = GenderPickerDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            current_value=current_value,
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        normalized = selected.strip()
+        lowered = normalized.lower()
+        if lowered == "male":
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        elif lowered == "female":
+            self.gender_combo.setCurrentText("Female")
+            self.gender_custom_edit.clear()
+        else:
+            self.gender_combo.setCurrentText("Custom")
+            self.gender_custom_edit.setText(normalized[:64])
+        self.gender_combo.setFocus()
+
     def _refresh_gender_visual_state(self) -> None:
+        self._set_widget_text_tint(self.gender_combo, muted=self.gender_combo.currentIndex() < 0)
         self.gender_combo.update()
 
     def _set_widget_text_tint(self, widget: QWidget, *, muted: bool) -> None:
@@ -975,6 +1306,7 @@ class ProfilePage(OnboardingPage):
             palette.setColor(group, QPalette.ColorRole.Text, color)
             palette.setColor(group, QPalette.ColorRole.ButtonText, color)
             palette.setColor(group, QPalette.ColorRole.WindowText, color)
+            palette.setColor(group, QPalette.ColorRole.PlaceholderText, QColor("#8f9dad"))
         widget.setPalette(palette)
         widget.update()
 
@@ -989,7 +1321,7 @@ class ProfilePage(OnboardingPage):
             self.gender_custom_edit.clear()
         elif gender:
             self.gender_combo.setCurrentText("Custom")
-            self.gender_custom_edit.setText(gender[:20])
+            self.gender_custom_edit.setText(gender[:64])
         else:
             self.gender_combo.setCurrentIndex(-1)
             self.gender_custom_edit.clear()
@@ -1001,7 +1333,7 @@ class ProfilePage(OnboardingPage):
         if not mode:
             return ""
         if mode.lower() == "custom":
-            return self.gender_custom_edit.text().strip()[:20]
+            return self.gender_custom_edit.text().strip()[:64]
         return mode
 
     def can_continue(self) -> bool:
@@ -1714,9 +2046,12 @@ class OnboardingWizard(QDialog):
             button_size=34,
             icon_size=13,
         )
-        self.finish_btn = AnimatedButton("Finish")
-        self.finish_btn.setProperty("disablePressMotion", True)
-        self.finish_btn.setObjectName("PrimaryButton")
+        self.finish_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "check.png",
+            tooltip="Finish",
+            button_size=34,
+            icon_size=12,
+        )
         self.cancel_btn = FadingIconButton(
             icon_path=self.paths.icons / "common" / "cross_two.png",
             tooltip="Cancel",

@@ -329,6 +329,11 @@ def app_stylesheet() -> str:
         border: 1px solid rgba(166, 181, 197, 0.3);
         border-radius: 18px;
     }
+    QFrame#NotificationsMenuSurface {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(166, 181, 197, 0.3);
+        border-radius: 18px;
+    }
     QPushButton#AppIconMenuButton {
         text-align: left;
         background: transparent;
