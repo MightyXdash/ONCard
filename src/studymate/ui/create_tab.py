@@ -6,13 +6,18 @@ from pathlib import Path
 import shutil
 import uuid
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal, QTimer
-from PySide6.QtGui import QMouseEvent, QPixmap, QTextCursor, QTextDocument
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPixmap, QTextCursor, QTextDocument, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QBoxLayout,
     QDialog,
     QFileDialog,
+    QFormLayout,
     QFrame,
+    QGraphicsBlurEffect,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -23,6 +28,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTextBrowser,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -88,6 +94,100 @@ class LimitedTextEdit(QTextEdit):
         self.limited_text_changed.emit(text)
 
 
+class ProtectedInstructionEdit(LimitedTextEdit):
+    def __init__(self, max_chars: int, parent=None) -> None:
+        self._locked_prefix = ""
+        self._extra_text = ""
+        self._syncing_text = False
+        super().__init__(max_chars, parent)
+        self.cursorPositionChanged.connect(self._keep_cursor_after_prefix)
+
+    def set_locked_prefix(self, text: str) -> None:
+        self._locked_prefix = (text or "").strip()
+        self._apply_text(self._extra_text)
+
+    def set_extra_text(self, text: str) -> None:
+        self._extra_text = (text or "").strip()
+        self._apply_text(self._extra_text)
+
+    def extra_text(self) -> str:
+        return self._extra_text
+
+    def combined_text(self) -> str:
+        return self._compose_text(self._extra_text)
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self._keep_cursor_after_prefix)
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        QTimer.singleShot(0, self._keep_cursor_after_prefix)
+
+    def keyPressEvent(self, event) -> None:
+        super().keyPressEvent(event)
+        self._keep_cursor_after_prefix()
+
+    def _compose_text(self, extra_text: str) -> str:
+        prefix = self._locked_prefix.strip()
+        extra = (extra_text or "").strip()
+        if prefix and extra:
+            return f"{prefix}\n\n{extra}"
+        return prefix or extra
+
+    def _extract_extra_text(self, text: str) -> str:
+        compact = (text or "").strip()
+        prefix = self._locked_prefix.strip()
+        if not prefix:
+            return compact
+        if compact.startswith(prefix):
+            return compact[len(prefix) :].lstrip("\n").strip()
+        return compact
+
+    def _apply_text(self, extra_text: str) -> None:
+        combined = self._compose_text(extra_text)
+        self._syncing_text = True
+        self.setPlainText(combined)
+        cursor = self.textCursor()
+        cursor.setPosition(len(combined))
+        self.setTextCursor(cursor)
+        self._syncing_text = False
+        self.limited_text_changed.emit(combined)
+
+    def _keep_cursor_after_prefix(self) -> None:
+        prefix_length = len(self._locked_prefix.strip())
+        if prefix_length <= 0:
+            return
+        document_length = len(self.toPlainText())
+        if document_length <= 0:
+            return
+        cursor = self.textCursor()
+        if cursor.position() < prefix_length:
+            target_position = min(max(prefix_length, cursor.position()), document_length)
+            cursor.setPosition(target_position)
+            self.setTextCursor(cursor)
+
+    def _enforce_limit(self) -> None:
+        if self._syncing_text:
+            return
+        extra_text = self._extract_extra_text(self.toPlainText())
+        combined = self._compose_text(extra_text)
+        if len(combined) > self.max_chars:
+            empty_prefix_length = len(self._compose_text(""))
+            available_extra = max(0, self.max_chars - empty_prefix_length)
+            extra_text = extra_text[:available_extra].rstrip()
+            combined = self._compose_text(extra_text)
+        self._extra_text = extra_text
+        if self.toPlainText() != combined:
+            self._syncing_text = True
+            self.setPlainText(combined)
+            cursor = self.textCursor()
+            cursor.setPosition(len(combined))
+            self.setTextCursor(cursor)
+            self._syncing_text = False
+        self.limited_text_changed.emit(combined)
+
+
 class FileDropZone(QFrame):
     files_dropped = Signal(list)
 
@@ -144,6 +244,565 @@ class FileDropZone(QFrame):
             event.acceptProposedAction()
             return
         event.ignore()
+
+
+class HorizontalGalleryScrollArea(QScrollArea):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setObjectName("FTCHorizontalRail")
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta:
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta)
+                event.accept()
+                return
+        super().wheelEvent(event)
+
+
+class UploadTileButton(QFrame):
+    clicked = Signal()
+
+    def __init__(self, icon: QIcon, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FTCUploadTile")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(168, 156)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(10)
+        layout.addStretch(5)
+
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("FTCUploadTileIcon")
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setPixmap(icon.pixmap(QSize(34, 34)))
+        layout.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.text_label = QLabel("Or drag & drop")
+        self.text_label.setObjectName("FTCUploadTileText")
+        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.text_label, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch(3)
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self.setProperty("hovered", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.setProperty("hovered", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()) and self.isEnabled():
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class FileSkeletonCard(QFrame):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("FTCSkeletonCard")
+        self.setFixedSize(168, 156)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        thumb = QFrame()
+        thumb.setObjectName("FTCSkeletonThumb")
+        thumb.setFixedSize(52, 52)
+        layout.addWidget(thumb, 0, Qt.AlignmentFlag.AlignCenter)
+
+        bar_one = QFrame()
+        bar_one.setObjectName("FTCSkeletonBar")
+        bar_one.setFixedHeight(12)
+        layout.addWidget(bar_one)
+
+        bar_two = QFrame()
+        bar_two.setObjectName("FTCSkeletonBarSoft")
+        bar_two.setFixedHeight(10)
+        layout.addWidget(bar_two)
+        layout.addStretch(1)
+
+
+class SelectedFileCard(QFrame):
+    remove_requested = Signal(str)
+    preview_requested = Signal(str)
+
+    def __init__(self, source: SelectedSourceFile, *, remove_icon: QIcon) -> None:
+        super().__init__()
+        self.setObjectName("FTCFileCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(168, 156)
+        self.path = str(source.path)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+        top_row.addStretch(1)
+
+        self.remove_btn = QToolButton()
+        self.remove_btn.setObjectName("FTCFileRemove")
+        self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_btn.setIcon(remove_icon)
+        self.remove_btn.setIconSize(QSize(12, 12))
+        self.remove_btn.setAutoRaise(True)
+        self.remove_btn.clicked.connect(lambda _checked=False: self.remove_requested.emit(self.path))
+        top_row.addWidget(self.remove_btn, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(top_row)
+
+        self.preview_thumb = QLabel()
+        self.preview_thumb.setObjectName("FTCFileCardThumb")
+        self.preview_thumb.setFixedSize(56, 56)
+        self.preview_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            preview = create_source_preview(source.path, max_width=56, max_height=56)
+            self.preview_thumb.setPixmap(QPixmap.fromImage(preview))
+        except Exception:
+            self.preview_thumb.setText(source.family.upper())
+        layout.addWidget(self.preview_thumb, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.name_label = QLabel(self._trim_title(source.path.name))
+        self.name_label.setObjectName("FTCFileCardName")
+        self.name_label.setWordWrap(False)
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label.setFixedHeight(22)
+        layout.addWidget(self.name_label)
+        layout.addStretch(1)
+
+    def set_locked(self, locked: bool) -> None:
+        self.remove_btn.setVisible(not locked)
+        self.remove_btn.setEnabled(not locked)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self.remove_btn.geometry().contains(event.position().toPoint()):
+            self.preview_requested.emit(self.path)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _trim_title(self, text: str) -> str:
+        available_width = 126
+        metrics = self.fontMetrics()
+        compact = (text or "").strip()
+        if metrics.horizontalAdvance(compact) <= available_width:
+            return compact
+        trimmed = compact
+        while len(trimmed) > 3 and metrics.horizontalAdvance(f"{trimmed}...") > available_width:
+            trimmed = trimmed[:-3]
+        return f"{trimmed}..." if trimmed else "..."
+
+
+class FTCUploadGallery(QFrame):
+    files_dropped = Signal(list)
+    browse_requested = Signal()
+    preview_requested = Signal(str)
+    remove_requested = Signal(str)
+
+    def __init__(self, icons: IconHelper) -> None:
+        super().__init__()
+        self._locked = False
+        self._icons = icons
+        self.setObjectName("FTCUploadSurface")
+        self.setAcceptDrops(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(12)
+
+        self.scroll_area = HorizontalGalleryScrollArea()
+        self.scroll_area.setFixedHeight(182)
+        self.cards_host = QWidget()
+        self.cards_host.setObjectName("FTCRailCanvas")
+        self.cards_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.cards_layout = QHBoxLayout(self.cards_host)
+        self.cards_layout.setContentsMargins(0, 0, 30, 0)
+        self.cards_layout.setSpacing(14)
+        self.scroll_area.setWidget(self.cards_host)
+        layout.addWidget(self.scroll_area)
+
+        self.summary_label = QLabel("No files selected yet.")
+        self.summary_label.setObjectName("SmallMeta")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.hide()
+
+        self.hint_label = QLabel("Supports images, PDF, and PPTX.")
+        self.hint_label.setObjectName("SmallMeta")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.hide()
+
+        self.upload_tile = UploadTileButton(self._icons.icon("common", "upload", "U"))
+        self.upload_tile.clicked.connect(lambda _checked=False: self.browse_requested.emit())
+        self.cards_layout.addWidget(self.upload_tile)
+        self._dynamic_cards: list[QWidget] = []
+
+    def set_locked(self, locked: bool) -> None:
+        self._locked = locked
+        self.upload_tile.setEnabled(not locked)
+        for card in self._dynamic_cards:
+            if hasattr(card, "set_locked"):
+                card.set_locked(locked)
+
+    def set_summary(self, summary_text: str, hint_text: str) -> None:
+        tooltip_lines = [line for line in [summary_text.strip(), hint_text.strip()] if line]
+        self.setToolTip("\n".join(tooltip_lines))
+
+    def set_sources(self, sources: list[SelectedSourceFile]) -> None:
+        while self.cards_layout.count() > 1:
+            item = self.cards_layout.takeAt(1)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._dynamic_cards.clear()
+
+        remove_icon = self._icons.icon("common", "cross_two", "X")
+        for source in sources:
+            card = SelectedFileCard(source, remove_icon=remove_icon)
+            card.set_locked(self._locked)
+            card.preview_requested.connect(self.preview_requested.emit)
+            card.remove_requested.connect(self.remove_requested.emit)
+            self.cards_layout.addWidget(card)
+            self._dynamic_cards.append(card)
+
+        placeholder_count = max(2, 4 - len(sources))
+        for _ in range(placeholder_count):
+            card = FileSkeletonCard()
+            self.cards_layout.addWidget(card)
+            self._dynamic_cards.append(card)
+
+    def dragEnterEvent(self, event) -> None:
+        if self._locked:
+            event.ignore()
+            return
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._locked:
+            event.ignore()
+            return
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:
+        if self._locked:
+            event.ignore()
+            return
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+
+class FTCControlsDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        current_mode: str,
+        question_value: int,
+        question_caps: dict[str, int],
+        default_counts: dict[str, int],
+        model_label: str,
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._question_caps = question_caps
+        self._default_counts = default_counts
+        self._mode_value = current_mode
+        self._question_value = int(question_value)
+        self._popup_question_limits = {
+            "standard": 14,
+            "force": 29,
+        }
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(44, 44, 44, 44)
+        root.setSpacing(0)
+        root.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
+        self.card = QFrame(self)
+        self.card.setObjectName("FTCControlsPopupCard")
+        card_shadow = QGraphicsDropShadowEffect(self.card)
+        card_shadow.setBlurRadius(44)
+        card_shadow.setOffset(0, 0)
+        card_shadow.setColor(QColor(13, 26, 39, 105))
+        self.card.setGraphicsEffect(card_shadow)
+        root.addWidget(self.card)
+
+        body = QVBoxLayout(self.card)
+        body.setContentsMargins(24, 22, 24, 20)
+        body.setSpacing(16)
+        body.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        title = QLabel("FTC controls")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        check_icon = parent.icons.icon("common", "check", "C") if hasattr(parent, "icons") else QIcon()
+        close_icon = parent.icons.icon("common", "cross_two", "X") if hasattr(parent, "icons") else QIcon()
+
+        self.save_btn = QToolButton()
+        self.save_btn.setObjectName("FTCPopupIconButton")
+        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_btn.setIcon(check_icon)
+        self.save_btn.setIconSize(QSize(15, 15))
+        self.save_btn.setFixedSize(34, 34)
+        self.save_btn.clicked.connect(self._save_and_accept)
+        header.addWidget(self.save_btn)
+
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("FTCPopupIconButton")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setIcon(close_icon)
+        self.close_btn.setIconSize(QSize(15, 15))
+        self.close_btn.setFixedSize(34, 34)
+        self.close_btn.clicked.connect(self.reject)
+        header.addWidget(self.close_btn)
+        body.addLayout(header)
+
+        subtitle = QLabel("These change the current run. FTC uses the model already selected in Settings.")
+        subtitle.setObjectName("SmallMeta")
+        subtitle.setWordWrap(True)
+        body.addWidget(subtitle)
+
+        model_shell = QFrame()
+        model_shell.setObjectName("FTCPopupValueShell")
+        model_layout = QVBoxLayout(model_shell)
+        model_layout.setContentsMargins(14, 12, 14, 12)
+        model_layout.setSpacing(4)
+        model_title = QLabel("Model")
+        model_title.setObjectName("SmallMeta")
+        model_value = QLabel(model_label)
+        model_value.setObjectName("FTCPopupValueText")
+        model_value.setWordWrap(True)
+        model_layout.addWidget(model_title)
+        model_layout.addWidget(model_value)
+        body.addWidget(model_shell)
+
+        fields_layout = QVBoxLayout()
+        fields_layout.setContentsMargins(0, 0, 0, 0)
+        fields_layout.setSpacing(10)
+
+        mode_title = QLabel("Mode")
+        mode_title.setObjectName("SmallMeta")
+        fields_layout.addWidget(mode_title)
+
+        mode_shell = QFrame()
+        mode_shell.setObjectName("FTCPopupFieldShell")
+        mode_shell_layout = QHBoxLayout(mode_shell)
+        mode_shell_layout.setContentsMargins(8, 8, 8, 8)
+        mode_shell_layout.setSpacing(8)
+        self._mode_buttons: dict[str, AnimatedButton] = {}
+        for label, value in (("Standard", "standard"), ("Force", "force")):
+            button = AnimatedButton(label)
+            button.setObjectName("FTCPopupChoiceButton")
+            button.setCheckable(True)
+            button.setProperty("disablePressMotion", True)
+            button.set_motion_scale_range(0.0)
+            button.clicked.connect(lambda _checked=False, selected=value: self._set_mode_value(selected))
+            mode_shell_layout.addWidget(button, 1)
+            self._mode_buttons[value] = button
+        fields_layout.addWidget(mode_shell)
+
+        question_title = QLabel("Questions")
+        question_title.setObjectName("SmallMeta")
+        fields_layout.addWidget(question_title)
+
+        question_shell = QFrame()
+        question_shell.setObjectName("FTCPopupFieldShell")
+        question_shell_layout = QHBoxLayout(question_shell)
+        question_shell_layout.setContentsMargins(8, 8, 8, 8)
+        question_shell_layout.setSpacing(10)
+
+        self.question_minus_btn = AnimatedButton("-")
+        self.question_minus_btn.setObjectName("FTCPopupStepButton")
+        self.question_minus_btn.setProperty("disablePressMotion", True)
+        self.question_minus_btn.set_motion_scale_range(0.0)
+        self.question_minus_btn.clicked.connect(lambda: self._step_question_value(-1))
+        question_shell_layout.addWidget(self.question_minus_btn, 0)
+
+        self.question_value_label = QLabel()
+        self.question_value_label.setObjectName("FTCPopupQuestionValue")
+        self.question_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        question_shell_layout.addWidget(self.question_value_label, 1)
+
+        self.question_plus_btn = AnimatedButton("+")
+        self.question_plus_btn.setObjectName("FTCPopupStepButton")
+        self.question_plus_btn.setProperty("disablePressMotion", True)
+        self.question_plus_btn.set_motion_scale_range(0.0)
+        self.question_plus_btn.clicked.connect(lambda: self._step_question_value(1))
+        question_shell_layout.addWidget(self.question_plus_btn, 0)
+        fields_layout.addWidget(question_shell)
+        body.addLayout(fields_layout)
+
+        self._sync_question_bounds(initial_value=question_value)
+        self._refresh_mode_buttons()
+        self._refresh_question_controls()
+        self.setMinimumWidth(500)
+
+    def current_mode(self) -> str:
+        return str(self._mode_value or "standard")
+
+    def current_question_count(self) -> int:
+        return int(self._question_value)
+
+    def exec_with_backdrop(self) -> int:
+        self._apply_backdrop()
+        try:
+            self._resize_for_available_space()
+            self._center_on_parent()
+            return self.exec()
+        finally:
+            self._clear_backdrop()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self.card.geometry().contains(event.position().toPoint()):
+            self.reject()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _sync_question_bounds(self, _index: int | None = None, *, initial_value: int | None = None) -> None:
+        mode = self.current_mode()
+        fallback = max(1, int(self._default_counts.get(mode, 4)))
+        max_value = max(1, int(self._popup_question_limits.get(mode, fallback)))
+        if initial_value is not None:
+            target_value = max(1, min(int(initial_value), max_value))
+            self._question_value = target_value
+        else:
+            target_value = min(fallback, max_value)
+            self._question_value = max(1, min(int(self._question_value), max_value))
+        if initial_value is None:
+            self._question_value = target_value
+        self._question_value = max(1, min(int(self._question_value), max_value))
+        self._refresh_question_controls()
+
+    def _current_question_limit(self) -> int:
+        mode = self.current_mode()
+        fallback = max(1, int(self._default_counts.get(mode, 4)))
+        return max(1, int(self._popup_question_limits.get(mode, fallback)))
+
+    def _set_mode_value(self, mode: str) -> None:
+        if mode == self._mode_value:
+            return
+        self._mode_value = mode
+        self._refresh_mode_buttons()
+        self._sync_question_bounds()
+
+    def _refresh_mode_buttons(self) -> None:
+        for mode, button in self._mode_buttons.items():
+            checked = mode == self._mode_value
+            button.setChecked(checked)
+            button.setProperty("selected", checked)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _step_question_value(self, delta: int) -> None:
+        limit = self._current_question_limit()
+        self._question_value = max(1, min(limit, int(self._question_value) + int(delta)))
+        self._refresh_question_controls()
+
+    def _refresh_question_controls(self) -> None:
+        limit = self._current_question_limit()
+        self.question_value_label.setText(str(self._question_value))
+        self.question_minus_btn.setEnabled(self._question_value > 1)
+        self.question_plus_btn.setEnabled(self._question_value < limit)
+
+    def _save_and_accept(self) -> None:
+        self.done(QDialog.DialogCode.Accepted)
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _resize_for_available_space(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        card_layout = self.card.layout()
+        if card_layout is not None:
+            card_layout.activate()
+        reference = self.parentWidget()
+        screen = reference.screen() if reference is not None else self.screen()
+        content_hint = self.sizeHint()
+        if screen is None:
+            self.resize(max(self.minimumWidth(), content_hint.width()), content_hint.height())
+            return
+        available = screen.availableGeometry()
+        target_width = min(max(self.minimumWidth(), content_hint.width()), max(420, available.width() - 96))
+        target_height = min(content_hint.height(), max(360, available.height() - 120))
+        self.resize(target_width, target_height)
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._previous_effect = None
 
 
 class ElidedLabel(QLabel):
@@ -371,10 +1030,15 @@ class CreateTab(QWidget):
         self.ftc_worker: FilesToCardsWorker | None = None
         self.ftc_run: FilesToCardsRunState | None = None
         self.selected_source_files: list[SelectedSourceFile] = []
+        self._ftc_stashed_source_files: list[SelectedSourceFile] = []
         self.use_ocr = True
         self._ftc_default_instruction = ""
         self._ftc_defaults = self._load_ftc_defaults()
         self._last_ftc_mode = str(self._ftc_defaults.get("default_mode", "standard"))
+        self._ftc_question_preferences = {
+            "standard": int(self._ftc_defaults.get("question_count_standard", 4)),
+            "force": int(self._ftc_defaults.get("question_count_force", 8)),
+        }
 
         self._build_ui()
         self.refresh_ftc_defaults(force=True)
@@ -393,6 +1057,13 @@ class CreateTab(QWidget):
         frame.setObjectName("Surface")
         polish_surface(frame)
         return frame
+
+    def _apply_soft_shadow(self, widget: QWidget, *, blur: int = 26, alpha: int = 28, y_offset: int = 8) -> None:
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, y_offset)
+        shadow.setColor(QColor(15, 37, 57, alpha))
+        widget.setGraphicsEffect(shadow)
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -428,72 +1099,22 @@ class CreateTab(QWidget):
 
         files_frame = QFrame()
         files_frame.setObjectName("QueueRow")
-        files_layout = QHBoxLayout(files_frame)
+        files_layout = QVBoxLayout(files_frame)
         files_layout.setContentsMargins(18, 18, 18, 18)
         files_layout.setSpacing(18)
-        self._files_layout = files_layout
 
-        files_left = QVBoxLayout()
-        files_left.setContentsMargins(0, 0, 0, 0)
-        files_left.setSpacing(16)
-
-        files_right = QVBoxLayout()
-        files_right.setContentsMargins(0, 0, 0, 0)
-        files_right.setSpacing(12)
-
-        files_title_row = QHBoxLayout()
-        files_title_row.setSpacing(10)
-        files_beta = QLabel("BETA")
-        files_beta.setObjectName("FTCBetaBadge")
+        files_title_row = QVBoxLayout()
+        files_title_row.setSpacing(6)
         files_title = QLabel("Files To Cards")
         files_title.setObjectName("SectionTitle")
-        files_title_row.addWidget(files_beta, 0, Qt.AlignmentFlag.AlignLeft)
-        files_title_row.addWidget(files_title, 0, Qt.AlignmentFlag.AlignLeft)
-        files_title_row.addStretch(1)
-        files_subtitle = QLabel("Drop notes or import files to turn them into queued questions.")
+        files_subtitle = QLabel("Turn notes, slides, or images into queued questions with a cleaner FTC workflow.")
         files_subtitle.setObjectName("SectionText")
         files_subtitle.setWordWrap(True)
-        files_left.addLayout(files_title_row)
-        files_left.addWidget(files_subtitle)
+        files_title_row.addWidget(files_title, 0, Qt.AlignmentFlag.AlignLeft)
+        files_title_row.addWidget(files_subtitle)
+        files_layout.addLayout(files_title_row)
 
-        self.drop_zone = FileDropZone()
-        self.drop_zone.files_dropped.connect(self._import_files)
-        files_left.addWidget(self.drop_zone)
-
-        controls_surface = QFrame()
-        controls_surface.setObjectName("FTCControlsSurface")
-        controls_layout = QVBoxLayout(controls_surface)
-        controls_layout.setContentsMargins(14, 14, 14, 14)
-        controls_layout.setSpacing(12)
-
-        labels_row = QHBoxLayout()
-        labels_row.setSpacing(12)
-
-        import_spacer = QLabel("")
-        import_spacer.setMinimumWidth(210)
-        labels_row.addWidget(import_spacer)
-        self._labels_import_spacer = import_spacer
-
-        mode_label = QLabel("Mode")
-        mode_label.setObjectName("SmallMeta")
-        labels_row.addWidget(mode_label, 2)
-
-        question_label = QLabel("Questions")
-        question_label.setObjectName("SmallMeta")
-        labels_row.addWidget(question_label, 1)
-
-        action_spacer = QLabel("")
-        labels_row.addWidget(action_spacer, 4)
-        controls_layout.addLayout(labels_row)
-
-        controls_row = QHBoxLayout()
-        controls_row.setSpacing(12)
-        self.import_btn = AnimatedButton("Import files")
-        self.import_btn.clicked.connect(self._browse_files)
-        self.import_btn.setMinimumWidth(210)
-        controls_row.addWidget(self.import_btn, 2)
-
-        self.mode_combo = AnimatedComboBox()
+        self.mode_combo = AnimatedComboBox(self)
         self.mode_combo.addItem("Standard", "standard")
         self.mode_combo.addItem("Force", "force")
         self.mode_combo.setItemData(
@@ -502,81 +1123,132 @@ class CreateTab(QWidget):
             Qt.ItemDataRole.ToolTipRole,
         )
         self.mode_combo.currentIndexChanged.connect(self._refresh_files_to_cards_state)
-        self.mode_combo.setMinimumWidth(180)
-        controls_row.addWidget(self.mode_combo, 2)
+        self.mode_combo.hide()
 
-        self.question_count = QSpinBox()
+        self.question_count = QSpinBox(self)
         self.question_count.setRange(0, 0)
         self.question_count.setEnabled(False)
-        self.question_count.setMinimumWidth(120)
-        controls_row.addWidget(self.question_count, 1)
+        self.question_count.valueChanged.connect(lambda _value: self._sync_ftc_summary())
+        self.question_count.hide()
+
+        top_host = QFrame()
+        top_host.setObjectName("FTCSharedCanvas")
+        polish_surface(top_host)
+        self._apply_soft_shadow(top_host, blur=30, alpha=22, y_offset=8)
+        self._ftc_top_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, top_host)
+        self._ftc_top_layout.setContentsMargins(18, 18, 18, 18)
+        self._ftc_top_layout.setSpacing(18)
+
+        summary_surface = QFrame()
+        summary_surface.setObjectName("FTCInfoSurface")
+        polish_surface(summary_surface)
+        summary_layout = QVBoxLayout(summary_surface)
+        summary_layout.setContentsMargins(18, 18, 18, 18)
+        summary_layout.setSpacing(14)
+
+        summary_meta = QLabel("These are the live FTC controls for this run.")
+        summary_meta.setObjectName("SmallMeta")
+        summary_meta.setWordWrap(True)
+        summary_layout.addWidget(summary_meta)
+
+        overview_card = QFrame()
+        overview_card.setObjectName("FTCControlsSurface")
+        polish_surface(overview_card)
+        self._apply_soft_shadow(overview_card, blur=22, alpha=18, y_offset=5)
+        overview_layout = QHBoxLayout(overview_card)
+        overview_layout.setContentsMargins(18, 14, 18, 14)
+        overview_layout.setSpacing(18)
+
+        self.ftc_mode_value = QLabel()
+        self.ftc_mode_value.setObjectName("FTCStatValue")
+        self.ftc_mode_value.setTextFormat(Qt.TextFormat.RichText)
+        self.ftc_mode_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ftc_mode_value.setMinimumHeight(32)
+
+        self.ftc_questions_value = QLabel()
+        self.ftc_questions_value.setObjectName("FTCStatValue")
+        self.ftc_questions_value.setTextFormat(Qt.TextFormat.RichText)
+        self.ftc_questions_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ftc_questions_value.setMinimumHeight(32)
+
+        overview_divider = QFrame()
+        overview_divider.setObjectName("FTCInnerDivider")
+        overview_divider.setFixedWidth(1)
+        overview_divider.setFixedHeight(56)
+
+        overview_layout.addWidget(self.ftc_mode_value, 1)
+        overview_layout.addWidget(overview_divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        overview_layout.addWidget(self.ftc_questions_value, 1)
+        summary_layout.addWidget(overview_card)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+
+        self.ftc_menu_btn = QToolButton()
+        self.ftc_menu_btn.setObjectName("FTCMenuButton")
+        self.ftc_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ftc_menu_btn.setIcon(self.icons.icon("common", "menu", "M"))
+        self.ftc_menu_btn.setIconSize(QSize(18, 18))
+        self.ftc_menu_btn.clicked.connect(self._open_ftc_controls_dialog)
+        action_row.addWidget(self.ftc_menu_btn, 0)
 
         self.generate_btn = AnimatedButton("Generate")
-        self.generate_btn.setObjectName("PrimaryButton")
+        self.generate_btn.setObjectName("FTCGenerateButton")
         self.generate_btn.setProperty("skipClickSfx", True)
-        self.generate_btn.clicked.connect(self._start_files_to_cards)
+        self.generate_btn.setProperty("disablePressMotion", True)
+        self.generate_btn.set_motion_scale_range(0.0)
+        self.generate_btn.clicked.connect(self._on_ftc_action_pressed)
         self.generate_btn.setEnabled(False)
-        self.generate_btn.setMinimumWidth(180)
-        controls_row.addWidget(self.generate_btn, 2)
+        action_row.addWidget(self.generate_btn, 1)
+        summary_layout.addLayout(action_row)
+        summary_layout.addStretch(1)
 
-        self.stop_btn = AnimatedButton("Stop")
-        self.stop_btn.clicked.connect(self._stop_files_to_cards)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setMinimumWidth(140)
-        controls_row.addWidget(self.stop_btn, 2)
-        controls_layout.addLayout(controls_row)
-        files_left.addWidget(controls_surface)
+        self.upload_gallery = FTCUploadGallery(self.icons)
+        polish_surface(self.upload_gallery)
+        self.upload_gallery.files_dropped.connect(self._import_files)
+        self.upload_gallery.browse_requested.connect(self._browse_files)
+        self.upload_gallery.preview_requested.connect(self._preview_source_file)
+        self.upload_gallery.remove_requested.connect(self._remove_source_file)
+
+        self._ftc_top_layout.addWidget(summary_surface, 1)
+        self.ftc_split_line = QFrame()
+        self.ftc_split_line.setObjectName("FTCStraightDivider")
+        self._ftc_top_layout.addWidget(self.ftc_split_line, 0)
+        self._ftc_top_layout.addWidget(self.upload_gallery, 1)
+        files_layout.addWidget(top_host)
+
+        instructions_surface = QFrame()
+        instructions_surface.setObjectName("FTCInstructionsSurface")
+        polish_surface(instructions_surface)
+        self._apply_soft_shadow(instructions_surface, blur=24, alpha=20, y_offset=7)
+        instructions_layout = QVBoxLayout(instructions_surface)
+        instructions_layout.setContentsMargins(18, 18, 18, 18)
+        instructions_layout.setSpacing(12)
 
         instructions_head = QHBoxLayout()
         instructions_head.setSpacing(10)
         instructions_title = QLabel("Custom instructions")
         instructions_title.setObjectName("SectionTitle")
-        instructions_hint = QLabel("Optional tone or teacher-style guidance")
-        instructions_hint.setObjectName("SmallMeta")
+        instructions_title.setStyleSheet("color: #728292;")
         instructions_head.addWidget(instructions_title)
-        instructions_head.addWidget(instructions_hint)
         instructions_head.addStretch(1)
         self.instructions_count = QLabel("0 / 180")
         self.instructions_count.setObjectName("SmallMeta")
         instructions_head.addWidget(self.instructions_count)
-        files_left.addLayout(instructions_head)
+        instructions_layout.addLayout(instructions_head)
 
-        self.instructions_edit = LimitedTextEdit(180)
-        self.instructions_edit.setPlaceholderText("Optional instructions")
-        self.instructions_edit.setMinimumHeight(96)
-        self.instructions_edit.setMaximumHeight(118)
+        instructions_hint = QLabel("The app's FTC instruction stays protected. Add anything extra below it.")
+        instructions_hint.setObjectName("SmallMeta")
+        instructions_hint.setWordWrap(True)
+        instructions_layout.addWidget(instructions_hint)
+
+        self.instructions_edit = ProtectedInstructionEdit(180)
+        self.instructions_edit.setMinimumHeight(132)
+        self.instructions_edit.setMaximumHeight(180)
         self.instructions_edit.limited_text_changed.connect(self._on_instructions_changed)
-        files_left.addWidget(self.instructions_edit)
-
-        files_sidebar = QFrame()
-        files_sidebar.setObjectName("FTCControlsSurface")
-        files_sidebar_layout = QVBoxLayout(files_sidebar)
-        files_sidebar_layout.setContentsMargins(14, 14, 14, 14)
-        files_sidebar_layout.setSpacing(12)
-
-        sidebar_title = QLabel("Selected files")
-        sidebar_title.setObjectName("SectionTitle")
-        files_sidebar_layout.addWidget(sidebar_title)
-
-        self.files_summary = QLabel("No files selected yet.")
-        self.files_summary.setObjectName("SmallMeta")
-        self.files_summary.setWordWrap(True)
-        files_sidebar_layout.addWidget(self.files_summary)
-
-        self.selected_files_list = QListWidget()
-        self.selected_files_list.setObjectName("FTCFileList")
-        self.selected_files_list.setMinimumWidth(320)
-        self.selected_files_list.setMaximumWidth(360)
-        self.selected_files_list.setSpacing(8)
-        self.selected_files_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        self.selected_files_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.selected_files_list.hide()
-        files_sidebar_layout.addWidget(self.selected_files_list, 1)
-
-        files_right.addWidget(files_sidebar, 1)
-
-        files_layout.addLayout(files_left, 3)
-        files_layout.addLayout(files_right, 1)
+        instructions_layout.addWidget(self.instructions_edit)
+        files_layout.addWidget(instructions_surface)
 
         editor_layout.addWidget(files_frame)
         editor_layout.addStretch(1)
@@ -608,43 +1280,25 @@ class CreateTab(QWidget):
         QTimer.singleShot(0, self._apply_responsive_ftc_layout)
 
     def _apply_responsive_ftc_layout(self) -> None:
-        controls_parent = self.import_btn.parentWidget()
-        controls_width = controls_parent.width() if controls_parent is not None else self.width()
-
-        compact = controls_width < 860
-        stacked_sidebar = controls_width < 720
-
-        if stacked_sidebar:
-            self._files_layout.setDirection(QBoxLayout.Direction.TopToBottom)
-            self._files_layout.setStretch(0, 1)
-            self._files_layout.setStretch(1, 0)
-            self.selected_files_list.setMinimumWidth(0)
-            self.selected_files_list.setMaximumWidth(16777215)
-        else:
-            self._files_layout.setDirection(QBoxLayout.Direction.LeftToRight)
-            self._files_layout.setStretch(0, 3)
-            self._files_layout.setStretch(1, 1)
-            if compact:
-                self.selected_files_list.setMinimumWidth(220)
-                self.selected_files_list.setMaximumWidth(280)
-            else:
-                self.selected_files_list.setMinimumWidth(320)
-                self.selected_files_list.setMaximumWidth(360)
+        controls_width = self.width()
+        compact = controls_width < 980
+        ultra_compact = controls_width < 760
 
         if compact:
-            self._labels_import_spacer.setMinimumWidth(140)
-            self.import_btn.setMinimumWidth(150)
-            self.mode_combo.setMinimumWidth(128)
-            self.question_count.setMinimumWidth(90)
-            self.generate_btn.setMinimumWidth(130)
-            self.stop_btn.setMinimumWidth(112)
+            self._ftc_top_layout.setDirection(QBoxLayout.Direction.TopToBottom)
+            self.ftc_split_line.setFixedHeight(1)
+            self.ftc_split_line.setMinimumWidth(0)
+            self.ftc_split_line.setMaximumWidth(16777215)
         else:
-            self._labels_import_spacer.setMinimumWidth(210)
-            self.import_btn.setMinimumWidth(210)
-            self.mode_combo.setMinimumWidth(180)
-            self.question_count.setMinimumWidth(120)
-            self.generate_btn.setMinimumWidth(180)
-            self.stop_btn.setMinimumWidth(140)
+            self._ftc_top_layout.setDirection(QBoxLayout.Direction.LeftToRight)
+            self.ftc_split_line.setFixedWidth(1)
+            self.ftc_split_line.setMinimumHeight(0)
+            self.ftc_split_line.setMaximumHeight(16777215)
+
+        self.ftc_menu_btn.setFixedSize(48 if ultra_compact else 52, 48 if ultra_compact else 52)
+        self.generate_btn.setMinimumHeight(48 if ultra_compact else 52)
+        self.instructions_edit.setMinimumHeight(118 if ultra_compact else 132)
+        self.instructions_edit.setMaximumHeight(168 if ultra_compact else 180)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -688,6 +1342,8 @@ class CreateTab(QWidget):
     def refresh_ftc_defaults(self, *, force: bool = False) -> None:
         self._ftc_defaults = self._load_ftc_defaults()
         self.use_ocr = bool(self._ftc_defaults.get("use_ocr", True))
+        self._ftc_question_preferences.setdefault("standard", int(self._ftc_defaults.get("question_count_standard", 4)))
+        self._ftc_question_preferences.setdefault("force", int(self._ftc_defaults.get("question_count_force", 8)))
         default_mode = str(self._ftc_defaults.get("default_mode", "standard"))
         if force or (not self.selected_source_files and not self.ftc_run):
             mode_index = self.mode_combo.findData(default_mode)
@@ -697,9 +1353,7 @@ class CreateTab(QWidget):
         default_instruction = self._build_ftc_default_instruction(
             str(self._ftc_defaults.get("difficulty", "normal")).strip().lower()
         )
-        existing = self.instructions_edit.toPlainText().strip()
-        if force or not existing or existing == self._ftc_default_instruction:
-            self.instructions_edit.setPlainText(default_instruction)
+        self.instructions_edit.set_locked_prefix(default_instruction)
         self._ftc_default_instruction = default_instruction
         self._refresh_files_to_cards_state()
 
@@ -752,6 +1406,103 @@ class CreateTab(QWidget):
         if name == "response_to_user":
             self._add_activity(kind="status", title="Autofill", text=str(value))
 
+    def _question_cap_for_mode(self, mode: str, total_units: int | None = None) -> int:
+        units = sum(source.unit_count for source in self.selected_source_files) if total_units is None else total_units
+        return files_to_cards_question_cap(units, mode)
+
+    def _default_question_count_for_mode(self, mode: str) -> int:
+        if mode == "force":
+            return int(self._ftc_defaults.get("question_count_force", 8))
+        return int(self._ftc_defaults.get("question_count_standard", 4))
+
+    def _preferred_question_count_for_mode(self, mode: str) -> int:
+        fallback = self._default_question_count_for_mode(mode)
+        return max(1, int(self._ftc_question_preferences.get(mode, fallback)))
+
+    def _ftc_hint_text(self, family: str | None) -> str:
+        if family == "pdf":
+            return "PDF mode is active. Additional imports stay PDF-only."
+        if family == "pptx":
+            return "PPTX mode is active. Additional imports stay PPTX-only."
+        if family == "images":
+            return "Image mode is active. You can mix PNG, JPG, JPEG, WEBP, BMP, and TIFF."
+        return "Supports images, PDF, and PPTX."
+
+    def _sync_ftc_summary(self) -> None:
+        mode_text = str(self.mode_combo.currentText() or "Standard").strip() or "Standard"
+        self.ftc_mode_value.setText(
+            f'<span style="font-weight:400; color:#657688;">Mode:</span> <span style="font-weight:800; color:#122131;">{mode_text}</span>'
+        )
+        if self.selected_source_files:
+            question_value = int(self.question_count.value() or self._preferred_question_count_for_mode(self._current_mode()))
+        else:
+            question_value = self._preferred_question_count_for_mode(self._current_mode())
+        self.ftc_questions_value.setText(
+            f'<span style="font-weight:400; color:#657688;">Questions:</span> <span style="font-weight:800; color:#122131;">{question_value}</span>'
+        )
+
+    def _open_ftc_controls_dialog(self) -> None:
+        if self.ftc_run is not None:
+            return
+        total_units = sum(source.unit_count for source in self.selected_source_files)
+        parent_window = self.window()
+        blur_target = getattr(parent_window, "_app_shell", parent_window)
+        model_spec = self._active_text_llm_spec()
+        popup = FTCControlsDialog(
+            parent=parent_window if isinstance(parent_window, QWidget) else self,
+            blur_target=blur_target if isinstance(blur_target, QWidget) else self,
+            current_mode=self._current_mode(),
+            question_value=int(self.question_count.value() or self._default_question_count_for_mode(self._current_mode())),
+            question_caps={
+                "standard": self._question_cap_for_mode("standard", total_units),
+                "force": self._question_cap_for_mode("force", total_units),
+            },
+            default_counts={
+                "standard": self._default_question_count_for_mode("standard"),
+                "force": self._default_question_count_for_mode("force"),
+            },
+            model_label=model_spec.display_name,
+        )
+        result = popup.exec_with_backdrop()
+        if result == QDialog.DialogCode.Accepted:
+            self._on_ftc_popup_mode_changed(popup.current_mode())
+            self._on_ftc_popup_question_changed(popup.current_question_count())
+
+    def _on_ftc_popup_mode_changed(self, mode: str) -> None:
+        index = self.mode_combo.findData(mode)
+        if index >= 0:
+            self.mode_combo.setCurrentIndex(index)
+
+    def _on_ftc_popup_question_changed(self, value: int) -> None:
+        mode = self._current_mode()
+        self._ftc_question_preferences[mode] = int(value)
+        self.question_count.blockSignals(True)
+        if self.selected_source_files:
+            self.question_count.setValue(int(value))
+        else:
+            self.question_count.setMinimum(int(value))
+            self.question_count.setMaximum(int(value))
+            self.question_count.setValue(int(value))
+        self.question_count.blockSignals(False)
+        self._sync_ftc_summary()
+
+    def _on_ftc_action_pressed(self) -> None:
+        if self.ftc_run is None:
+            self._start_files_to_cards()
+            return
+        self._stop_files_to_cards()
+
+    def _stash_and_clear_ftc_sources(self) -> None:
+        if self.selected_source_files:
+            self._ftc_stashed_source_files = list(self.selected_source_files)
+            self.selected_source_files = []
+
+    def _restore_stashed_ftc_sources(self) -> None:
+        if not self._ftc_stashed_source_files:
+            return
+        self.selected_source_files = list(self._ftc_stashed_source_files)
+        self._ftc_stashed_source_files = []
+
     def _on_autofill_done(self, payload: dict) -> None:
         if self.active_job is None:
             return
@@ -803,6 +1554,8 @@ class CreateTab(QWidget):
         self._process_next_question()
 
     def _browse_files(self) -> None:
+        if self.ftc_run is not None:
+            return
         paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
             "Import files",
@@ -877,29 +1630,12 @@ class CreateTab(QWidget):
                 return
 
         self.selected_source_files = staged
-        self.selected_files_list.clear()
-        for source in self.selected_source_files:
-            self._append_source_row(source)
         self._refresh_files_to_cards_state()
-
-    def _append_source_row(self, source: SelectedSourceFile) -> None:
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, str(source.path))
-        row = SelectedFileRow(source)
-        row.remove_requested.connect(self._remove_source_file)
-        row.preview_requested.connect(self._preview_source_file)
-        item.setSizeHint(QSize(0, row.sizeHint().height()))
-        self.selected_files_list.addItem(item)
-        self.selected_files_list.setItemWidget(item, row)
 
     def _remove_source_file(self, path_str: str) -> None:
         if self.ftc_run is not None:
             return
         self.selected_source_files = [source for source in self.selected_source_files if str(source.path) != path_str]
-        for index in range(self.selected_files_list.count() - 1, -1, -1):
-            item = self.selected_files_list.item(index)
-            if item.data(Qt.ItemDataRole.UserRole) == path_str:
-                self.selected_files_list.takeItem(index)
         self._refresh_files_to_cards_state()
 
     def _refresh_files_to_cards_state(self) -> None:
@@ -910,29 +1646,15 @@ class CreateTab(QWidget):
         question_cap = files_to_cards_question_cap(total_units, mode)
         locked = self.ftc_run is not None
 
-        if family == "pdf":
-            self.drop_zone.set_subtitle("PDF mode is active. Additional imports stay PDF-only.")
-        elif family == "pptx":
-            self.drop_zone.set_subtitle("PPTX mode is active. Additional imports stay PPTX-only.")
-        elif family == "images":
-            self.drop_zone.set_subtitle("Image mode is active. You can mix PNG, JPG, JPEG, WEBP, BMP, and TIFF.")
-        else:
-            self.drop_zone.set_subtitle("Supports images, PDF, and PPTX.")
-
         if total_units == 0:
-            self.files_summary.setText("No files selected yet.")
-            self.selected_files_list.hide()
+            summary_text = "No files selected yet."
         else:
-            self.files_summary.setText(
-                f"Selected units: {total_units} / {limit}  |  Max questions now: {question_cap}"
-            )
-            self.selected_files_list.show()
+            summary_text = f"Selected units: {total_units} / {limit}  |  Max questions now: {question_cap}"
+        self.upload_gallery.set_summary(summary_text, self._ftc_hint_text(family))
+        self.upload_gallery.set_sources(self.selected_source_files)
 
         self.question_count.setEnabled(total_units > 0 and not locked)
-        if mode == "force":
-            default_question_count = int(self._ftc_defaults.get("question_count_force", 8))
-        else:
-            default_question_count = int(self._ftc_defaults.get("question_count_standard", 4))
+        default_question_count = self._preferred_question_count_for_mode(mode)
         if question_cap:
             self.question_count.setMaximum(max(question_cap, 0))
             self.question_count.setMinimum(1)
@@ -947,19 +1669,20 @@ class CreateTab(QWidget):
         self._last_ftc_mode = mode
 
         can_generate = total_units > 0 and total_units <= limit and question_cap > 0 and not locked
-        self.generate_btn.setEnabled(can_generate)
-        self.import_btn.setEnabled(not locked)
+        self.generate_btn.setEnabled(locked or can_generate)
+        self.generate_btn.setText("Stop" if locked else "Generate")
+        target_name = "PrimaryButton" if locked else "FTCGenerateButton"
+        if self.generate_btn.objectName() != target_name:
+            self.generate_btn.setObjectName(target_name)
+            self.generate_btn.style().unpolish(self.generate_btn)
+            self.generate_btn.style().polish(self.generate_btn)
+            self.generate_btn.update()
         self.mode_combo.setEnabled(not locked)
-        self.drop_zone.set_locked(locked)
         self.instructions_edit.setReadOnly(locked)
         self.instructions_edit.setEnabled(not locked)
-        self.selected_files_list.setEnabled(not locked)
-        self.stop_btn.setEnabled(locked)
-
-        for index in range(self.selected_files_list.count()):
-            row = self.selected_files_list.itemWidget(self.selected_files_list.item(index))
-            if isinstance(row, SelectedFileRow):
-                row.set_locked(locked)
+        self.upload_gallery.set_locked(locked)
+        self.ftc_menu_btn.setEnabled(not locked)
+        self._sync_ftc_summary()
 
     def _on_instructions_changed(self, text: str) -> None:
         self.instructions_count.setText(f"{len(text)} / 180")
@@ -1004,26 +1727,28 @@ class CreateTab(QWidget):
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Files To Cards"):
             return
 
-        total_units = sum(source.unit_count for source in self.selected_source_files)
-        limit = files_to_cards_limit(self._current_mode())
+        active_sources = list(self.selected_source_files)
+        active_mode = self._current_mode()
+        active_family = self._current_source_family() or "images"
+        total_units = sum(source.unit_count for source in active_sources)
+        limit = files_to_cards_limit(active_mode)
         if total_units <= 0 or total_units > limit:
             return
 
         self._play_sound("click")
         run_id = str(uuid.uuid4())
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
-        self._refresh_files_to_cards_state()
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
         self.use_ocr = bool(self._load_ftc_defaults().get("use_ocr", True))
         background_workers = max(1, min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)))
 
         job = FilesToCardsJob(
             run_id=run_id,
-            mode=self._current_mode(),
-            source_family=self._current_source_family() or "images",
-            file_paths=[source.path for source in self.selected_source_files],
+            mode=active_mode,
+            source_family=active_family,
+            file_paths=[source.path for source in active_sources],
             requested_questions=self.question_count.value(),
-            custom_instructions=self.instructions_edit.toPlainText().strip(),
+            custom_instructions=self.instructions_edit.combined_text().strip(),
             use_ocr=self.use_ocr,
             background_workers=background_workers,
             text_model_tag=model_spec.primary_tag,
@@ -1040,6 +1765,8 @@ class CreateTab(QWidget):
         self.ftc_worker.cancelled.connect(self._handle_ftc_cancelled)
         self.ftc_worker.failed.connect(self._handle_ftc_failed)
         self.ftc_worker.start()
+        self._stash_and_clear_ftc_sources()
+        self._refresh_files_to_cards_state()
 
     def _stop_files_to_cards(self) -> None:
         if self.ftc_run is None:
@@ -1139,6 +1866,7 @@ class CreateTab(QWidget):
         self._remove_pending_jobs_for_run(run_id)
         self._remove_queue_items_for_run(run_id)
         self._cleanup_run_runtime(run_id)
+        self._restore_stashed_ftc_sources()
         self.ftc_run = None
         self._refresh_files_to_cards_state()
 
@@ -1159,9 +1887,13 @@ class CreateTab(QWidget):
             self.card_saved.emit()
             self._remove_queue_items_for_run(run_id)
             self._add_activity(kind="status", title="Files To Cards", text="Files To Cards stopped. Generated cards were removed.")
+            self._restore_stashed_ftc_sources()
         elif self.ftc_run.phase == "autofill":
             self._add_activity(kind="status", title="Files To Cards", text="Files To Cards finished successfully.")
             self.ftc_completed.emit(self._dominant_run_subject(run_id))
+            self._ftc_stashed_source_files = []
+        else:
+            self._restore_stashed_ftc_sources()
 
         self._cleanup_run_runtime(run_id)
         self.ftc_run = None

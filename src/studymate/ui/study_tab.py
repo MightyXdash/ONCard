@@ -1556,6 +1556,9 @@ class AiResponseOverlay(QWidget):
             # Re-sync the document width after layout has settled so scroll range
             # is based on the actual viewport width, not an estimate.
             QTimer.singleShot(0, self._refresh_body_metrics_from_viewport)
+            # A second deferred pass catches late scrollbar visibility/layout
+            # changes that can otherwise leave the range stale and non-scrollable.
+            QTimer.singleShot(18, self._refresh_body_metrics_from_viewport)
             self._layout_overlay_elements()
             self.raise_()
         finally:
@@ -1567,10 +1570,14 @@ class AiResponseOverlay(QWidget):
         viewport = self.body.viewport().width()
         if viewport <= 0:
             return
-        text_width = self.body.document().textWidth()
-        if abs(text_width - viewport) >= 1.0:
-            self.body.document().setTextWidth(max(1, viewport))
+        bar = self.body.verticalScrollBar()
+        previous_value = bar.value() if bar is not None else 0
+        self.body.document().setTextWidth(max(1, viewport))
         self.body.document().adjustSize()
+        if bar is not None:
+            bar.setPageStep(max(1, self.body.viewport().height()))
+            bar.setSingleStep(22)
+            bar.setValue(max(0, min(previous_value, bar.maximum())))
 
     def _target_width(self) -> int:
         parent = self.parentWidget()
@@ -2060,7 +2067,7 @@ class StudyTab(QWidget):
         self.collapse_btn.setObjectName("CollapseButton")
         self.collapse_btn.setText("<")
         self.collapse_btn.setProperty("skipClickSfx", True)
-        self.collapse_btn.clicked.connect(self._toggle_sidebar)
+        self.collapse_btn.setVisible(False)
         side_head.addWidget(title)
         side_head.addStretch(1)
         side_head.addWidget(self.collapse_btn)
@@ -2538,13 +2545,11 @@ class StudyTab(QWidget):
         self._show_history_entry(self.current_history_index - 1)
 
     def _toggle_sidebar(self) -> None:
-        self._play_sound("click")
-        self.sidebar_expanded = not self.sidebar_expanded
-        width = 280 if self.sidebar_expanded else 88
-        self.sidebar.setMinimumWidth(width)
-        self.sidebar.setMaximumWidth(width)
-        self.subject_tree.setVisible(self.sidebar_expanded)
-        self.collapse_btn.setText("<" if self.sidebar_expanded else ">")
+        self.sidebar_expanded = True
+        self.sidebar.setMinimumWidth(280)
+        self.sidebar.setMaximumWidth(280)
+        self.subject_tree.setVisible(True)
+        self.collapse_btn.setText("<")
 
     def eventFilter(self, watched, event) -> bool:
         if hasattr(self, "card_scroll") and watched is self.card_scroll.viewport() and event.type() == QEvent.Resize:

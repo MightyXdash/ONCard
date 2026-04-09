@@ -24,7 +24,7 @@ from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
 from studymate.ui.startup_splash import StartupSplash
 from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog
-from studymate.ui.wizard import OnboardingWizard, ProfileMakerDialog
+from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
 from studymate.workers.install_worker import ModelInstallWorker
@@ -122,58 +122,40 @@ class SessionController:
         return "switched"
 
     def create_new_account_via_profile(self, parent=None) -> bool:
-        existing_names = {str(item.get("name", "")).strip() for item in self.account_service.list_accounts()}
-        dialog = ProfileMakerDialog(
-            self.base_paths,
-            existing_names=existing_names,
-            archive_service=self.archive_service,
-            parent=parent,
-        )
-        if dialog.exec() == 0:
-            return False
+        provisional_name = "New account"
+        suffix = 2
+        while self.account_service.name_exists(provisional_name):
+            provisional_name = f"New account {suffix}"
+            suffix += 1
 
-        profile = dialog.profile_payload()
-        name = str(profile.get("name", "")).strip()
-        if not name:
-            raise RuntimeError("Name is required.")
-        if self.account_service.name_exists(name):
-            raise RuntimeError("An account with the same name already exists.")
-
-        created = self.account_service.create_account(name=name, make_active=False)
+        created = self.account_service.create_account(name=provisional_name, make_active=False)
         created_id = str(created.get("id", ""))
         created_paths = self.account_service.account_paths(created_id)
         created_paths.ensure()
+        created_store = DataStore(created_paths)
         try:
-            if dialog.import_archive_path:
-                inspection = self.archive_service.inspect_archive(Path(dialog.import_archive_path))
-                if not inspection.valid:
-                    raise RuntimeError(inspection.error or "Import archive is invalid.")
-                imported_name = str(inspection.profile.get("name", "")).strip()
-                if imported_name and self.account_service.name_exists(imported_name, exclude_account_id=created_id):
-                    raise RuntimeError("An account with the imported name already exists.")
-                self.archive_service.import_archive_into_account(
-                    archive_path=Path(dialog.import_archive_path),
-                    paths=created_paths,
-                    overwrite=True,
-                )
-                if imported_name and imported_name != name:
-                    self.account_service.rename_account(created_id, imported_name)
-            else:
-                store = DataStore(created_paths)
-                store.save_profile(profile)
-                setup = store.load_setup()
-                source_setup = self.datastore.load_setup() if self.datastore is not None else {}
-                for key in ("ram_gb", "advanced_installation", "selected_models", "installed_models", "performance_arena", "performance"):
-                    if key in source_setup:
-                        setup[key] = source_setup[key]
-                setup["onboarding_complete"] = True
-                store.save_setup(setup)
-                if self.datastore is not None:
-                    store.save_ai_settings(self.datastore.load_ai_settings())
-                store.close()
+            wizard = OnboardingWizard(
+                created_paths,
+                created_store,
+                self.ollama,
+                self.icons,
+                archive_service=self.archive_service,
+            )
+            if wizard.exec() == 0:
+                self.account_service.delete_account(created_id)
+                return False
+
+            profile = created_store.load_profile()
+            final_name = str(profile.get("name", "")).strip() or provisional_name
+            if self.account_service.name_exists(final_name, exclude_account_id=created_id):
+                raise RuntimeError("An account with the same name already exists.")
+            if final_name != provisional_name:
+                self.account_service.rename_account(created_id, final_name)
         except Exception:
             self.account_service.delete_account(created_id)
             raise
+        finally:
+            created_store.close()
 
         self.account_service.set_active_account(created_id)
         self._reload_session()

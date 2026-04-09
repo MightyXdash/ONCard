@@ -358,7 +358,7 @@ def app_stylesheet() -> str:
         border: none;
         border-radius: 12px;
         padding: 8px 12px;
-        color: #172330;
+        color: #6f7f90;
         font-size: 13px;
         font-weight: 700;
     }
@@ -456,21 +456,21 @@ def app_stylesheet() -> str:
         font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
         font-size: 15px;
         font-weight: 700;
-        color: #141414;
+        color: #3e4955;
     }
     QTextEdit#CardQuestionDisplay {
         font-size: 13px;
-        color: #5b5b5b;
+        color: #6f7b88;
     }
     QLabel#CardTitleLabel {
         font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
         font-size: 15px;
         font-weight: 700;
-        color: #141414;
+        color: #3e4955;
     }
     QLabel#CardQuestionLabel {
         font-size: 13px;
-        color: #5b5b5b;
+        color: #6f7b88;
     }
     QLabel#CardMetaPill {
         background-color: #eff5fb;
@@ -747,6 +747,220 @@ def app_stylesheet() -> str:
         background-color: rgba(252, 253, 255, 0.98);
         border: 1px solid rgba(171, 186, 201, 0.26);
         border-radius: 18px;
+    }
+    QFrame#FTCSharedCanvas {
+        background-color: rgba(251, 253, 255, 0.99);
+        border: 1px solid rgba(173, 188, 203, 0.28);
+        border-radius: 24px;
+    }
+    QFrame#FTCStraightDivider, QFrame#FTCInnerDivider {
+        background-color: rgba(183, 197, 212, 0.72);
+        border: none;
+        border-radius: 0px;
+    }
+    QFrame#FTCInfoSurface, QFrame#FTCUploadSurface, QFrame#FTCInstructionsSurface {
+        background-color: transparent;
+        border: none;
+        border-radius: 20px;
+    }
+    QLabel#FTCStatValue {
+        font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+        font-size: 21px;
+        font-weight: 400;
+        color: #122131;
+    }
+    QToolButton#FTCMenuButton {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(170, 184, 198, 0.42);
+        border-radius: 18px;
+        padding: 0px;
+    }
+    QToolButton#FTCMenuButton:hover {
+        background-color: #f8fbfe;
+        border-color: rgba(125, 162, 196, 0.78);
+    }
+    QToolButton#FTCMenuButton:pressed {
+        background-color: #e6eef7;
+    }
+    QFrame#FTCUploadTile {
+        background-color: rgba(248, 251, 254, 0.98);
+        border: 1px dashed rgba(184, 198, 213, 0.92);
+        border-radius: 24px;
+    }
+    QFrame#FTCUploadTile[hovered="true"] {
+        background-color: #f9fcff;
+        border-color: rgba(125, 162, 196, 0.88);
+    }
+    QFrame#FTCUploadTile:disabled {
+        background-color: #f3f6f9;
+        border-color: #d8e1ea;
+    }
+    QLabel#FTCUploadTileText {
+        color: #a5b0bb;
+        font-size: 11px;
+        font-weight: 700;
+        background: transparent;
+        border: none;
+    }
+    QFrame#FTCUploadTile QLabel#FTCUploadTileText {
+        color: #7a8a99;
+    }
+    QFrame#FTCUploadTile[hovered="true"] QLabel#FTCUploadTileText {
+        color: #5f7081;
+    }
+    QFrame#FTCUploadTile:disabled QLabel#FTCUploadTileText {
+        color: #a5b0bb;
+    }
+    QLabel#FTCUploadTileIcon {
+        background: transparent;
+        border: none;
+    }
+    QScrollArea#FTCHorizontalRail {
+        background: transparent;
+        border: none;
+    }
+    QScrollArea#FTCHorizontalRail > QWidget > QWidget {
+        background: transparent;
+    }
+    QWidget#FTCRailCanvas {
+        background: transparent;
+        border: none;
+    }
+    QFrame#FTCFileCard, QFrame#FTCSkeletonCard {
+        background-color: rgba(252, 254, 255, 0.98);
+        border: 1px solid rgba(186, 199, 214, 0.48);
+        border-radius: 24px;
+    }
+    QLabel#FTCFileCardName {
+        font-size: 13px;
+        font-weight: 800;
+        color: #152535;
+    }
+    QLabel#FTCFileCardThumb {
+        background: transparent;
+        border: none;
+        padding: 0px;
+    }
+    QToolButton#FTCFileRemove {
+        background-color: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(175, 189, 204, 0.36);
+        border-radius: 11px;
+        padding: 0px;
+        min-width: 22px;
+        max-width: 22px;
+        min-height: 22px;
+        max-height: 22px;
+    }
+    QToolButton#FTCFileRemove:hover {
+        background-color: #f7fafc;
+        border-color: rgba(129, 165, 197, 0.72);
+    }
+    QFrame#FTCSkeletonThumb {
+        background-color: rgba(227, 235, 243, 0.92);
+        border: none;
+        border-radius: 16px;
+    }
+    QFrame#FTCSkeletonBar {
+        background-color: rgba(222, 231, 240, 0.92);
+        border: none;
+        border-radius: 6px;
+    }
+    QFrame#FTCSkeletonBarSoft {
+        background-color: rgba(232, 238, 245, 0.92);
+        border: none;
+        border-radius: 5px;
+    }
+    QFrame#FTCControlsPopupCard {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(220, 228, 236, 0.88);
+        border-radius: 28px;
+    }
+    QFrame#FTCPopupValueShell {
+        background-color: rgba(250, 252, 255, 0.98);
+        border: 1px solid rgba(178, 192, 207, 0.34);
+        border-radius: 18px;
+    }
+    QLabel#FTCPopupValueText {
+        font-size: 14px;
+        font-weight: 700;
+        color: #162432;
+    }
+    QFrame#FTCPopupFieldShell {
+        background-color: rgba(252, 254, 255, 0.98);
+        border: 1px solid rgba(178, 192, 207, 0.34);
+        border-radius: 18px;
+    }
+    QPushButton#FTCPopupChoiceButton {
+        min-height: 44px;
+        border-radius: 14px;
+        padding: 8px 16px;
+        font-size: 15px;
+        font-weight: 700;
+        color: #405161;
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(180, 194, 208, 0.34);
+    }
+    QPushButton#FTCPopupChoiceButton:hover {
+        background-color: #f7fbff;
+        border-color: rgba(125, 162, 196, 0.72);
+        color: #1d3145;
+    }
+    QPushButton#FTCPopupChoiceButton[selected="true"] {
+        background-color: #0f2539;
+        border-color: #0f2539;
+        color: #ffffff;
+    }
+    QPushButton#FTCPopupStepButton {
+        min-width: 44px;
+        max-width: 44px;
+        min-height: 44px;
+        max-height: 44px;
+        border-radius: 14px;
+        padding: 0px;
+        font-size: 18px;
+        font-weight: 800;
+        color: #22384d;
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(180, 194, 208, 0.34);
+    }
+    QPushButton#FTCPopupStepButton:hover {
+        background-color: #f7fbff;
+        border-color: rgba(125, 162, 196, 0.72);
+    }
+    QLabel#FTCPopupQuestionValue {
+        font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+        font-size: 22px;
+        font-weight: 800;
+        color: #132334;
+    }
+    QToolButton#FTCPopupIconButton {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 0px;
+    }
+    QToolButton#FTCPopupIconButton:hover {
+        background-color: rgba(15, 37, 57, 0.08);
+        border-color: rgba(15, 37, 57, 0.08);
+    }
+    QToolButton#FTCPopupIconButton:pressed {
+        background-color: rgba(15, 37, 57, 0.14);
+        border-color: rgba(15, 37, 57, 0.14);
+    }
+    QPushButton#FTCGenerateButton {
+        background-color: rgba(255, 255, 255, 0.98);
+        color: #5c6d7e;
+        border: 1px solid rgba(170, 184, 198, 0.42);
+    }
+    QPushButton#FTCGenerateButton:hover {
+        background-color: #0f2539;
+        color: #ffffff;
+        border-color: #0f2539;
+    }
+    QPushButton#FTCGenerateButton:disabled {
+        background-color: #f2f4f7;
+        color: #a4afbb;
+        border-color: #dfe5eb;
     }
     QWidget#FTCFileRow {
         background-color: rgba(255, 255, 255, 0.98);
