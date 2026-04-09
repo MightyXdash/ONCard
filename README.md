@@ -11,6 +11,7 @@ Elevate your learning experience.
 - RTX 2060 super
 
 ⚠️ _The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._ ⚠️
+### If you are using Linux, please download from this repo --> [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux)
 # What is ONCards?
  **ONCards — Opensource Neural-accellerated Cards**
 A fully offline study app with a virtual teacher and an algorithm which learns you as you go for better context and teach you better as you keep using the app.
