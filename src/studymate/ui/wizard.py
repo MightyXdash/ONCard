@@ -22,9 +22,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSlider,
     QSizePolicy,
-    QStyle,
-    QStyleOptionComboBox,
-    QStylePainter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -294,24 +291,21 @@ class PlaceholderComboBox(AnimatedComboBox):
     def __init__(self, placeholder: str, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._placeholder = placeholder
+        self._popup_handler = None
+        self.setPlaceholderText(placeholder)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8f9dad"))
+        self.setPalette(palette)
         self.setCurrentIndex(-1)
 
-    def paintEvent(self, event) -> None:
-        if self.currentIndex() >= 0:
-            super().paintEvent(event)
+    def set_popup_handler(self, handler) -> None:
+        self._popup_handler = handler
+
+    def showPopup(self) -> None:
+        if callable(self._popup_handler):
+            self._popup_handler()
             return
-
-        del event
-        option = QStyleOptionComboBox()
-        self.initStyleOption(option)
-        option.currentText = self._placeholder
-        option.palette.setColor(QPalette.ColorRole.ButtonText, QColor("#8f9dad"))
-        option.palette.setColor(QPalette.ColorRole.Text, QColor("#8f9dad"))
-        option.state = option.state & ~QStyle.StateFlag.State_HasFocus
-
-        painter = QStylePainter(self)
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
-        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+        super().showPopup()
 
 
 class PrefixedHobbyLineEdit(AnimatedLineEdit):
@@ -549,6 +543,172 @@ class StartupPopupDialog(QDialog):
         self._previous_effect = None
 
 
+class GradePickerDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        anchor: QWidget,
+        options: list[str],
+        current_value: str = "",
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._choice = ""
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._anchor = anchor
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._applied_blur: QGraphicsBlurEffect | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("GradePickerCard")
+        card.setStyleSheet(
+            """
+            QFrame#GradePickerCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(216, 225, 234, 0.88);
+                border-radius: 30px;
+            }
+            QLabel#GradePickerTitle {
+                color: #142130;
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QLabel#GradePickerMeta {
+                color: #6d7c8b;
+                font-size: 12px;
+            }
+            QPushButton#GradePickerOption {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QPushButton#GradePickerOption:hover {
+                background: rgba(237, 244, 250, 0.98);
+                border: 1px solid rgba(154, 180, 206, 0.92);
+            }
+            QPushButton#GradePickerOption[optionSelected="true"] {
+                background: rgba(221, 234, 247, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+                color: #102131;
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(42)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(13, 26, 39, 78))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(18, 14, 18, 16)
+        body.setSpacing(6)
+
+        title = QLabel("Choose your grade")
+        title.setObjectName("GradePickerTitle")
+        body.addWidget(title)
+
+        meta = QLabel("Pick the grade that matches your current school level.")
+        meta.setObjectName("GradePickerMeta")
+        body.addWidget(meta)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        for column in range(5):
+            grid.setColumnStretch(column, 1)
+
+        def _button_for(option: str) -> AnimatedButton:
+            button = AnimatedButton(option)
+            button.setObjectName("GradePickerOption")
+            button.setProperty("disablePressMotion", True)
+            button.setFixedHeight(40)
+            button.setFixedWidth(118)
+            button.set_motion_scale_range(0.0)
+            button.set_motion_hover_grow(0, 0)
+            button.set_motion_lift(0.0)
+            button.set_motion_press_scale(0.0)
+            button.setProperty("optionSelected", option == current_value)
+            button.clicked.connect(lambda _checked=False, value=option: self._on_choice(value))
+            return button
+
+        top_row_options = options[:5]
+        bottom_row_options = options[5:10]
+        for column, option in enumerate(top_row_options):
+            grid.addWidget(_button_for(option), 0, column, alignment=Qt.AlignCenter)
+        for column, option in enumerate(bottom_row_options):
+            grid.addWidget(_button_for(option), 1, column, alignment=Qt.AlignCenter)
+
+        body.addLayout(grid)
+        self.setFixedSize(690, 214)
+
+    def _on_choice(self, value: str) -> None:
+        self._choice = value
+        self.accept()
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self._position_below_anchor()
+            self.exec()
+            return self._choice
+        finally:
+            self._clear_backdrop()
+
+    def _position_below_anchor(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        x = int(parent_rect.center().x() - (self.width() / 2))
+        y = int(parent_rect.center().y() - (self.height() / 2))
+        self.move(x, y)
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+        self._applied_blur = blur
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._applied_blur = None
+        self._previous_effect = None
+
+
 class ProfilePage(OnboardingPage):
     import_profile_requested = Signal()
     remove_import_requested = Signal()
@@ -605,8 +765,9 @@ class ProfilePage(OnboardingPage):
         self.age_edit.setValidator(QRegularExpressionValidator(QRegularExpression("(?:[0-9]|[1-9][0-9])?"), self.age_edit))
         self.grade_combo = PlaceholderComboBox("grade")
         self.grade_combo.setObjectName("WizardGradeCombo")
-        self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
+        self.grade_combo.addItems([f"Grade {value}" for value in range(3, 13)])
         self.grade_combo.setMaxVisibleItems(6)
+        self.grade_combo.set_popup_handler(self._open_grade_picker)
         self.gender_combo = PlaceholderComboBox("gender")
         self.gender_combo.setObjectName("WizardGenderCombo")
         self.gender_combo.addItems(["Male", "Female", "Custom"])
@@ -784,6 +945,25 @@ class ProfilePage(OnboardingPage):
 
     def _refresh_grade_visual_state(self) -> None:
         self.grade_combo.update()
+
+    def _open_grade_picker(self) -> None:
+        if not self.grade_combo.isEnabled():
+            return
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        options = [self.grade_combo.itemText(index) for index in range(self.grade_combo.count())]
+        current_value = self.grade_combo.currentText().strip() if self.grade_combo.currentIndex() >= 0 else ""
+        selected = GradePickerDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            anchor=self.grade_combo,
+            options=options,
+            current_value=current_value,
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        self.grade_combo.setCurrentText(selected)
+        self.grade_combo.setFocus()
 
     def _refresh_gender_visual_state(self) -> None:
         self.gender_combo.update()

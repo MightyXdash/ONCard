@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QRect, Qt, QVariantAnimation, QSize, QTimer, QPointF
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen, QPolygonF
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QComboBox,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QLabel,
     QLineEdit,
@@ -102,7 +104,74 @@ class AnimatedComboBox(QComboBox):
         super().__init__(*args, **kwargs)
         popup_view = QListView()
         popup_view.setObjectName("DropdownView")
-        popup_view.setSpacing(2)
+        popup_view.setSpacing(6)
+        popup_view.setFrameShape(QFrame.Shape.NoFrame)
+        popup_view.setViewportMargins(10, 10, 10, 10)
+        popup_view.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        popup_view.setAutoFillBackground(True)
+        popup_view.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        popup_view.viewport().setAutoFillBackground(True)
+        popup_palette = popup_view.palette()
+        popup_palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        popup_palette.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
+        popup_palette.setColor(QPalette.ColorRole.Text, QColor("#122131"))
+        popup_palette.setColor(QPalette.ColorRole.Highlight, QColor("#e4eef8"))
+        popup_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#122131"))
+        popup_view.setPalette(popup_palette)
+        popup_view.viewport().setPalette(popup_palette)
+        popup_shadow = QGraphicsDropShadowEffect(popup_view)
+        popup_shadow.setBlurRadius(26)
+        popup_shadow.setOffset(0, 8)
+        popup_shadow.setColor(QColor(17, 35, 54, 38))
+        popup_view.setGraphicsEffect(popup_shadow)
+        popup_view.setStyleSheet(
+            """
+            QListView#DropdownView {
+                background-color: #ffffff;
+                color: #122131;
+                border: 1px solid rgba(166, 181, 197, 0.58);
+                border-radius: 18px;
+                padding: 0px;
+                outline: none;
+            }
+            QListView#DropdownView::viewport {
+                background: transparent;
+                border: none;
+                border-radius: 14px;
+            }
+            QListView#DropdownView::item {
+                min-height: 24px;
+                padding: 10px 16px;
+                margin: 0px 0px 2px 0px;
+                border-radius: 12px;
+            }
+            QListView#DropdownView::item:hover {
+                background: #eef4fa;
+            }
+            QListView#DropdownView::item:selected {
+                background: #dbe8f6;
+                color: #122131;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                margin: 10px 8px 10px 0px;
+                background: transparent;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(150, 170, 191, 0.75);
+                border-radius: 5px;
+                min-height: 42px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(121, 146, 171, 0.9);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                height: 0px;
+                background: transparent;
+            }
+            """
+        )
         self.setView(popup_view)
 
     def focusInEvent(self, event) -> None:
@@ -117,7 +186,12 @@ class AnimatedComboBox(QComboBox):
 
     def showPopup(self) -> None:
         super().showPopup()
-        popup = self.view().window()
+        popup_view = self.view()
+        popup_view.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        popup_view.setAutoFillBackground(True)
+        popup_view.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        popup_view.viewport().setAutoFillBackground(True)
+        popup = popup_view.window()
         if popup is None:
             return
         popup.setObjectName("ComboPopup")
@@ -126,6 +200,28 @@ class AnimatedComboBox(QComboBox):
         popup.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         popup.setAutoFillBackground(True)
         popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, False)
+        popup_palette = popup.palette()
+        popup_palette.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
+        popup_palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        popup.setPalette(popup_palette)
+        popup.setStyleSheet(
+            """
+            QWidget#ComboPopup {
+                background-color: #ffffff;
+                border: 1px solid rgba(163, 179, 197, 0.85);
+                border-radius: 18px;
+            }
+            """
+        )
+        model = popup_view.model()
+        visible_rows = min(max(self.maxVisibleItems(), 1), model.rowCount() if model is not None else 0)
+        if visible_rows > 0:
+            row_height = max(popup_view.sizeHintForRow(0), 44)
+            spacing = max(popup_view.spacing(), 0)
+            margins = popup_view.viewportMargins()
+            content_height = (row_height * visible_rows) + (spacing * max(visible_rows - 1, 0))
+            desired_height = content_height + margins.top() + margins.bottom() + 4
+            popup.resize(popup.width(), max(desired_height, popup.height() - 12))
 
 
 class AnimatedStackedWidget(QStackedWidget):
