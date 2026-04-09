@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import sqlite3
 import tempfile
 from urllib.parse import unquote
 import zipfile
@@ -31,6 +32,30 @@ def _safe_json_load(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return default
+
+
+def _safe_sql_section_load(database_file: Path, section: str, default: dict) -> dict:
+    db_path = Path(database_file)
+    if not db_path.exists():
+        return dict(default)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(str(db_path))
+        row = connection.execute("SELECT payload_json FROM settings WHERE section = ?", (str(section),)).fetchone()
+        if row is None:
+            return dict(default)
+        payload = json.loads(str(row[0]))
+        if isinstance(payload, dict):
+            return dict(payload)
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+        return dict(default)
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+    return dict(default)
 
 
 def _coerce_grade_number(value: str) -> str:
@@ -133,9 +158,15 @@ class AccountArchiveService:
     def export_account(self, *, account: dict, paths: AppPaths, destination_zip: Path) -> Path:
         destination = Path(destination_zip)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        profile = _safe_json_load(paths.profile_config, {})
-        setup = _safe_json_load(paths.setup_config, {})
-        ai_settings = _safe_json_load(paths.ai_settings_config, {})
+        profile = _safe_sql_section_load(paths.database_file, "profile", {})
+        if not profile:
+            profile = _safe_json_load(paths.profile_config, {})
+        setup = _safe_sql_section_load(paths.database_file, "setup", {})
+        if not setup:
+            setup = _safe_json_load(paths.setup_config, {})
+        ai_settings = _safe_sql_section_load(paths.database_file, "ai_settings", {})
+        if not ai_settings:
+            ai_settings = _safe_json_load(paths.ai_settings_config, {})
         manifest = {
             "app": "ONCard",
             "format_version": self.FORMAT_VERSION,
@@ -159,7 +190,9 @@ class AccountArchiveService:
         return destination
 
     def create_temp_export(self, *, account: dict, paths: AppPaths) -> Path:
-        profile = _safe_json_load(paths.profile_config, {})
+        profile = _safe_sql_section_load(paths.database_file, "profile", {})
+        if not profile:
+            profile = _safe_json_load(paths.profile_config, {})
         filename = self.build_export_filename(profile if isinstance(profile, dict) else {})
         temp_dir = Path(tempfile.mkdtemp(prefix="oncard_export_"))
         target = temp_dir / filename

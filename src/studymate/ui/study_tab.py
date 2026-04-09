@@ -39,7 +39,7 @@ from studymate.constants import SUBJECT_TAXONOMY
 from studymate.constants import SEMANTIC_SEARCH_MIN_SCORE, SEMANTIC_SEARCH_SCORE_MARGIN
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
-from studymate.services.model_registry import resolve_active_text_llm_spec
+from studymate.services.model_registry import resolve_active_text_llm_spec, resolve_active_text_model_tag
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.services.recommendation_service import (
@@ -669,10 +669,11 @@ class AiResponseOverlay(QWidget):
         self.body.setObjectName("AiResponseBody")
         self.body.setFrameShape(QFrame.Shape.NoFrame)
         self.body.setOpenExternalLinks(True)
+        self.body.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.body.setStyleSheet(
-            'background: transparent; border: none; color: #1A1A1A; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; font-weight: 300;'
+            'background: transparent; border: none; color: #1A1A1A; font-family: "Segoe UI", "Segoe UI Variable Display"; font-weight: 400;'
         )
         self.body.verticalScrollBar().setStyleSheet(
             """
@@ -700,20 +701,20 @@ class AiResponseOverlay(QWidget):
             """
             body {
                 color: #1A1A1A;
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 15px;
-                font-weight: 300;
+                font-weight: 400;
                 line-height: 1.68;
             }
             h1 {
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 20px;
                 font-weight: 600;
                 margin: 0 0 12px 0;
                 color: #1A1A1A;
             }
             h2 {
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 15px;
                 font-weight: 600;
                 margin: 12px 0 6px 0;
@@ -755,8 +756,8 @@ class AiResponseOverlay(QWidget):
         document_layout = self.body.document().documentLayout()
         if document_layout is not None:
             document_layout.documentSizeChanged.connect(self._on_body_document_size_changed)
-        base_font = QFont(self.font())
-        base_font.setWeight(QFont.Weight.Light)
+        base_font = QFont("Segoe UI", self.font().pointSize())
+        base_font.setWeight(QFont.Weight.Normal)
         self.body.setFont(base_font)
         self.body_container = QWidget(self.surface)
         body_layout = QVBoxLayout(self.body_container)
@@ -839,7 +840,6 @@ class AiResponseOverlay(QWidget):
         self._target_markdown = cleaned
         self._display_markdown = cleaned
         self.body.setHtml(markdown_to_html(self._display_markdown))
-        self.body.document().adjustSize()
         bar = self.body.verticalScrollBar()
         if bar is not None:
             bar.setValue(0)
@@ -1496,9 +1496,11 @@ class AiResponseOverlay(QWidget):
                 width - root_margins.left() - root_margins.right() - surface_margins.left() - surface_margins.right(),
             )
             self.body.setMinimumWidth(viewport_width)
-            self.body.document().setTextWidth(max(1, viewport_width))
-            self.body.document().adjustSize()
-            doc_height = int(self.body.document().size().height())
+            document_layout = self.body.document().documentLayout()
+            if document_layout is not None:
+                doc_height = int(document_layout.documentSize().height())
+            else:
+                doc_height = int(self.body.document().size().height())
             skeleton_height = 268
             compact_height = 90
             minimum_height = compact_height
@@ -1553,31 +1555,10 @@ class AiResponseOverlay(QWidget):
                 self._size_animation.setStartValue(current_rect)
                 self._size_animation.setEndValue(target_rect)
                 self._size_animation.start()
-            # Re-sync the document width after layout has settled so scroll range
-            # is based on the actual viewport width, not an estimate.
-            QTimer.singleShot(0, self._refresh_body_metrics_from_viewport)
-            # A second deferred pass catches late scrollbar visibility/layout
-            # changes that can otherwise leave the range stale and non-scrollable.
-            QTimer.singleShot(18, self._refresh_body_metrics_from_viewport)
             self._layout_overlay_elements()
             self.raise_()
         finally:
             self._syncing_size = False
-
-    def _refresh_body_metrics_from_viewport(self) -> None:
-        if self.response_stack.currentWidget() is not self.body_container:
-            return
-        viewport = self.body.viewport().width()
-        if viewport <= 0:
-            return
-        bar = self.body.verticalScrollBar()
-        previous_value = bar.value() if bar is not None else 0
-        self.body.document().setTextWidth(max(1, viewport))
-        self.body.document().adjustSize()
-        if bar is not None:
-            bar.setPageStep(max(1, self.body.viewport().height()))
-            bar.setSingleStep(22)
-            bar.setValue(max(0, min(previous_value, bar.maximum())))
 
     def _target_width(self) -> int:
         parent = self.parentWidget()
@@ -2041,6 +2022,9 @@ class StudyTab(QWidget):
 
     def _active_text_llm_spec(self):
         return resolve_active_text_llm_spec(self.datastore.load_ai_settings())
+
+    def _active_text_model_tag(self) -> str:
+        return resolve_active_text_model_tag(self.datastore.load_ai_settings())
 
     def _surface(self, sidebar: bool = False) -> QFrame:
         frame = QFrame()
@@ -3094,7 +3078,7 @@ class StudyTab(QWidget):
         worker = AiSearchAnswerWorker(
             request_id=request_id,
             ollama=self.ollama,
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
             prompt=query,
             context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
             profile_context=profile_context,
@@ -3141,7 +3125,7 @@ class StudyTab(QWidget):
         worker = AiSearchPlannerWorker(
             request_id=request_id,
             ollama=self.ollama,
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
             prompt=query,
             context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
             profile_context=profile_context,
@@ -4145,7 +4129,7 @@ class StudyTab(QWidget):
                 user_answer=str(entry.get("answer_text", "")).strip(),
                 difficulty=int(card.get("natural_difficulty", 5)),
                 ollama=self.ollama,
-                model=model_spec.primary_tag,
+                model=self._active_text_model_tag(),
                 profile_context=self.datastore.load_profile(),
                 stream_preview=False,
             )
@@ -4206,7 +4190,7 @@ class StudyTab(QWidget):
             user_answer=user_answer,
             difficulty=int(self.current_card.get("natural_difficulty", 5)),
             ollama=self.ollama,
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
             profile_context=self.datastore.load_profile(),
             stream_preview=True,
         )
@@ -4314,7 +4298,7 @@ class StudyTab(QWidget):
             profile_context=self.datastore.load_profile(),
             assistant_tone=str(ai_settings.get("assistant_tone", "")),
             context_length=int(ai_settings.get("reinforcement_context_length", 8192)),
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
         )
         self.reinforcement_worker = worker
 
@@ -4462,7 +4446,7 @@ class StudyTab(QWidget):
         profile_context = self.datastore.load_profile()
         self.followup_worker = FollowUpWorker(
             ollama=self.ollama,
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
             prompt=prompt,
             context=context,
             context_length=int(ai_settings.get("followup_context_length", 8192)),

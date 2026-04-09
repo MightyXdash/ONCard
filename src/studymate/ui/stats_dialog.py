@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.services.data_store import DataStore
-from studymate.services.model_registry import resolve_active_text_llm_spec
+from studymate.services.model_registry import resolve_active_text_model_tag
 from studymate.services.ollama_service import OllamaService
 from studymate.services.stats_service import RANGE_CONFIGS, StatsService
 from studymate.ui.animated import AnimatedComboBox, polish_surface
@@ -643,7 +643,7 @@ class StatsDialog(QDialog):
             profile=self.profile,
             summary_payload=summary_payload,
             context_length=context_length,
-            model=resolve_active_text_llm_spec(self.datastore.load_ai_settings()).primary_tag,
+            model=resolve_active_text_model_tag(self.datastore.load_ai_settings()),
         )
         self._summary_worker = worker
         self._summary_workers.add(worker)

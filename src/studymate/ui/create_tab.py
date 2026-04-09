@@ -43,7 +43,7 @@ from studymate.services.files_to_cards_service import (
     files_to_cards_limit,
     files_to_cards_question_cap,
 )
-from studymate.services.model_registry import resolve_active_text_llm_spec
+from studymate.services.model_registry import resolve_active_text_llm_spec, resolve_active_text_model_tag
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, polish_surface
@@ -1052,6 +1052,9 @@ class CreateTab(QWidget):
     def _active_text_llm_spec(self):
         return resolve_active_text_llm_spec(self.datastore.load_ai_settings())
 
+    def _active_text_model_tag(self) -> str:
+        return resolve_active_text_model_tag(self.datastore.load_ai_settings())
+
     def _surface(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Surface")
@@ -1393,7 +1396,7 @@ class CreateTab(QWidget):
         self.autofill_worker = AutofillWorker(
             question,
             self.ollama,
-            model=model_spec.primary_tag,
+            model=self._active_text_model_tag(),
             profile_context=self.datastore.load_profile(),
         )
         self.autofill_worker.progress.connect(lambda message: self._add_activity(kind="status", title="Autofill", text=message))
@@ -1751,7 +1754,7 @@ class CreateTab(QWidget):
             custom_instructions=self.instructions_edit.combined_text().strip(),
             use_ocr=self.use_ocr,
             background_workers=background_workers,
-            text_model_tag=model_spec.primary_tag,
+            text_model_tag=self._active_text_model_tag(),
             text_model_label=model_spec.display_name,
         )
         self.ftc_worker = FilesToCardsWorker(

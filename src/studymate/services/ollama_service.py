@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import re
 import subprocess
-from typing import Iterator
+from typing import Any, Iterator
 
 import requests
 
@@ -14,12 +15,220 @@ class OllamaError(RuntimeError):
 
 
 class OllamaService:
-    def __init__(self, host: str = "http://127.0.0.1:11434") -> None:
-        self.host = host.rstrip("/")
+    LOCAL_DEFAULT_HOST = "http://127.0.0.1:11434"
+    CLOUD_HOST = "https://ollama.com"
+    CLOUD_SAFE_OPTION_KEYS = {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repeat_penalty",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+        "stop",
+        "num_predict",
+    }
 
-    def ping(self, timeout: int = 3) -> bool:
+    def __init__(self, host: str = LOCAL_DEFAULT_HOST) -> None:
+        self.local_host = str(host or self.LOCAL_DEFAULT_HOST).rstrip("/")
+        self.cloud_host = self.CLOUD_HOST
+        self.cloud_enabled = False
+        self.cloud_api_key = ""
+        self.host = self.local_host
+
+    def configure_from_ai_settings(self, ai_settings: dict | None) -> None:
+        settings = ai_settings or {}
+        self.set_cloud_mode(
+            enabled=bool(settings.get("ollama_cloud_enabled", False)),
+            api_key=str(settings.get("ollama_cloud_api_key", "")).strip(),
+        )
+
+    def set_cloud_mode(self, *, enabled: bool, api_key: str | None = None) -> None:
+        if api_key is not None:
+            self.cloud_api_key = str(api_key or "").strip()
+        self.cloud_enabled = bool(enabled)
+        self.host = self.cloud_host if self.cloud_enabled else self.local_host
+
+    def _resolve_host(self, *, use_cloud: bool | None = None) -> str:
+        if use_cloud is None:
+            use_cloud = self.cloud_enabled
+        return self.cloud_host if bool(use_cloud) else self.local_host
+
+    def _headers(self, host: str, *, api_key_override: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if host.startswith(self.cloud_host):
+            key = str(api_key_override if api_key_override is not None else self.cloud_api_key).strip()
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _is_cloud_host(self, host: str) -> bool:
+        return str(host or "").startswith(self.cloud_host)
+
+    @staticmethod
+    def _http_error_detail(response: requests.Response | None) -> str:
+        if response is None:
+            return ""
+        detail = ""
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=timeout)
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = str(payload.get("error") or payload.get("message") or "").strip()
+        except (json.JSONDecodeError, ValueError):
+            detail = ""
+        if not detail:
+            detail = " ".join(str(response.text or "").split()).strip()
+        if detail:
+            return detail[:360]
+        return f"HTTP {response.status_code}"
+
+    def _sanitize_options_for_host(self, options: dict[str, Any], host: str) -> dict[str, Any]:
+        if not self._is_cloud_host(host):
+            return dict(options)
+        cleaned: dict[str, Any] = {}
+        for key, value in options.items():
+            normalized = str(key or "").strip()
+            if normalized in self.CLOUD_SAFE_OPTION_KEYS:
+                cleaned[normalized] = value
+        return cleaned
+
+    def _payload_variants(self, payload: dict[str, Any], host: str) -> list[dict[str, Any]]:
+        base = dict(payload)
+        variants = [base]
+        if not self._is_cloud_host(host):
+            return variants
+        without_options = dict(base)
+        without_options.pop("options", None)
+        without_format = dict(base)
+        without_format.pop("format", None)
+        without_both = dict(without_options)
+        without_both.pop("format", None)
+        variants.extend([without_options, without_format, without_both])
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in variants:
+            try:
+                marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                marker = repr(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            unique.append(item)
+        return unique
+
+    @staticmethod
+    def _extract_message_content(body: dict) -> str:
+        return str(body.get("message", {}).get("content", "")).strip()
+
+    def _post_chat_json(
+        self,
+        *,
+        host: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: int,
+    ) -> dict:
+        variants = self._payload_variants(payload, host)
+        for index, candidate in enumerate(variants):
+            try:
+                response = requests.post(f"{host}/api/chat", json=candidate, headers=headers, timeout=timeout)
+                response.raise_for_status()
+                return response.json()
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                can_retry = self._is_cloud_host(host) and status_code == 400 and index < (len(variants) - 1)
+                if can_retry:
+                    continue
+                detail = self._http_error_detail(exc.response)
+                raise OllamaError(f"Chat failed: {detail or exc}") from exc
+            except (requests.RequestException, json.JSONDecodeError) as exc:
+                raise OllamaError(f"Chat failed: {exc}") from exc
+        raise OllamaError("Chat failed: no valid cloud payload variant succeeded.")
+
+    def _iter_stream_chat(
+        self,
+        *,
+        host: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: int,
+        should_stop,
+    ) -> Iterator[str]:
+        variants = self._payload_variants(payload, host)
+        for index, candidate in enumerate(variants):
+            try:
+                with requests.post(f"{host}/api/chat", json=candidate, headers=headers, stream=True, timeout=timeout) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if should_stop and should_stop():
+                            return
+                        if not line:
+                            continue
+                        obj = json.loads(line.decode("utf-8"))
+                        chunk = str(obj.get("message", {}).get("content", ""))
+                        if chunk != "":
+                            yield chunk
+                    return
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                can_retry = self._is_cloud_host(host) and status_code == 400 and index < (len(variants) - 1)
+                if can_retry:
+                    continue
+                detail = self._http_error_detail(exc.response)
+                raise OllamaError(f"Streaming chat failed: {detail or exc}") from exc
+            except (requests.RequestException, json.JSONDecodeError) as exc:
+                raise OllamaError(f"Streaming chat failed: {exc}") from exc
+        raise OllamaError("Streaming chat failed: no valid cloud payload variant succeeded.")
+
+    @staticmethod
+    def _parse_json_object_loose(content: str) -> dict[str, Any] | None:
+        text = str(content or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE):
+            snippet = str(match.group(1) or "").strip()
+            if not snippet:
+                continue
+            try:
+                parsed = json.loads(snippet)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            snippet = text[start : end + 1]
+            try:
+                parsed = json.loads(snippet)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    @staticmethod
+    def _extract_tags(body: dict) -> set[str]:
+        tags: set[str] = set()
+        for item in body.get("models", []):
+            tag = str(item.get("name") or item.get("model") or "").strip()
+            if tag:
+                tags.add(tag)
+        return tags
+
+    def ping(self, timeout: int = 3, *, use_cloud: bool | None = None, api_key: str | None = None) -> bool:
+        host = self._resolve_host(use_cloud=use_cloud)
+        headers = self._headers(host, api_key_override=api_key)
+        try:
+            response = requests.get(f"{host}/api/tags", headers=headers, timeout=timeout)
             return response.ok
         except requests.RequestException:
             return False
@@ -64,21 +273,20 @@ class OllamaService:
                     on_output(line.strip())
         return process.wait() == 0
 
-    def installed_tags(self, timeout: int = 5) -> set[str]:
+    def installed_tags(self, timeout: int = 5, *, use_cloud: bool | None = None, api_key: str | None = None) -> set[str]:
+        host = self._resolve_host(use_cloud=use_cloud)
+        headers = self._headers(host, api_key_override=api_key)
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=timeout)
+            response = requests.get(f"{host}/api/tags", headers=headers, timeout=timeout)
             response.raise_for_status()
             body = response.json()
         except (requests.RequestException, json.JSONDecodeError) as exc:
             raise OllamaError(f"Could not list installed models: {exc}") from exc
+        return self._extract_tags(body)
 
-        tags: set[str] = set()
-        for item in body.get("models", []):
-            tag = str(item.get("name") or item.get("model") or "").strip()
-            if not tag:
-                continue
-            tags.add(tag)
-        return tags
+    def cloud_model_tags(self, api_key: str, timeout: int = 8) -> list[str]:
+        tags = self.installed_tags(timeout=timeout, use_cloud=True, api_key=api_key)
+        return sorted(tags, key=lambda value: value.lower())
 
     @staticmethod
     def _build_options(temperature: float, extra_options: dict | None = None) -> dict:
@@ -106,10 +314,12 @@ class OllamaService:
         timeout: int = 180,
         response_format: dict | None = None,
     ) -> str:
+        host = self._resolve_host()
+        headers = self._headers(host)
+        options = self._sanitize_options_for_host(self._build_options(temperature, extra_options), host)
         payload = {
             "model": model,
             "stream": False,
-            "options": self._build_options(temperature, extra_options),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -119,15 +329,12 @@ class OllamaService:
                 },
             ],
         }
+        if options:
+            payload["options"] = options
         if response_format is not None:
             payload["format"] = response_format
-        try:
-            response = requests.post(f"{self.host}/api/chat", json=payload, timeout=timeout)
-            response.raise_for_status()
-            body = response.json()
-            return str(body.get("message", {}).get("content", "")).strip()
-        except (requests.RequestException, json.JSONDecodeError) as exc:
-            raise OllamaError(f"Chat failed: {exc}") from exc
+        body = self._post_chat_json(host=host, headers=headers, payload=payload, timeout=timeout)
+        return self._extract_message_content(body)
 
     def chat_messages(
         self,
@@ -141,22 +348,21 @@ class OllamaService:
         response_format: dict | None = None,
         stream: bool = False,
     ) -> dict:
+        host = self._resolve_host()
+        headers = self._headers(host)
+        options = self._sanitize_options_for_host(self._build_options(temperature, extra_options), host)
         payload = {
             "model": model,
             "stream": stream,
-            "options": self._build_options(temperature, extra_options),
             "messages": messages,
         }
+        if options:
+            payload["options"] = options
         if tools:
             payload["tools"] = tools
         if response_format is not None:
             payload["format"] = response_format
-        try:
-            response = requests.post(f"{self.host}/api/chat", json=payload, timeout=timeout)
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, json.JSONDecodeError) as exc:
-            raise OllamaError(f"Chat failed: {exc}") from exc
+        return self._post_chat_json(host=host, headers=headers, payload=payload, timeout=timeout)
 
     def structured_chat(
         self,
@@ -169,20 +375,38 @@ class OllamaService:
         image_paths: list[str] | None = None,
         extra_options: dict | None = None,
     ) -> dict:
-        try:
-            content = self.chat(
+        content = self.chat(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_paths=image_paths,
+            temperature=temperature,
+            extra_options=extra_options,
+            timeout=timeout,
+            response_format=schema,
+        ) or "{}"
+        parsed = self._parse_json_object_loose(content)
+        if parsed is None:
+            retry_prompt = (
+                f"{user_prompt.strip()}\n\n"
+                "Return only a valid JSON object matching the requested schema. "
+                "Do not include markdown, prose, or code fences."
+            )
+            retry_content = self.chat(
                 model=model,
                 system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                user_prompt=retry_prompt,
                 image_paths=image_paths,
-                temperature=temperature,
+                temperature=0.0,
                 extra_options=extra_options,
                 timeout=timeout,
-                response_format=schema,
+                response_format=None,
             ) or "{}"
-            return json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise OllamaError(f"Structured chat failed: {exc}") from exc
+            parsed = self._parse_json_object_loose(retry_content)
+        if parsed is None:
+            preview = " ".join(content.split())[:180]
+            raise OllamaError(f"Structured chat failed: model did not return valid JSON. Preview: {preview}")
+        return parsed
 
     def stream_chat(
         self,
@@ -197,10 +421,12 @@ class OllamaService:
         timeout: int = 180,
         should_stop=None,
     ) -> Iterator[str]:
+        host = self._resolve_host()
+        headers = self._headers(host)
+        options = self._sanitize_options_for_host(self._build_options(temperature, extra_options), host)
         payload = {
             "model": model,
             "stream": True,
-            "options": self._build_options(temperature, extra_options),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -210,22 +436,17 @@ class OllamaService:
                 },
             ],
         }
+        if options:
+            payload["options"] = options
         if response_format is not None:
             payload["format"] = response_format
-        try:
-            with requests.post(f"{self.host}/api/chat", json=payload, stream=True, timeout=timeout) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if should_stop and should_stop():
-                        break
-                    if not line:
-                        continue
-                    obj = json.loads(line.decode("utf-8"))
-                    chunk = obj.get("message", {}).get("content", "")
-                    if chunk:
-                        yield chunk
-        except (requests.RequestException, json.JSONDecodeError) as exc:
-            raise OllamaError(f"Streaming chat failed: {exc}") from exc
+        yield from self._iter_stream_chat(
+            host=host,
+            headers=headers,
+            payload=payload,
+            timeout=timeout,
+            should_stop=should_stop,
+        )
 
     def stream_structured_chat(
         self,
@@ -241,28 +462,42 @@ class OllamaService:
         should_stop=None,
     ) -> dict:
         parts: list[str] = []
-        try:
-            for chunk in self.stream_chat(
+        for chunk in self.stream_chat(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_paths=image_paths,
+            temperature=temperature,
+            extra_options=extra_options,
+            response_format=schema,
+            timeout=timeout,
+            should_stop=should_stop,
+        ):
+            parts.append(chunk)
+        content = "".join(parts).strip() or "{}"
+        parsed = self._parse_json_object_loose(content)
+        if parsed is None:
+            parsed = self.structured_chat(
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                schema=schema,
                 image_paths=image_paths,
                 temperature=temperature,
                 extra_options=extra_options,
-                response_format=schema,
                 timeout=timeout,
-                should_stop=should_stop,
-            ):
-                parts.append(chunk)
-            content = "".join(parts).strip() or "{}"
-            return json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise OllamaError(f"Streaming structured chat failed: {exc}") from exc
+            )
+        if parsed is None:
+            preview = " ".join(content.split())[:180]
+            raise OllamaError(f"Streaming structured chat failed: invalid JSON response. Preview: {preview}")
+        return parsed
 
     def benchmark_tps(self, model: str, prompt: str, timeout: int = 120) -> float:
         payload = {"model": model, "stream": False, "prompt": prompt, "options": {"temperature": 0}}
+        host = self._resolve_host()
+        headers = self._headers(host)
         try:
-            response = requests.post(f"{self.host}/api/generate", json=payload, timeout=timeout)
+            response = requests.post(f"{host}/api/generate", json=payload, headers=headers, timeout=timeout)
             response.raise_for_status()
             body = response.json()
             eval_count = float(body.get("eval_count", 0))
@@ -276,14 +511,25 @@ class OllamaService:
 
     def embed_text(self, model_tag: str, text: str, timeout: int = 120) -> list[float]:
         payload = {"model": model_tag, "input": text}
+        host = self._resolve_host(use_cloud=False)
+        headers = self._headers(host)
+        body: dict | None = None
         try:
-            response = requests.post(f"{self.host}/api/embed", json=payload, timeout=timeout)
+            response = requests.post(f"{host}/api/embed", json=payload, headers=headers, timeout=timeout)
             if response.status_code == 404:
-                response = requests.post(f"{self.host}/api/embeddings", json={"model": model_tag, "prompt": text}, timeout=timeout)
+                response = requests.post(
+                    f"{host}/api/embeddings",
+                    json={"model": model_tag, "prompt": text},
+                    headers=headers,
+                    timeout=timeout,
+                )
             response.raise_for_status()
             body = response.json()
         except (requests.RequestException, json.JSONDecodeError) as exc:
-            raise OllamaError(f"Embedding failed: {exc}") from exc
+            raise OllamaError(f"Embedding failed (local Ollama): {exc}") from exc
+
+        if body is None:
+            raise OllamaError("Embedding failed (local Ollama): no response body.")
 
         vector = body.get("embedding")
         if vector is None:

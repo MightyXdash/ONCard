@@ -9,7 +9,7 @@ import time
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from studymate.services.data_store import DataStore
-from studymate.services.model_registry import MODELS
+from studymate.services.model_registry import MODELS, non_embedding_llm_keys
 from studymate.services.ollama_service import OllamaService
 
 
@@ -21,6 +21,8 @@ class ModelPreflightSnapshot:
     installed_tags: set[str]
     installed_models: dict[str, bool]
     error: str = ""
+    cloud_mode: bool = False
+    cloud_key_present: bool = False
 
     def has_model(self, model_key: str) -> bool:
         spec = MODELS.get(model_key)
@@ -45,24 +47,45 @@ class ModelPreflightService:
             if not force and self._cached_snapshot is not None and (time.monotonic() - self._cached_at) <= self.ttl_seconds:
                 return self._cached_snapshot
 
+            ai_settings = self.datastore.load_ai_settings()
+            cloud_mode = bool(ai_settings.get("ollama_cloud_enabled", False))
+            cloud_key = str(ai_settings.get("ollama_cloud_api_key", "")).strip()
+            self.ollama.configure_from_ai_settings(ai_settings)
+
             cli_available = shutil.which("ollama") is not None
             api_reachable = False
             installed_tags: set[str] = set()
             error = ""
-            if cli_available:
-                api_reachable = self.ollama.ping()
+            if cloud_mode:
+                cli_available = True
+                if not cloud_key:
+                    error = "Cloud mode is enabled, but no API key is set."
+                else:
+                    api_reachable = self.ollama.ping(use_cloud=True, api_key=cloud_key)
+                    try:
+                        installed_tags = self.ollama.installed_tags(use_cloud=True, api_key=cloud_key)
+                    except Exception as exc:
+                        error = str(exc)
+            elif cli_available:
+                api_reachable = self.ollama.ping(use_cloud=False)
                 try:
-                    installed_tags = self.ollama.installed_tags()
+                    installed_tags = self.ollama.installed_tags(use_cloud=False)
                 except Exception as exc:
                     error = str(exc)
 
             setup = self.datastore.load_setup()
             installed_models = dict(setup.get("installed_models", {}))
+            text_keys = set(non_embedding_llm_keys())
             for key, spec in MODELS.items():
                 detected = any(
                     tag in installed_tags for tag in [spec.primary_tag, *spec.candidate_tags]
                 )
-                if cli_available and not error:
+                if cloud_mode:
+                    if key in text_keys:
+                        installed_models[key] = detected
+                    else:
+                        installed_models[key] = bool(installed_models.get(key, False))
+                elif cli_available and not error:
                     # Source of truth: live installed-tag list from Ollama.
                     installed_models[key] = detected
                 elif cli_available and error:
@@ -82,6 +105,8 @@ class ModelPreflightService:
                 installed_tags=installed_tags,
                 installed_models=installed_models,
                 error=error,
+                cloud_mode=cloud_mode,
+                cloud_key_present=bool(cloud_key),
             )
             self._cached_snapshot = snapshot
             self._cached_at = time.monotonic()
@@ -108,7 +133,23 @@ class ModelPreflightService:
         spec = MODELS.get(model_key)
         tag = spec.primary_tag if spec is not None else model_key
         title = "Model required"
-        if not snap.cli_available:
+        if snap.cloud_mode:
+            if not snap.cloud_key_present:
+                message = (
+                    f"{feature_name} needs the `{tag}` cloud model.\n\n"
+                    "Open Settings > AI, enable cloud inference, and paste your Ollama API key."
+                )
+            elif not snap.api_reachable:
+                message = (
+                    f"{feature_name} needs the `{tag}` cloud model, but ONCard could not reach Ollama Cloud.\n\n"
+                    "Check your internet/API key in Settings > AI, then refresh model status."
+                )
+            else:
+                message = (
+                    f"{feature_name} needs the `{tag}` cloud model.\n\n"
+                    "Open Settings > AI and choose that cloud model before using this feature."
+                )
+        elif not snap.cli_available:
             message = (
                 f"{feature_name} needs Ollama and the `{tag}` model.\n\n"
                 "Install Ollama first, then open Settings > AI to install the model."
