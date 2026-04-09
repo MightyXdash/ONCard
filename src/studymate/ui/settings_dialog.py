@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsBlurEffect,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,8 +24,10 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTabWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+    QStyle,
 )
 
 from studymate.services.data_store import DataStore
@@ -57,6 +61,189 @@ MODEL_ROLE_COPY = {
     "ministral_3_14b": "Optional larger LLM with native tool calling for Ask AI and other text features.",
     "nomic_embed_text_v2_moe": "Semantic search, recommendations, topic clustering, and adaptive study features.",
 }
+
+
+class PopupMenuComboBox(AnimatedComboBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._popup_handler = None
+
+    def set_popup_handler(self, handler) -> None:
+        self._popup_handler = handler
+
+    def showPopup(self) -> None:
+        if callable(self._popup_handler):
+            self._popup_handler()
+            return
+        super().showPopup()
+
+
+class FTCPopupChoiceDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        title: str,
+        options: list[tuple[str, str]],
+        current_value: str,
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._selected_value = str(current_value or "")
+        self._choice_buttons: dict[str, AnimatedButton] = {}
+
+        options_clean = [(str(label), str(value)) for label, value in options if str(value).strip()]
+        if not options_clean:
+            options_clean = [("Normal", "normal")]
+        known_values = {value for _label, value in options_clean}
+        if self._selected_value not in known_values:
+            self._selected_value = options_clean[0][1]
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(44, 44, 44, 44)
+        root.setSpacing(0)
+
+        self.card = QFrame(self)
+        self.card.setObjectName("FTCControlsPopupCard")
+        card_shadow = QGraphicsDropShadowEffect(self.card)
+        card_shadow.setBlurRadius(44)
+        card_shadow.setOffset(0, 0)
+        card_shadow.setColor(QColor(13, 26, 39, 105))
+        self.card.setGraphicsEffect(card_shadow)
+        root.addWidget(self.card)
+
+        body = QVBoxLayout(self.card)
+        body.setContentsMargins(24, 22, 24, 20)
+        body.setSpacing(16)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        header_title = QLabel(title)
+        header_title.setObjectName("SectionTitle")
+        header.addWidget(header_title)
+        header.addStretch(1)
+
+        icon_provider = getattr(parent, "icons", None)
+        if icon_provider is not None and hasattr(icon_provider, "icon"):
+            save_icon = icon_provider.icon("common", "check", "C")
+            close_icon = icon_provider.icon("common", "cross_two", "X")
+        else:
+            save_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+            close_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+
+        self.save_btn = QToolButton()
+        self.save_btn.setObjectName("FTCPopupIconButton")
+        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_btn.setIcon(save_icon if isinstance(save_icon, QIcon) else QIcon())
+        self.save_btn.setIconSize(QSize(15, 15))
+        self.save_btn.setFixedSize(34, 34)
+        self.save_btn.clicked.connect(self._save_and_accept)
+        header.addWidget(self.save_btn)
+
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("FTCPopupIconButton")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setIcon(close_icon if isinstance(close_icon, QIcon) else QIcon())
+        self.close_btn.setIconSize(QSize(15, 15))
+        self.close_btn.setFixedSize(34, 34)
+        self.close_btn.clicked.connect(self.reject)
+        header.addWidget(self.close_btn)
+        body.addLayout(header)
+
+        choices_shell = QFrame()
+        choices_shell.setObjectName("FTCPopupFieldShell")
+        choices_layout = QHBoxLayout(choices_shell)
+        choices_layout.setContentsMargins(8, 8, 8, 8)
+        choices_layout.setSpacing(8)
+        for label, value in options_clean:
+            button = AnimatedButton(label)
+            button.setObjectName("FTCPopupChoiceButton")
+            button.setCheckable(True)
+            button.setProperty("disablePressMotion", True)
+            button.set_motion_scale_range(0.0)
+            button.clicked.connect(lambda _checked=False, selected=value: self._set_value(selected))
+            choices_layout.addWidget(button, 1)
+            self._choice_buttons[value] = button
+        body.addWidget(choices_shell)
+        self._refresh_buttons()
+        self.setMinimumWidth(500)
+
+    def selected_value(self) -> str:
+        return str(self._selected_value or "")
+
+    def exec_with_backdrop(self) -> int:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            return self.exec()
+        finally:
+            self._clear_backdrop()
+
+    def mousePressEvent(self, event) -> None:
+        if not self.card.geometry().contains(event.position().toPoint()):
+            self.reject()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _set_value(self, value: str) -> None:
+        self._selected_value = str(value or "")
+        self._refresh_buttons()
+
+    def _refresh_buttons(self) -> None:
+        for value, button in self._choice_buttons.items():
+            selected = value == self._selected_value
+            button.setChecked(selected)
+            button.setProperty("selected", selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _save_and_accept(self) -> None:
+        self.done(QDialog.DialogCode.Accepted)
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._previous_effect = None
 
 
 class SettingsDialog(QDialog):
@@ -300,9 +487,10 @@ class SettingsDialog(QDialog):
         ftc_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         ftc_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
-        self.ftc_default_mode = AnimatedComboBox()
+        self.ftc_default_mode = PopupMenuComboBox()
         self.ftc_default_mode.addItem("Standard", "standard")
         self.ftc_default_mode.addItem("Force", "force")
+        self.ftc_default_mode.set_popup_handler(self._open_ftc_mode_picker)
 
         self.ftc_questions_standard = QSpinBox()
         self.ftc_questions_standard.setRange(1, 30)
@@ -311,12 +499,13 @@ class SettingsDialog(QDialog):
         self.ftc_questions_force.setRange(1, 30)
         self.ftc_questions_force.setMinimumWidth(140)
 
-        self.ftc_difficulty = AnimatedComboBox()
+        self.ftc_difficulty = PopupMenuComboBox()
         self.ftc_difficulty.addItem("Easy", "easy")
         self.ftc_difficulty.addItem("Kinda easy", "kinda easy")
         self.ftc_difficulty.addItem("Normal", "normal")
         self.ftc_difficulty.addItem("Kinda difficult", "kinda difficult")
         self.ftc_difficulty.addItem("Difficult", "difficult")
+        self.ftc_difficulty.set_popup_handler(self._open_ftc_difficulty_picker)
 
         self.ftc_ocr_checkbox = QCheckBox("Use OCR in Files To Cards")
 
@@ -339,6 +528,44 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         scroll.setWidget(host)
         return scroll
+
+    def _open_ftc_mode_picker(self) -> None:
+        self._open_ftc_choice_picker(
+            title="Default mode",
+            control=self.ftc_default_mode,
+            fallback_value="standard",
+        )
+
+    def _open_ftc_difficulty_picker(self) -> None:
+        self._open_ftc_choice_picker(
+            title="Difficulty",
+            control=self.ftc_difficulty,
+            fallback_value="normal",
+        )
+
+    def _open_ftc_choice_picker(self, *, title: str, control: QComboBox, fallback_value: str) -> None:
+        options: list[tuple[str, str]] = []
+        for index in range(control.count()):
+            label = str(control.itemText(index)).strip()
+            value = str(control.itemData(index) or "").strip()
+            if label and value:
+                options.append((label, value))
+        current_value = str(control.currentData() or fallback_value).strip() or fallback_value
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        picker = FTCPopupChoiceDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            title=title,
+            options=options,
+            current_value=current_value,
+        )
+        if picker.exec_with_backdrop() != QDialog.DialogCode.Accepted:
+            return
+        selected = picker.selected_value().strip() or fallback_value
+        selected_index = control.findData(selected)
+        if selected_index >= 0:
+            control.setCurrentIndex(selected_index)
 
     def _build_ai_tab(self) -> QWidget:
         scroll = QScrollArea()

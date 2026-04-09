@@ -5,10 +5,11 @@ import html
 from pathlib import Path
 import re
 import shutil
+import sys
 import webbrowser
 
-from PySide6.QtCore import QEasingCurve, QPoint, QRect, Qt, QTimer, Signal, QVariantAnimation
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRegularExpression, QSize, Qt, QTimer, Signal, QVariantAnimation
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSlider,
-    QSpinBox,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -54,6 +55,83 @@ class SetupState:
     performance_arena: dict | None = None
 
 
+def _normalized_import_profile_payload(*, inspection, archive_file: str, archive_age_grade_pattern: re.Pattern[str]) -> dict:
+    manifest = inspection.manifest if isinstance(inspection.manifest, dict) else {}
+    raw_profile = inspection.profile if isinstance(inspection.profile, dict) else {}
+    manifest_profile = manifest.get("profile", {}) if isinstance(manifest.get("profile", {}), dict) else {}
+    setup_payload = manifest.get("setup", {}) if isinstance(manifest.get("setup", {}), dict) else {}
+
+    sources = [raw_profile, manifest_profile, setup_payload, manifest]
+
+    def _first_text(keys: tuple[str, ...]) -> str:
+        for source in sources:
+            for key in keys:
+                value = source.get(key, None)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+        return ""
+
+    def _first_int(keys: tuple[str, ...]) -> int | None:
+        for source in sources:
+            for key in keys:
+                value = source.get(key, None)
+                if value is None:
+                    continue
+                try:
+                    return int(str(value).strip())
+                except ValueError:
+                    continue
+        return None
+
+    name = _first_text(("name", "user_name", "username", "student_name", "account_name"))
+    if not name:
+        name = str(manifest.get("account_name", "")).strip()
+    profile_name = _first_text(("profile_name", "display_name", "nickname"))
+    if not profile_name:
+        profile_name = name
+
+    archive_match = archive_age_grade_pattern.search(str(archive_file).strip())
+    age_from_filename = int(archive_match.group("age")) if archive_match else None
+    grade_from_filename = int(archive_match.group("grade")) if archive_match else None
+
+    age_number = _first_int(("age", "user_age", "student_age"))
+    if age_number is None:
+        age_number = age_from_filename
+    if age_number is None:
+        age_text = ""
+    else:
+        age_text = str(max(4, min(age_number, 99)))
+
+    grade_text = _first_text(("grade", "class_grade", "school_grade", "class", "year"))
+    if not grade_text and grade_from_filename is not None:
+        grade_text = f"Grade {grade_from_filename}"
+    if grade_text:
+        digits = "".join(ch for ch in grade_text if ch.isdigit())
+        if digits:
+            grade_text = f"Grade {digits[:2]}"
+
+    gender_text = _first_text(("gender", "sex", "user_gender"))
+    hobbies_text = _first_text(("hobbies", "hobby", "interests", "about", "bio"))
+    focus_value = _first_int(("attention_span_minutes", "question_focus_level", "attention", "focus_minutes", "focus_time"))
+    if focus_value is None:
+        focus_value = 5
+    focus_value = max(1, min(focus_value, 10))
+
+    return {
+        "name": name,
+        "profile_name": profile_name,
+        "age": age_text,
+        "grade": grade_text,
+        "gender": gender_text,
+        "hobbies": hobbies_text,
+        "attention_span_minutes": focus_value,
+        "question_focus_level": focus_value,
+    }
+
+
 class OnboardingPage(QWidget):
     changed = Signal()
 
@@ -74,9 +152,11 @@ class OnboardingPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        has_body = bool(body.strip())
+        root.setSpacing(8 if not has_body else 12)
         root.addWidget(title_label)
-        root.addWidget(body_label)
+        if has_body:
+            root.addWidget(body_label)
         root.addWidget(self._banner, 0, Qt.AlignHCenter)
         root.addLayout(self._body_layout, 1)
 
@@ -93,13 +173,258 @@ class OnboardingPage(QWidget):
 class FieldBlock(QWidget):
     def __init__(self, title: str, widget: QWidget) -> None:
         super().__init__()
-        title_label = QLabel(title)
-        title_label.setObjectName("SectionTitle")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        layout.addWidget(title_label)
+        has_title = bool(str(title).strip())
+        layout.setSpacing(6 if has_title else 0)
+        if has_title:
+            title_label = QLabel(title)
+            title_label.setObjectName("SectionTitle")
+            layout.addWidget(title_label)
         layout.addWidget(widget)
+
+
+class FadingIconButton(AnimatedButton):
+    def __init__(
+        self,
+        *,
+        icon_path: Path,
+        tooltip: str,
+        button_size: int = 36,
+        icon_size: int = 14,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._hover_fill = 0.0
+        self._press_fill = 0.0
+        self.setProperty("disablePressMotion", True)
+        self.setObjectName("WizardIconButton")
+        self.setText("")
+        self.setIcon(QIcon(str(icon_path)))
+        self.setIconSize(QSize(icon_size, icon_size))
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(button_size, button_size)
+        self.setStyleSheet(
+            """
+            QPushButton#WizardIconButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 12px;
+                padding: 0px;
+            }
+            QPushButton#WizardIconButton:disabled {
+                background: transparent;
+                border: 1px solid transparent;
+            }
+            """
+        )
+
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(180)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._hover_anim.valueChanged.connect(self._set_hover_fill)
+
+        self._press_anim = QVariantAnimation(self)
+        self._press_anim.setDuration(110)
+        self._press_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._press_anim.valueChanged.connect(self._set_press_fill)
+
+    def _set_hover_fill(self, value) -> None:
+        self._hover_fill = float(value)
+        self.update()
+
+    def _set_press_fill(self, value) -> None:
+        self._press_fill = float(value)
+        self.update()
+
+    def _animate_fill(self, animation: QVariantAnimation, target: float) -> None:
+        animation.stop()
+        current = float(animation.currentValue()) if animation.currentValue() is not None else (
+            self._hover_fill if animation is self._hover_anim else self._press_fill
+        )
+        animation.setStartValue(current)
+        animation.setEndValue(float(target))
+        animation.start()
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        if self.isEnabled():
+            self._animate_fill(self._hover_anim, 1.0)
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self._animate_fill(self._hover_anim, 0.0)
+        self._animate_fill(self._press_anim, 0.0)
+
+    def mousePressEvent(self, event) -> None:
+        if self.isEnabled():
+            self._animate_fill(self._press_anim, 1.0)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._animate_fill(self._press_anim, 0.0)
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        if not enabled:
+            self._hover_fill = 0.0
+            self._press_fill = 0.0
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.isEnabled():
+            return
+        fill_strength = max(self._hover_fill * 0.42, self._press_fill * 0.72)
+        if fill_strength <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(19, 49, 75, int(255 * min(0.22, fill_strength))))
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(rect, 12, 12)
+
+
+class PlaceholderComboBox(AnimatedComboBox):
+    def __init__(self, placeholder: str, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._placeholder = placeholder
+        self._popup_handler = None
+        self.setPlaceholderText(placeholder)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8f9dad"))
+        self.setPalette(palette)
+        self.setCurrentIndex(-1)
+
+    def set_popup_handler(self, handler) -> None:
+        self._popup_handler = handler
+
+    def showPopup(self) -> None:
+        if callable(self._popup_handler):
+            self._popup_handler()
+            return
+        super().showPopup()
+
+
+class PrefixedHobbyLineEdit(AnimatedLineEdit):
+    def __init__(self, *, prefix: str = "I like ", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._prefix = prefix
+        self._syncing_prefix = False
+        self._intro_running = False
+        self.textChanged.connect(self._enforce_prefix)
+
+        self._intro_anim = QVariantAnimation(self)
+        self._intro_anim.setDuration(850)
+        self._intro_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._intro_anim.valueChanged.connect(self._on_intro_progress)
+        self._intro_anim.finished.connect(self._on_intro_finished)
+
+    def _prefix_len(self) -> int:
+        return len(self._prefix)
+
+    def _with_sync(self, fn) -> None:
+        if self._syncing_prefix:
+            return
+        self._syncing_prefix = True
+        try:
+            fn()
+        finally:
+            self._syncing_prefix = False
+
+    def _on_intro_progress(self, value) -> None:
+        progress = float(value)
+        count = int(round(progress * self._prefix_len()))
+        alpha = max(0.0, min(1.0, progress))
+
+        def _apply() -> None:
+            self.setText(self._prefix[:count])
+            self.setCursorPosition(len(self.text()))
+            self.setStyleSheet(f"QLineEdit {{ color: rgba(22, 32, 43, {int(255 * alpha)}); }}")
+
+        self._with_sync(_apply)
+
+    def _on_intro_finished(self) -> None:
+        self._intro_running = False
+
+        def _apply() -> None:
+            self.setReadOnly(False)
+            self.setText(self._prefix)
+            self.setCursorPosition(self._prefix_len())
+            self.setStyleSheet("")
+
+        self._with_sync(_apply)
+
+    def _start_intro_if_needed(self) -> None:
+        if self._intro_running or self.text().strip():
+            return
+        self._intro_running = True
+        self.setReadOnly(True)
+        self._intro_anim.stop()
+        self._intro_anim.setStartValue(0.0)
+        self._intro_anim.setEndValue(1.0)
+        self._intro_anim.start()
+
+    def _apply_prefix_now(self) -> None:
+        if self.text().startswith(self._prefix):
+            if self.cursorPosition() < self._prefix_len():
+                self.setCursorPosition(self._prefix_len())
+            return
+
+        def _apply() -> None:
+            current = self.text().strip()
+            self.setText(f"{self._prefix}{current}" if current else self._prefix)
+            self.setCursorPosition(max(self._prefix_len(), len(self.text())))
+
+        self._with_sync(_apply)
+
+    def _enforce_prefix(self, _text: str) -> None:
+        if self._syncing_prefix or not self.hasFocus():
+            return
+        if self._intro_running:
+            return
+        self._apply_prefix_now()
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        if not self.text().strip():
+            self._start_intro_if_needed()
+        else:
+            self._apply_prefix_now()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if self.cursorPosition() < self._prefix_len():
+            self.setCursorPosition(self._prefix_len())
+
+    def keyPressEvent(self, event) -> None:
+        if self._intro_running:
+            event.ignore()
+            return
+        key = event.key()
+        has_selection = self.hasSelectedText()
+        selection_start = self.selectionStart()
+        if key == Qt.Key.Key_Backspace:
+            if (has_selection and selection_start < self._prefix_len()) or (
+                not has_selection and self.cursorPosition() <= self._prefix_len()
+            ):
+                return
+        if key == Qt.Key.Key_Delete:
+            if (has_selection and selection_start < self._prefix_len()) or (
+                not has_selection and self.cursorPosition() < self._prefix_len()
+            ):
+                return
+        if key == Qt.Key.Key_Home:
+            self.setCursorPosition(self._prefix_len())
+            return
+        if key == Qt.Key.Key_Left and not has_selection and self.cursorPosition() <= self._prefix_len():
+            return
+        super().keyPressEvent(event)
+        if self.cursorPosition() < self._prefix_len():
+            self.setCursorPosition(self._prefix_len())
 
 
 class StartupPopupDialog(QDialog):
@@ -219,47 +544,549 @@ class StartupPopupDialog(QDialog):
         self._previous_effect = None
 
 
+class GradePickerDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        anchor: QWidget,
+        options: list[str],
+        current_value: str = "",
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._choice = ""
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._anchor = anchor
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._applied_blur: QGraphicsBlurEffect | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("GradePickerCard")
+        card.setStyleSheet(
+            """
+            QFrame#GradePickerCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(216, 225, 234, 0.88);
+                border-radius: 30px;
+            }
+            QLabel#GradePickerTitle {
+                color: #142130;
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QLabel#GradePickerMeta {
+                color: #6d7c8b;
+                font-size: 12px;
+            }
+            QPushButton#GradePickerOption {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #728292;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QPushButton#GradePickerOption:hover {
+                background: rgba(237, 244, 250, 0.98);
+                border: 1px solid rgba(154, 180, 206, 0.92);
+            }
+            QPushButton#GradePickerOption[optionSelected="true"] {
+                background: rgba(221, 234, 247, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+                color: #4f6477;
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(42)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(13, 26, 39, 78))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(18, 16, 18, 20)
+        body.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        title = QLabel("Choose your grade")
+        title.setObjectName("GradePickerTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        icon_root = getattr(getattr(parent, "paths", None), "icons", None)
+        if isinstance(icon_root, Path):
+            close_icon = icon_root / "common" / "cross_two.png"
+            self.close_btn = FadingIconButton(
+                icon_path=close_icon,
+                tooltip="Close",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.close_btn.clicked.connect(self.reject)
+            header.addWidget(self.close_btn, 0, Qt.AlignTop)
+
+        body.addLayout(header)
+
+        meta = QLabel("Pick the grade that matches your current school level.")
+        meta.setObjectName("GradePickerMeta")
+        body.addWidget(meta)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        for column in range(5):
+            grid.setColumnStretch(column, 1)
+
+        def _button_for(option: str) -> AnimatedButton:
+            button = AnimatedButton(option)
+            button.setObjectName("GradePickerOption")
+            button.setProperty("disablePressMotion", True)
+            button.setFixedHeight(40)
+            button.setFixedWidth(118)
+            button.set_motion_scale_range(0.0)
+            button.set_motion_hover_grow(0, 0)
+            button.set_motion_lift(0.0)
+            button.set_motion_press_scale(0.0)
+            button.setProperty("optionSelected", option == current_value)
+            button.clicked.connect(lambda _checked=False, value=option: self._on_choice(value))
+            return button
+
+        top_row_options = options[:5]
+        bottom_row_options = options[5:10]
+        for column, option in enumerate(top_row_options):
+            grid.addWidget(_button_for(option), 0, column, alignment=Qt.AlignCenter)
+        for column, option in enumerate(bottom_row_options):
+            grid.addWidget(_button_for(option), 1, column, alignment=Qt.AlignCenter)
+
+        body.addLayout(grid)
+        self.setFixedSize(690, 228)
+
+    def _on_choice(self, value: str) -> None:
+        self._choice = value
+        self.accept()
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self._position_below_anchor()
+            self.exec()
+            return self._choice
+        finally:
+            self._clear_backdrop()
+
+    def _position_below_anchor(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        x = int(parent_rect.center().x() - (self.width() / 2))
+        y = int(parent_rect.center().y() - (self.height() / 2))
+        self.move(x, y)
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+        self._applied_blur = blur
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._applied_blur = None
+        self._previous_effect = None
+
+
+class GenderPickerDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        current_value: str = "",
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._applied_blur: QGraphicsBlurEffect | None = None
+        self._choice = ""
+        self._selected_preset = ""
+        self._fallback_preset = ""
+
+        normalized = current_value.strip()
+        lowered = normalized.lower()
+        if lowered == "male":
+            self._selected_preset = "Male"
+            self._fallback_preset = "Male"
+        elif lowered == "female":
+            self._selected_preset = "Female"
+            self._fallback_preset = "Female"
+        else:
+            self._choice = normalized
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("GenderPickerCard")
+        card.setStyleSheet(
+            """
+            QFrame#GenderPickerCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(216, 225, 234, 0.88);
+                border-radius: 30px;
+            }
+            QLabel#GenderPickerTitle {
+                color: #142130;
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QLabel#GenderPickerMeta {
+                color: #6d7c8b;
+                font-size: 12px;
+            }
+            QPushButton#GenderPresetOption {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QPushButton#GenderPresetOption:hover {
+                background: rgba(237, 244, 250, 0.98);
+                border: 1px solid rgba(154, 180, 206, 0.92);
+            }
+            QPushButton#GenderPresetOption[optionSelected="true"] {
+                background: rgba(221, 234, 247, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+                color: #102131;
+            }
+            QLineEdit#GenderCustomInput {
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+            }
+            QLineEdit#GenderCustomInput:focus {
+                background: rgba(252, 254, 255, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(42)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(13, 26, 39, 78))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(18, 14, 18, 16)
+        body.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        title = QLabel("Choose your gender")
+        title.setObjectName("GenderPickerTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        icon_root = getattr(getattr(parent, "paths", None), "icons", None)
+        if isinstance(icon_root, Path):
+            check_icon = icon_root / "common" / "check.png"
+            self.confirm_btn = FadingIconButton(
+                icon_path=check_icon,
+                tooltip="Apply",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.confirm_btn.clicked.connect(self._accept_current_choice)
+            header.addWidget(self.confirm_btn, 0, Qt.AlignTop)
+
+            close_icon = icon_root / "common" / "cross_two.png"
+            self.close_btn = FadingIconButton(
+                icon_path=close_icon,
+                tooltip="Close",
+                button_size=32,
+                icon_size=11,
+                parent=card,
+            )
+            self.close_btn.clicked.connect(self.reject)
+            header.addWidget(self.close_btn, 0, Qt.AlignTop)
+
+        body.addLayout(header)
+
+        meta = QLabel("Select one, or write your gender and pronouns below.")
+        meta.setObjectName("GenderPickerMeta")
+        body.addWidget(meta)
+
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, 8, 0, 2)
+        preset_row.setSpacing(10)
+
+        self.male_btn = AnimatedButton("Male")
+        self.male_btn.setObjectName("GenderPresetOption")
+        self.male_btn.setProperty("disablePressMotion", True)
+        self.male_btn.setFixedHeight(40)
+        self.male_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.male_btn.setProperty("optionSelected", self._selected_preset == "Male")
+        self.male_btn.set_motion_scale_range(0.0)
+        self.male_btn.set_motion_hover_grow(0, 0)
+        self.male_btn.set_motion_lift(0.0)
+        self.male_btn.set_motion_press_scale(0.0)
+        self.male_btn.clicked.connect(lambda: self._select_preset("Male"))
+
+        self.female_btn = AnimatedButton("Female")
+        self.female_btn.setObjectName("GenderPresetOption")
+        self.female_btn.setProperty("disablePressMotion", True)
+        self.female_btn.setFixedHeight(40)
+        self.female_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.female_btn.setProperty("optionSelected", self._selected_preset == "Female")
+        self.female_btn.set_motion_scale_range(0.0)
+        self.female_btn.set_motion_hover_grow(0, 0)
+        self.female_btn.set_motion_lift(0.0)
+        self.female_btn.set_motion_press_scale(0.0)
+        self.female_btn.clicked.connect(lambda: self._select_preset("Female"))
+
+        preset_row.addWidget(self.male_btn)
+        preset_row.addWidget(self.female_btn)
+        body.addLayout(preset_row)
+
+        self.custom_input = AnimatedLineEdit(card)
+        self.custom_input.setObjectName("GenderCustomInput")
+        self.custom_input.setPlaceholderText("Gender | Pronoun(s)")
+        self.custom_input.setFixedHeight(40)
+        self.custom_input.setText(self._choice)
+        self.custom_input.textEdited.connect(self._on_custom_text_edited)
+        body.addWidget(self.custom_input)
+
+        self.setFixedSize(430, 246)
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _select_preset(self, value: str) -> None:
+        self._selected_preset = value
+        self._fallback_preset = value
+        self._choice = ""
+        self.custom_input.blockSignals(True)
+        self.custom_input.clear()
+        self.custom_input.blockSignals(False)
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _on_custom_text_edited(self, text: str) -> None:
+        self._choice = text.strip()
+        if self._choice:
+            self._selected_preset = ""
+        self._refresh_selection_state()
+        self._refresh_confirm_state()
+
+    def _valid_custom_choice(self) -> str:
+        candidate = self.custom_input.text().strip()
+        if not candidate:
+            return ""
+        gender_part, separator, pronoun_part = candidate.partition("|")
+        if separator != "|":
+            return ""
+        gender = gender_part.strip()
+        pronouns = pronoun_part.strip()
+        if not gender or not pronouns:
+            return ""
+        return f"{gender} | {pronouns}"
+
+    def _refresh_selection_state(self) -> None:
+        self.male_btn.setProperty("optionSelected", self._selected_preset == "Male")
+        self.female_btn.setProperty("optionSelected", self._selected_preset == "Female")
+        for button in (self.male_btn, self.female_btn):
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _refresh_confirm_state(self) -> None:
+        has_choice = bool(self._valid_custom_choice() or self._selected_preset or self._fallback_preset)
+        if hasattr(self, "confirm_btn"):
+            self.confirm_btn.setEnabled(has_choice)
+
+    def _accept_current_choice(self) -> None:
+        valid_custom = self._valid_custom_choice()
+        if valid_custom:
+            self._choice = valid_custom
+        elif self._selected_preset:
+            self._choice = self._selected_preset
+        else:
+            self._choice = self._fallback_preset
+        if not self._choice:
+            return
+        self.accept()
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            self.exec()
+            return self._choice
+        finally:
+            self._clear_backdrop()
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        x = int(parent_rect.center().x() - (self.width() / 2))
+        y = int(parent_rect.center().y() - (self.height() / 2))
+        self.move(x, y)
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+        self._applied_blur = blur
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._applied_blur = None
+        self._previous_effect = None
+
+
 class ProfilePage(OnboardingPage):
     import_profile_requested = Signal()
     remove_import_requested = Signal()
 
-    def __init__(self, banners_root: Path, sounds: UiSoundBank | None = None) -> None:
+    def __init__(
+        self,
+        banners_root: Path,
+        sounds: UiSoundBank | None = None,
+        *,
+        onboarding_placeholder_tint: bool = False,
+    ) -> None:
         super().__init__(
             title="Welcome to ONCard",
-            body="Let us shape the app around how you study, with clean controls and less clutter from the start.",
+            body="",
             banner_path=banners_root / "onboarding_profile_banner_16x9.png",
             banner_name="onboarding_profile_banner_16x9.png",
         )
         self.sounds = sounds
+        self._onboarding_placeholder_tint = bool(onboarding_placeholder_tint)
         self._last_attention_value = 5
         self._import_archive_path = ""
         self._imported_profile_active = False
         self._allow_import_removal = True
+        self._show_inline_import_control = True
         self._profile_name_auto_sync = True
+        self._banner.banner_height = 300
+        self._banner.banner_width = int(self._banner.banner_height * (16 / 9))
+        self._banner.radius = 30
+        self._banner.setFixedSize(self._banner.banner_width, self._banner.banner_height)
+        self._banner.update()
+        root_layout = self.layout()
+        if root_layout is not None:
+            root_layout.setSpacing(8)
+        self.body_layout().setContentsMargins(0, 22, 0, 0)
 
         surface = QFrame()
         surface.setObjectName("Surface")
         polish_surface(surface)
         surface_layout = QVBoxLayout(surface)
-        surface_layout.setContentsMargins(18, 18, 18, 18)
-        surface_layout.setSpacing(12)
+        surface_layout.setContentsMargins(18, 28, 18, 6)
+        surface_layout.setSpacing(0)
 
-        grid = QGridLayout()
+        grid_host = QWidget()
+        grid_host.setStyleSheet("background: transparent;")
+        grid_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
         self.name_edit = AnimatedLineEdit()
+        self.name_edit.setPlaceholderText("User name")
         self.profile_name_edit = AnimatedLineEdit()
-        self.age_spin = QSpinBox()
-        self.age_spin.setRange(4, 99)
-        self.age_spin.setValue(16)
-        self.grade_combo = AnimatedComboBox()
-        self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
-        self.gender_combo = AnimatedComboBox()
+        self.profile_name_edit.setPlaceholderText("Profile name")
+        self.age_edit = AnimatedLineEdit()
+        self.age_edit.setObjectName("WizardAgeEdit")
+        self.age_edit.setPlaceholderText("Age:")
+        self.age_edit.setMaxLength(2)
+        self.age_edit.setValidator(QRegularExpressionValidator(QRegularExpression("(?:[0-9]|[1-9][0-9])?"), self.age_edit))
+        self.grade_combo = PlaceholderComboBox("grade")
+        self.grade_combo.setObjectName("WizardGradeCombo")
+        self.grade_combo.addItems([f"Grade {value}" for value in range(3, 13)])
+        self.grade_combo.setMaxVisibleItems(6)
+        self.grade_combo.set_popup_handler(self._open_grade_picker)
+        self.gender_combo = PlaceholderComboBox("gender")
+        self.gender_combo.setObjectName("WizardGenderCombo")
         self.gender_combo.addItems(["Male", "Female", "Custom"])
+        self.gender_combo.setMaxVisibleItems(6)
+        self.gender_combo.set_popup_handler(self._open_gender_picker)
         self.gender_custom_edit = AnimatedLineEdit()
-        self.gender_custom_edit.setMaxLength(20)
-        self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
+        self.gender_custom_edit.setMaxLength(64)
+        self.gender_custom_edit.setPlaceholderText("Gender | Pronoun(s)")
         self.gender_custom_edit.setVisible(False)
         self.gender_combo.currentIndexChanged.connect(self._on_gender_mode_changed)
         gender_shell = QWidget()
@@ -270,54 +1097,92 @@ class ProfilePage(OnboardingPage):
         gender_layout.setSpacing(6)
         gender_layout.addWidget(self.gender_combo)
         gender_layout.addWidget(self.gender_custom_edit)
-        self.hobbies_edit = AnimatedLineEdit()
+        self.hobbies_edit = PrefixedHobbyLineEdit(prefix="I like ")
+        self.hobbies_edit.setPlaceholderText("Hobbies / interests")
 
         self.attention_slider = QSlider(Qt.Horizontal)
+        self.attention_slider.setObjectName("WizardAttentionSlider")
         self.attention_slider.setRange(1, 10)
         self.attention_slider.setSingleStep(1)
         self.attention_slider.setPageStep(1)
         self.attention_slider.setValue(5)
+        self.attention_slider.setFixedHeight(28)
+        self.attention_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.attention_value = QLabel("Attention span per question: 5 min")
         self.attention_value.setObjectName("SectionText")
+        self.attention_value.setContentsMargins(0, 0, 0, 0)
 
         self.name_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.name_edit.textChanged.connect(self._on_name_changed)
+        self.name_edit.textEdited.connect(lambda text: self._capitalize_first_letter(self.name_edit, text))
         self.profile_name_edit.textEdited.connect(self._on_profile_name_edited)
-        self.age_spin.valueChanged.connect(lambda *_: self.changed.emit())
+        self.profile_name_edit.textEdited.connect(lambda text: self._capitalize_first_letter(self.profile_name_edit, text))
+        self.age_edit.textChanged.connect(lambda *_: self.changed.emit())
+        self.age_edit.textChanged.connect(lambda *_: self._refresh_age_visual_state())
         self.grade_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.grade_combo.currentIndexChanged.connect(lambda *_: self._refresh_grade_visual_state())
         self.gender_combo.currentTextChanged.connect(lambda *_: self.changed.emit())
+        self.gender_combo.currentIndexChanged.connect(lambda *_: self._refresh_gender_visual_state())
         self.gender_custom_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.hobbies_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.attention_slider.valueChanged.connect(self._on_attention_changed)
 
-        grid.addWidget(FieldBlock("User name", self.name_edit), 0, 0)
-        grid.addWidget(FieldBlock("Profile name", self.profile_name_edit), 0, 1)
-        grid.addWidget(FieldBlock("Age", self.age_spin), 1, 0)
-        grid.addWidget(FieldBlock("Grade", self.grade_combo), 1, 1)
-        grid.addWidget(FieldBlock("Hobbies / interests", self.hobbies_edit), 2, 0)
-        grid.addWidget(FieldBlock("Gender", gender_shell), 2, 1)
+        for control in (
+            self.name_edit,
+            self.profile_name_edit,
+            self.age_edit,
+            self.grade_combo,
+            self.gender_combo,
+            self.hobbies_edit,
+        ):
+            control.setFixedHeight(56)
+        self.gender_custom_edit.setFixedHeight(56)
 
-        surface_layout.addLayout(grid)
-        surface_layout.addWidget(self.attention_value)
-        surface_layout.addWidget(self.attention_slider)
+        grid.addWidget(FieldBlock("", self.name_edit), 0, 0)
+        grid.addWidget(FieldBlock("", self.profile_name_edit), 0, 1)
+        grid.addWidget(FieldBlock("", self.age_edit), 1, 0)
+        grid.addWidget(FieldBlock("", self.grade_combo), 1, 1)
+        grid.addWidget(FieldBlock("", self.hobbies_edit), 2, 0)
+        grid.addWidget(FieldBlock("", gender_shell), 2, 1)
+
+        attention_shell = QWidget()
+        attention_shell.setStyleSheet("background: transparent;")
+        attention_layout = QVBoxLayout(attention_shell)
+        attention_layout.setContentsMargins(0, 12, 0, 10)
+        attention_layout.setSpacing(6)
+        attention_layout.addWidget(self.attention_value, 0, Qt.AlignTop)
+        attention_layout.addWidget(self.attention_slider, 0, Qt.AlignTop)
+        attention_layout.addStretch(1)
+        attention_shell.setFixedHeight(90)
+        attention_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        grid.addWidget(attention_shell, 3, 0, 1, 2)
+
+        surface_layout.addWidget(grid_host, 0, Qt.AlignTop)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 2, 0, 0)
         controls.setSpacing(8)
-        self.import_profile_btn = AnimatedButton("Import profile")
-        self.import_profile_btn.setProperty("disablePressMotion", True)
-        self.import_profile_btn.clicked.connect(self.import_profile_requested.emit)
-        self.remove_zip_btn = AnimatedButton("remove zip file")
+        self.import_handshake_btn = FadingIconButton(
+            icon_path=(banners_root.parent / "icons" / "common" / "handshake.png"),
+            tooltip="Import profile",
+            button_size=34,
+            icon_size=14,
+        )
+        self.import_handshake_btn.clicked.connect(self.import_profile_requested.emit)
+        self.remove_zip_btn = AnimatedButton("Remove")
         self.remove_zip_btn.setProperty("disablePressMotion", True)
         self.remove_zip_btn.clicked.connect(self.remove_import_requested.emit)
         self.remove_zip_btn.hide()
-        controls.addWidget(self.import_profile_btn, 0, Qt.AlignLeft)
+        controls.addWidget(self.import_handshake_btn, 0, Qt.AlignLeft)
         controls.addWidget(self.remove_zip_btn, 0, Qt.AlignLeft)
         controls.addStretch(1)
         surface_layout.addLayout(controls)
 
-        self.body_layout().addWidget(surface)
-        self.body_layout().addStretch(1)
+        self._refresh_age_visual_state()
+        self._refresh_grade_visual_state()
+        self._refresh_gender_visual_state()
+
+        self.body_layout().addWidget(surface, 1)
 
     def _on_attention_changed(self, value: int) -> None:
         if value != self._last_attention_value and self.sounds is not None:
@@ -330,12 +1195,106 @@ class ProfilePage(OnboardingPage):
         if self._profile_name_auto_sync:
             self.profile_name_edit.setText(self.name_edit.text().strip())
 
+    def _capitalize_first_letter(self, widget: AnimatedLineEdit, text: str) -> None:
+        if not text:
+            return
+        trimmed = text.lstrip()
+        if not trimmed:
+            return
+        first = trimmed[0]
+        upper_first = first.upper()
+        if first == upper_first:
+            return
+        offset = len(text) - len(trimmed)
+        updated = f"{text[:offset]}{upper_first}{trimmed[1:]}"
+        cursor = widget.cursorPosition()
+        widget.blockSignals(True)
+        widget.setText(updated)
+        widget.blockSignals(False)
+        widget.setCursorPosition(min(cursor, len(updated)))
+        if widget is self.name_edit:
+            self._on_name_changed()
+        self.changed.emit()
+
     def _on_profile_name_edited(self, text: str) -> None:
         self._profile_name_auto_sync = text.strip() == self.name_edit.text().strip()
 
     def _on_gender_mode_changed(self) -> None:
-        is_custom = self.gender_combo.currentText().strip().lower() == "custom"
-        self.gender_custom_edit.setVisible(is_custom)
+        self.gender_custom_edit.setVisible(False)
+
+    def _refresh_age_visual_state(self) -> None:
+        is_placeholder = not self.age_edit.text().strip()
+        self._set_widget_text_tint(self.age_edit, muted=is_placeholder)
+
+    def _refresh_grade_visual_state(self) -> None:
+        self._set_widget_text_tint(
+            self.grade_combo,
+            muted=self._onboarding_placeholder_tint and self.grade_combo.currentIndex() < 0,
+        )
+        self.grade_combo.update()
+
+    def _open_grade_picker(self) -> None:
+        if not self.grade_combo.isEnabled():
+            return
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        options = [self.grade_combo.itemText(index) for index in range(self.grade_combo.count())]
+        current_value = self.grade_combo.currentText().strip() if self.grade_combo.currentIndex() >= 0 else ""
+        selected = GradePickerDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            anchor=self.grade_combo,
+            options=options,
+            current_value=current_value,
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        self.grade_combo.setCurrentText(selected)
+        self.grade_combo.setFocus()
+
+    def _open_gender_picker(self) -> None:
+        if not self.gender_combo.isEnabled():
+            return
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        current_value = self._effective_gender()
+        selected = GenderPickerDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            current_value=current_value,
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        normalized = selected.strip()
+        lowered = normalized.lower()
+        if lowered == "male":
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        elif lowered == "female":
+            self.gender_combo.setCurrentText("Female")
+            self.gender_custom_edit.clear()
+        else:
+            self.gender_combo.setCurrentText("Custom")
+            self.gender_custom_edit.setText(normalized[:64])
+        self.gender_combo.setFocus()
+
+    def _refresh_gender_visual_state(self) -> None:
+        self._set_widget_text_tint(
+            self.gender_combo,
+            muted=self._onboarding_placeholder_tint and self.gender_combo.currentIndex() < 0,
+        )
+        self.gender_combo.update()
+
+    def _set_widget_text_tint(self, widget: QWidget, *, muted: bool) -> None:
+        color = QColor("#8f9dad") if muted else QColor("#16202b")
+        palette = widget.palette()
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            palette.setColor(group, QPalette.ColorRole.Text, color)
+            palette.setColor(group, QPalette.ColorRole.ButtonText, color)
+            palette.setColor(group, QPalette.ColorRole.WindowText, color)
+            palette.setColor(group, QPalette.ColorRole.PlaceholderText, QColor("#8f9dad"))
+        widget.setPalette(palette)
+        widget.update()
 
     def _set_gender_from_profile(self, gender_value: str) -> None:
         gender = str(gender_value or "").strip()
@@ -348,16 +1307,19 @@ class ProfilePage(OnboardingPage):
             self.gender_custom_edit.clear()
         elif gender:
             self.gender_combo.setCurrentText("Custom")
-            self.gender_custom_edit.setText(gender[:20])
+            self.gender_custom_edit.setText(gender[:64])
         else:
-            self.gender_combo.setCurrentText("Male")
+            self.gender_combo.setCurrentIndex(-1)
             self.gender_custom_edit.clear()
         self._on_gender_mode_changed()
+        self._refresh_gender_visual_state()
 
     def _effective_gender(self) -> str:
         mode = self.gender_combo.currentText().strip()
+        if not mode:
+            return ""
         if mode.lower() == "custom":
-            return self.gender_custom_edit.text().strip()[:20]
+            return self.gender_custom_edit.text().strip()[:64]
         return mode
 
     def can_continue(self) -> bool:
@@ -365,19 +1327,36 @@ class ProfilePage(OnboardingPage):
             return True
         if not self.name_edit.text().strip():
             return False
+        if not self.profile_name_edit.text().strip():
+            return False
+        if not self.age_edit.text().strip():
+            return False
+        if self.grade_combo.currentIndex() < 0:
+            return False
+        if self.gender_combo.currentIndex() < 0:
+            return False
+        hobbies_text = self.hobbies_edit.text().strip()
+        if hobbies_text.lower().startswith("i like "):
+            hobbies_text = hobbies_text[7:].strip()
+        if not hobbies_text:
+            return False
         if self.gender_combo.currentText().strip().lower() == "custom":
             return bool(self.gender_custom_edit.text().strip())
         return True
 
     def profile_payload(self) -> dict:
         user_name = self.name_edit.text().strip()
+        age_text = self.age_edit.text().strip()
+        hobbies_text = self.hobbies_edit.text().strip()
+        if hobbies_text.lower().startswith("i like "):
+            hobbies_text = hobbies_text[7:].strip()
         return {
             "name": user_name,
             "profile_name": self.profile_name_edit.text().strip() or user_name,
-            "age": str(self.age_spin.value()),
-            "grade": self.grade_combo.currentText(),
+            "age": age_text,
+            "grade": "" if self.grade_combo.currentIndex() < 0 else self.grade_combo.currentText(),
             "gender": self._effective_gender(),
-            "hobbies": self.hobbies_edit.text().strip(),
+            "hobbies": hobbies_text,
             "attention_span_minutes": self.attention_slider.value(),
             "question_focus_level": self.attention_slider.value(),
         }
@@ -393,11 +1372,15 @@ class ProfilePage(OnboardingPage):
             age = int(str(profile.get("age", "")).strip() or 16)
         except ValueError:
             age = 16
-        age = max(self.age_spin.minimum(), min(age, self.age_spin.maximum()))
-        self.age_spin.setValue(age)
+        age = max(0, min(age, 9))
+        self.age_edit.setText(str(age) if age > 0 else "")
+        self._refresh_age_visual_state()
         grade = str(profile.get("grade", "")).strip()
         if grade:
             self.grade_combo.setCurrentText(grade)
+        else:
+            self.grade_combo.setCurrentIndex(-1)
+        self._refresh_grade_visual_state()
         self._set_gender_from_profile(str(profile.get("gender", "")).strip())
         self.hobbies_edit.setText(str(profile.get("hobbies", "")).strip())
         try:
@@ -422,7 +1405,7 @@ class ProfilePage(OnboardingPage):
     def _set_form_locked(self, locked: bool) -> None:
         self.name_edit.setEnabled(not locked)
         self.profile_name_edit.setEnabled(not locked)
-        self.age_spin.setEnabled(not locked)
+        self.age_edit.setEnabled(not locked)
         self.grade_combo.setEnabled(not locked)
         self.gender_combo.setEnabled(not locked)
         self.gender_custom_edit.setEnabled(not locked and self.gender_combo.currentText().strip().lower() == "custom")
@@ -432,13 +1415,17 @@ class ProfilePage(OnboardingPage):
             self._on_gender_mode_changed()
         self.hobbies_edit.setEnabled(not locked)
         self.attention_slider.setEnabled(not locked)
-        self.import_profile_btn.setVisible(not locked)
+        self.import_handshake_btn.setVisible((not locked) and self._show_inline_import_control)
         self.remove_zip_btn.setVisible(locked and self._allow_import_removal)
 
     def set_allow_import_removal(self, allow: bool) -> None:
         self._allow_import_removal = bool(allow)
         if self._import_archive_path:
             self.remove_zip_btn.setVisible(self._allow_import_removal)
+
+    def set_inline_import_control_visible(self, visible: bool) -> None:
+        self._show_inline_import_control = bool(visible)
+        self.import_handshake_btn.setVisible(self._show_inline_import_control and not self._imported_profile_active)
 
 
 class AboutPage(OnboardingPage):
@@ -481,7 +1468,7 @@ class ModelInstallerPage(OnboardingPage):
     def __init__(self, banners_root: Path, icons: IconHelper, ollama: OllamaService) -> None:
         super().__init__(
             title="Install AI models",
-            body="ONCard installs the required AI models automatically, including Gemma for generation and Nomic for embeddings.",
+            body="",
             banner_path=banners_root / "onboarding_models_banner_16x9.png",
             banner_name="onboarding_models_banner_16x9.png",
         )
@@ -509,25 +1496,13 @@ class ModelInstallerPage(OnboardingPage):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
-        self.summary_label = QLabel()
-        self.summary_label.setObjectName("SectionTitle")
-        self.summary_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.size_label = QLabel()
         self.size_label.setObjectName("SectionText")
         self.size_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        self.warning_label = QLabel()
-        self.warning_label.setObjectName("SmallMeta")
-        self.warning_label.setWordWrap(True)
-        self.warning_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        self.ollama_label = QLabel("Ollama is not installed yet. Install it first, then come back here.")
-        self.ollama_label.setObjectName("SmallMeta")
-        self.ollama_label.setWordWrap(True)
-        self.ollama_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.ollama_button = AnimatedButton("Open Ollama website")
         self.ollama_button.setProperty("disablePressMotion", True)
         self.ollama_button.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
         if self.ollama_installed:
-            self.ollama_label.hide()
             self.ollama_button.hide()
 
         self.install_button = AnimatedButton("Install selected models")
@@ -549,7 +1524,7 @@ class ModelInstallerPage(OnboardingPage):
         self.progress.setStyleSheet(
             """
             QProgressBar#InstallerThinProgress {
-                background: rgba(184, 200, 216, 0.45);
+                background: #d4deea;
                 border: none;
                 border-radius: 4px;
             }
@@ -562,18 +1537,16 @@ class ModelInstallerPage(OnboardingPage):
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(84)
-        self.log.setMaximumHeight(110)
-        self.log.setPlaceholderText("Installation progress appears here.")
+        self.log.setMinimumHeight(260)
+        self.log.setMaximumHeight(360)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setPlaceholderText("")
 
-        layout.addWidget(self.summary_label)
         layout.addWidget(self.size_label)
-        layout.addWidget(self.warning_label)
-        layout.addWidget(self.ollama_label)
-        layout.addWidget(self.ollama_button, 0, Qt.AlignLeft)
+        layout.addWidget(self.ollama_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.install_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.log)
+        layout.addWidget(self.log, 1)
 
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
@@ -588,30 +1561,16 @@ class ModelInstallerPage(OnboardingPage):
     def _refresh_copy(self) -> None:
         selected = self.selected_models()
         size_gb = total_selected_size_gb(selected)
-        can_install = self.ollama_installed and self.ram_gb >= 7
         if self.ram_gb < 7:
-            self.summary_label.setText("This device is below the minimum requirement for ONCard.")
             self.install_button.setEnabled(False)
         elif not self.ollama_installed:
-            self.summary_label.setText("Install Ollama first to unlock model downloads.")
             self.install_button.setEnabled(False)
-        elif self.ram_gb >= 23:
-            self.summary_label.setText("Your device is eligible for full download.")
-            self.install_button.setEnabled(True)
-        elif self.ram_gb >= 15:
-            self.summary_label.setText("Your device is eligible for the standard download.")
-            self.install_button.setEnabled(True)
         else:
-            self.summary_label.setText("Your device will use the lighter default download.")
             self.install_button.setEnabled(True)
 
-        self.size_label.setText(f"Selected download size: {size_gb:.1f} GB")
-        self.warning_label.setText(
-            "ONCard uses gemma3:4b for OCR and generation tasks, plus nomic-embed-text-v2-moe for adaptive-study embeddings."
+        self.size_label.setText(
+            f"Selected download size: {size_gb:.1f} GB | Models: Gemma3:4b and Nomic-embed-MoE"
         )
-        self.warning_label.show()
-
-        self.ollama_label.setVisible(not self.ollama_installed)
         self.ollama_button.setVisible(not self.ollama_installed)
 
     def selected_models(self) -> list[str]:
@@ -721,7 +1680,7 @@ class PerformancePage(OnboardingPage):
     def __init__(self, banners_root: Path, ollama: OllamaService) -> None:
         super().__init__(
             title="Test performance",
-            body="Run the Gemma3:4b speed test. This step is required so ONCard can continue with the full setup flow.",
+            body="",
             banner_path=banners_root / "performance_default_banner_16x9.png",
             banner_name="performance_default_banner_16x9.png",
         )
@@ -774,21 +1733,16 @@ class PerformancePage(OnboardingPage):
             }
             """
         )
-        self.result_title = QLabel("No test run yet.")
-        self.result_title.setObjectName("SectionTitle")
-        self.badge = QLabel("")
-        self.badge.setObjectName("TierBadge")
-        self.badge.hide()
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(84)
-        self.log.setMaximumHeight(110)
+        self.log.setMinimumHeight(260)
+        self.log.setMaximumHeight(360)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setPlaceholderText("")
 
         layout.addWidget(self.run_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.result_title)
-        layout.addWidget(self.badge)
-        layout.addWidget(self.log)
+        layout.addWidget(self.log, 1)
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
 
@@ -810,8 +1764,6 @@ class PerformancePage(OnboardingPage):
             return
         self._reset_progress_sequence(0)
         self.log.clear()
-        self.result_title.setText("Running test...")
-        self.badge.hide()
         self.worker = PerformanceWorker(self.ollama)
         self.worker.progress.connect(self.log.append)
         self.worker.sample.connect(self._on_sample)
@@ -826,15 +1778,20 @@ class PerformancePage(OnboardingPage):
     def _on_done(self, avg_tps: float, tier: str) -> None:
         self.avg_tps = avg_tps
         self.tier = tier
-        self.result_title.setText(f"Average TPS: {avg_tps}")
-        self.badge.setText(tier)
-        self.badge.show()
         self._enqueue_progress(100)
         self._set_banner_by_tier(tier)
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        StartupPopupDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            message=f"Performance level: {tier}",
+            buttons=["Okay"],
+            default_button="Okay",
+        ).exec_with_backdrop()
         self.changed.emit()
 
     def _on_failed(self, message: str) -> None:
-        self.result_title.setText("Performance test failed.")
         self.log.append(message)
         self.changed.emit()
 
@@ -969,7 +1926,7 @@ class OnboardingWizard(QDialog):
             """
             QFrame#OnboardingWindowShell {
                 background: #ffffff;
-                border: none;
+                border: 1px solid rgba(198, 210, 223, 0.92);
                 border-radius: 30px;
             }
             QStackedWidget#OnboardingStack,
@@ -986,11 +1943,28 @@ class OnboardingWizard(QDialog):
         shell_surface = QFrame(self)
         shell_surface.setObjectName("OnboardingWindowShell")
         polish_surface(shell_surface)
+        self._shell_shadow_effect = None
+        if not (sys.platform == "win32" and self.testAttribute(Qt.WA_TranslucentBackground)):
+            shell_shadow = QGraphicsDropShadowEffect(shell_surface)
+            shell_shadow.setBlurRadius(34)
+            shell_shadow.setOffset(0, 10)
+            shell_shadow.setColor(QColor(17, 35, 57, 68))
+            shell_surface.setGraphicsEffect(shell_shadow)
+            self._shell_shadow_effect = shell_shadow
         root.addWidget(shell_surface, 1)
 
         shell = QVBoxLayout(shell_surface)
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
+        self._shell_surface = shell_surface
+        self.close_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "cross_two.png",
+            tooltip="Close",
+            button_size=34,
+            icon_size=12,
+            parent=shell_surface,
+        )
+        self.close_btn.clicked.connect(self.reject)
 
         blur_layer = QWidget(shell_surface)
         blur_layer.setObjectName("OnboardingBlurLayer")
@@ -1003,8 +1977,13 @@ class OnboardingWizard(QDialog):
 
         self.stack = AnimatedStackedWidget()
         self.stack.setObjectName("OnboardingStack")
-        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self.profile_page = ProfilePage(
+            self.paths.banners,
+            self.sounds,
+            onboarding_placeholder_tint=True,
+        )
         self.profile_page.set_allow_import_removal(False)
+        self.profile_page.set_inline_import_control_visible(False)
         self.about_page = AboutPage(self.paths.banners)
         self.model_page = ModelInstallerPage(self.paths.banners, self.icons, self.ollama)
         self.performance_page = PerformancePage(self.paths.banners, self.ollama)
@@ -1024,27 +2003,48 @@ class OnboardingWizard(QDialog):
         blur_layout.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
-        nav.addStretch(1)
-        self.back_btn = AnimatedButton("Back")
-        self.back_btn.setProperty("disablePressMotion", True)
-        self.next_btn = AnimatedButton("Next")
-        self.next_btn.setProperty("disablePressMotion", True)
-        self.next_btn.setObjectName("PrimaryButton")
-        self.finish_btn = AnimatedButton("Finish")
-        self.finish_btn.setProperty("disablePressMotion", True)
-        self.finish_btn.setObjectName("PrimaryButton")
-        self.cancel_btn = AnimatedButton("Cancel")
-        self.cancel_btn.setProperty("disablePressMotion", True)
+        nav.setContentsMargins(0, 8, 8, 4)
+        nav.setSpacing(0)
+        self.add_profile_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "handshake.png",
+            tooltip="Add Profile",
+            button_size=34,
+            icon_size=14,
+        )
+        self.back_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "angle-left.png",
+            tooltip="Back",
+            button_size=34,
+            icon_size=13,
+        )
+        self.next_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "angle-right.png",
+            tooltip="Next",
+            button_size=34,
+            icon_size=13,
+        )
+        self.finish_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "check.png",
+            tooltip="Finish",
+            button_size=34,
+            icon_size=12,
+        )
+        self.add_profile_btn.clicked.connect(self._import_profile_into_profile_page)
         self.back_btn.clicked.connect(self._go_back)
         self.next_btn.clicked.connect(self._go_next)
         self.finish_btn.clicked.connect(self.accept)
-        self.cancel_btn.clicked.connect(self.reject)
-        nav.addWidget(self.back_btn)
-        nav.addWidget(self.next_btn)
-        nav.addWidget(self.finish_btn)
-        nav.addWidget(self.cancel_btn)
+        nav.addStretch(1)
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+        action_row.addWidget(self.add_profile_btn)
+        action_row.addWidget(self.back_btn)
+        action_row.addWidget(self.next_btn)
+        action_row.addWidget(self.finish_btn)
+        nav.addLayout(action_row)
         blur_layout.addLayout(nav)
         shell.addWidget(blur_layer, 1)
+        self._position_close_button()
 
         polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
         self._show_page(0)
@@ -1052,6 +2052,21 @@ class OnboardingWizard(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+        self._position_close_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_close_button()
+
+    def _position_close_button(self) -> None:
+        if not hasattr(self, "close_btn") or not hasattr(self, "_shell_surface"):
+            return
+        margin_right = 18
+        margin_top = 14
+        x = self._shell_surface.width() - self.close_btn.width() - margin_right
+        y = margin_top
+        self.close_btn.move(max(0, x), max(0, y))
+        self.close_btn.raise_()
 
     def _show_page(self, index: int) -> None:
         self.current_index = index
@@ -1067,6 +2082,8 @@ class OnboardingWizard(QDialog):
             self.back_btn.setEnabled(self.current_index > model_index)
         else:
             self.back_btn.setEnabled(self.current_index > 0)
+        on_profile_page = self.current_index == self.pages.index(self.profile_page)
+        self.add_profile_btn.setVisible(on_profile_page and not self._import_flow_locked)
         self.next_btn.setVisible(not last)
         self.finish_btn.setVisible(last)
         self.next_btn.setEnabled(current.can_continue())
@@ -1126,80 +2143,11 @@ class OnboardingWizard(QDialog):
         self._refresh_nav()
 
     def _normalized_import_profile(self, *, inspection, archive_file: str) -> dict:
-        manifest = inspection.manifest if isinstance(inspection.manifest, dict) else {}
-        raw_profile = inspection.profile if isinstance(inspection.profile, dict) else {}
-        manifest_profile = manifest.get("profile", {}) if isinstance(manifest.get("profile", {}), dict) else {}
-        setup_payload = manifest.get("setup", {}) if isinstance(manifest.get("setup", {}), dict) else {}
-
-        sources = [raw_profile, manifest_profile, setup_payload, manifest]
-
-        def _first_text(keys: tuple[str, ...]) -> str:
-            for source in sources:
-                for key in keys:
-                    value = source.get(key, None)
-                    if value is None:
-                        continue
-                    text = str(value).strip()
-                    if text:
-                        return text
-            return ""
-
-        def _first_int(keys: tuple[str, ...]) -> int | None:
-            for source in sources:
-                for key in keys:
-                    value = source.get(key, None)
-                    if value is None:
-                        continue
-                    try:
-                        return int(str(value).strip())
-                    except ValueError:
-                        continue
-            return None
-
-        name = _first_text(("name", "user_name", "username", "student_name", "account_name"))
-        if not name:
-            name = str(manifest.get("account_name", "")).strip()
-        profile_name = _first_text(("profile_name", "display_name", "nickname"))
-        if not profile_name:
-            profile_name = name
-
-        archive_match = self.ARCHIVE_AGE_GRADE_PATTERN.search(str(archive_file).strip())
-        age_from_filename = int(archive_match.group("age")) if archive_match else None
-        grade_from_filename = int(archive_match.group("grade")) if archive_match else None
-
-        age_number = _first_int(("age", "user_age", "student_age"))
-        if age_number is None:
-            age_number = age_from_filename
-        if age_number is None:
-            age_text = ""
-        else:
-            age_text = str(max(4, min(age_number, 99)))
-
-        grade_text = _first_text(("grade", "class_grade", "school_grade", "class", "year"))
-        if not grade_text and grade_from_filename is not None:
-            grade_text = f"Grade {grade_from_filename}"
-        if grade_text:
-            digits = "".join(ch for ch in grade_text if ch.isdigit())
-            if digits:
-                grade_text = f"Grade {digits[:2]}"
-
-        gender_text = _first_text(("gender", "sex", "user_gender"))
-        hobbies_text = _first_text(("hobbies", "hobby", "interests", "about", "bio"))
-        focus_value = _first_int(("attention_span_minutes", "question_focus_level", "attention", "focus_minutes", "focus_time"))
-        if focus_value is None:
-            focus_value = 5
-        focus_value = max(1, min(focus_value, 10))
-
-        return {
-            "name": name,
-            "profile_name": profile_name,
-            "age": age_text,
-            "grade": grade_text,
-            "gender": gender_text,
-            "hobbies": hobbies_text,
-            "attention_span_minutes": focus_value,
-            "question_focus_level": focus_value,
-        }
+        return _normalized_import_profile_payload(
+            inspection=inspection,
+            archive_file=archive_file,
+            archive_age_grade_pattern=self.ARCHIVE_AGE_GRADE_PATTERN,
+        )
 
     def _remove_imported_profile(self) -> None:
         self.profile_page.clear_imported_profile()
@@ -1226,6 +2174,8 @@ class OnboardingWizard(QDialog):
 
 
 class ProfileMakerDialog(QDialog):
+    ARCHIVE_AGE_GRADE_PATTERN = re.compile(r"_A(?P<age>\d{1,2})_G(?P<grade>\d{1,2})\.zip$", re.IGNORECASE)
+
     def __init__(
         self,
         paths,
@@ -1241,30 +2191,88 @@ class ProfileMakerDialog(QDialog):
         self.import_archive_path = ""
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
 
-        self.setWindowTitle("Profile maker")
+        self.setWindowTitle("Profile setup")
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
         self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
-        self.setFixedSize(980, 700)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(1040, 760)
+        self.setStyleSheet(
+            """
+            QFrame#OnboardingWindowShell {
+                background: #ffffff;
+                border: none;
+                border-radius: 30px;
+            }
+            """
+        )
 
-        shell = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        shell_surface = QFrame(self)
+        shell_surface.setObjectName("OnboardingWindowShell")
+        polish_surface(shell_surface)
+        root.addWidget(shell_surface, 1)
+
+        shell = QVBoxLayout(shell_surface)
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
 
-        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self._shell_surface = shell_surface
+        self.close_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "cross_two.png",
+            tooltip="Close",
+            button_size=34,
+            icon_size=12,
+            parent=shell_surface,
+        )
+        self.close_btn.clicked.connect(self.reject)
+
+        self.profile_page = ProfilePage(
+            self.paths.banners,
+            self.sounds,
+            onboarding_placeholder_tint=True,
+        )
         self.profile_page.import_profile_requested.connect(self._import_profile)
         self.profile_page.remove_import_requested.connect(self._remove_imported_profile)
         shell.addWidget(self.profile_page, 1)
 
         nav = QHBoxLayout()
+        nav.setContentsMargins(0, 8, 8, 4)
+        nav.setSpacing(0)
         nav.addStretch(1)
-        self.create_btn = AnimatedButton("Create account")
-        self.create_btn.setObjectName("PrimaryButton")
-        self.cancel_btn = AnimatedButton("Cancel")
-        self.create_btn.clicked.connect(self._accept_if_valid)
-        self.cancel_btn.clicked.connect(self.reject)
-        nav.addWidget(self.create_btn)
-        nav.addWidget(self.cancel_btn)
+        self.finish_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "check.png",
+            tooltip="Create profile",
+            button_size=34,
+            icon_size=12,
+        )
+        self.finish_btn.clicked.connect(self._accept_if_valid)
+        nav.addWidget(self.finish_btn)
         shell.addLayout(nav)
+        self._position_close_button()
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+        self._position_close_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_close_button()
+
+    def _position_close_button(self) -> None:
+        if not hasattr(self, "close_btn") or not hasattr(self, "_shell_surface"):
+            return
+        margin_right = 18
+        margin_top = 14
+        x = self._shell_surface.width() - self.close_btn.width() - margin_right
+        y = margin_top
+        self.close_btn.move(max(0, x), max(0, y))
+        self.close_btn.raise_()
 
     def _import_profile(self) -> None:
         if self.archive_service is None:
@@ -1277,8 +2285,18 @@ class ProfileMakerDialog(QDialog):
         if not inspection.valid:
             QMessageBox.warning(self, "Import profile", inspection.error or "This profile zip is not valid.")
             return
-        self.profile_page.set_imported_profile(inspection.profile, archive_path=archive_file)
+        imported_profile = _normalized_import_profile_payload(
+            inspection=inspection,
+            archive_file=archive_file,
+            archive_age_grade_pattern=self.ARCHIVE_AGE_GRADE_PATTERN,
+        )
+        self.profile_page.set_imported_profile(imported_profile, archive_path=archive_file)
         self.import_archive_path = archive_file
+        QMessageBox.information(
+            self,
+            "Import profile",
+            'Profile cached successfully! press "Add profile" to add the account',
+        )
 
     def _remove_imported_profile(self) -> None:
         self.profile_page.clear_imported_profile()
