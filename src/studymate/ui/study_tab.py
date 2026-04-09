@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import math
 import random
 import re
 import time
@@ -671,8 +672,9 @@ class AiResponseOverlay(QWidget):
         self.body.setOpenExternalLinks(True)
         self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.body.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.body.setStyleSheet(
-            'background: transparent; border: none; color: #1A1A1A; font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI"; font-weight: 300;'
+            'background: transparent; border: none; color: #1A1A1A; font-family: "Segoe UI", "Segoe UI Variable Display"; font-weight: 400;'
         )
         self.body.verticalScrollBar().setStyleSheet(
             """
@@ -700,20 +702,20 @@ class AiResponseOverlay(QWidget):
             """
             body {
                 color: #1A1A1A;
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 15px;
-                font-weight: 300;
+                font-weight: 400;
                 line-height: 1.68;
             }
             h1 {
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 20px;
                 font-weight: 600;
                 margin: 0 0 12px 0;
                 color: #1A1A1A;
             }
             h2 {
-                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Segoe UI Variable Display", sans-serif;
                 font-size: 15px;
                 font-weight: 600;
                 margin: 12px 0 6px 0;
@@ -755,8 +757,8 @@ class AiResponseOverlay(QWidget):
         document_layout = self.body.document().documentLayout()
         if document_layout is not None:
             document_layout.documentSizeChanged.connect(self._on_body_document_size_changed)
-        base_font = QFont(self.font())
-        base_font.setWeight(QFont.Weight.Light)
+        base_font = QFont("Segoe UI", self.font().pointSize())
+        base_font.setWeight(QFont.Weight.Normal)
         self.body.setFont(base_font)
         self.body_container = QWidget(self.surface)
         body_layout = QVBoxLayout(self.body_container)
@@ -839,7 +841,7 @@ class AiResponseOverlay(QWidget):
         self._target_markdown = cleaned
         self._display_markdown = cleaned
         self.body.setHtml(markdown_to_html(self._display_markdown))
-        self.body.document().adjustSize()
+        self._force_scroll_metrics(reset_to_top=True)
         bar = self.body.verticalScrollBar()
         if bar is not None:
             bar.setValue(0)
@@ -856,6 +858,8 @@ class AiResponseOverlay(QWidget):
             QTimer.singleShot(0, lambda: self._sync_size(animated=False))
             return
         self.reveal_overlay.hide()
+        QTimer.singleShot(0, self._refresh_body_metrics_from_viewport)
+        QTimer.singleShot(24, self._refresh_body_metrics_from_viewport)
         self._size_debounce.start(22)
 
     def _on_body_document_size_changed(self, _size) -> None:
@@ -872,6 +876,7 @@ class AiResponseOverlay(QWidget):
         if self.isVisible():
             self._sync_size(animated=False)
             self._layout_overlay_elements()
+            self._refresh_body_metrics_from_viewport()
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.drag_zone:
@@ -1570,14 +1575,32 @@ class AiResponseOverlay(QWidget):
         viewport = self.body.viewport().width()
         if viewport <= 0:
             return
+        self._force_scroll_metrics(reset_to_top=False)
+
+    def _force_scroll_metrics(self, *, reset_to_top: bool) -> None:
+        if self.response_stack.currentWidget() is not self.body_container:
+            return
+        viewport_width = self.body.viewport().width()
+        viewport_height = self.body.viewport().height()
+        if viewport_width <= 0 or viewport_height <= 0:
+            return
+        document = self.body.document()
+        document.setTextWidth(max(1, viewport_width))
+        document.adjustSize()
+        doc_layout = document.documentLayout()
+        if doc_layout is not None:
+            doc_height = int(math.ceil(doc_layout.documentSize().height()))
+        else:
+            doc_height = int(math.ceil(document.size().height()))
         bar = self.body.verticalScrollBar()
-        previous_value = bar.value() if bar is not None else 0
-        self.body.document().setTextWidth(max(1, viewport))
-        self.body.document().adjustSize()
-        if bar is not None:
-            bar.setPageStep(max(1, self.body.viewport().height()))
-            bar.setSingleStep(22)
-            bar.setValue(max(0, min(previous_value, bar.maximum())))
+        if bar is None:
+            return
+        previous_value = 0 if reset_to_top else bar.value()
+        max_value = max(0, doc_height - viewport_height)
+        bar.setRange(0, max_value)
+        bar.setPageStep(max(1, viewport_height))
+        bar.setSingleStep(24)
+        bar.setValue(max(0, min(previous_value, max_value)))
 
     def _target_width(self) -> int:
         parent = self.parentWidget()
