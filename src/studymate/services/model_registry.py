@@ -117,3 +117,29 @@ def resolve_active_text_llm_key(ai_settings: dict | None = None) -> str:
 
 def resolve_active_text_llm_spec(ai_settings: dict | None = None) -> ModelSpec:
     return MODELS[resolve_active_text_llm_key(ai_settings)]
+
+
+def ollama_cloud_enabled(ai_settings: dict | None = None) -> bool:
+    settings = ai_settings or {}
+    return bool(settings.get("ollama_cloud_enabled", False))
+
+
+def resolve_active_text_model_tag(ai_settings: dict | None = None) -> str:
+    settings = ai_settings or {}
+    cloud_tag = str(settings.get("ollama_cloud_selected_model_tag", "")).strip()
+    if ollama_cloud_enabled(settings) and cloud_tag:
+        return cloud_tag
+    return resolve_active_text_llm_spec(settings).primary_tag
+
+
+def text_llm_key_for_model_tag(model_tag: str) -> str:
+    tag = str(model_tag or "").strip()
+    if not tag:
+        return ""
+    for key in NON_EMBEDDING_LLM_KEYS:
+        spec = MODELS.get(key)
+        if spec is None:
+            continue
+        if tag == spec.primary_tag or tag in spec.candidate_tags:
+            return key
+    return ""

@@ -132,7 +132,7 @@ class SessionController:
         created_id = str(created.get("id", ""))
         created_paths = self.account_service.account_paths(created_id)
         created_paths.ensure()
-        created_store = DataStore(created_paths)
+        created_store: DataStore | None = DataStore(created_paths)
         try:
             wizard = OnboardingWizard(
                 created_paths,
@@ -145,6 +145,20 @@ class SessionController:
                 self.account_service.delete_account(created_id)
                 return False
 
+            imported_archive = str(getattr(wizard, "import_archive_path", "") or "").strip()
+            if imported_archive:
+                if created_store is not None:
+                    created_store.close()
+                    created_store = None
+                self.archive_service.import_archive_into_account(
+                    archive_path=Path(imported_archive),
+                    paths=created_paths,
+                    overwrite=True,
+                )
+                created_store = DataStore(created_paths)
+
+            if created_store is None:
+                created_store = DataStore(created_paths)
             profile = created_store.load_profile()
             final_name = str(profile.get("name", "")).strip() or provisional_name
             if self.account_service.name_exists(final_name, exclude_account_id=created_id):
@@ -155,7 +169,8 @@ class SessionController:
             self.account_service.delete_account(created_id)
             raise
         finally:
-            created_store.close()
+            if created_store is not None:
+                created_store.close()
 
         self.account_service.set_active_account(created_id)
         self._reload_session()
@@ -198,6 +213,7 @@ class SessionController:
         self.paths.ensure()
 
         self.datastore = DataStore(self.paths)
+        self.ollama.configure_from_ai_settings(self.datastore.load_ai_settings())
         self.backup_service = BackupService(self.paths)
         self.preflight = ModelPreflightService(self.datastore, self.ollama)
         self.update_service = UpdateService(self.paths)
@@ -231,6 +247,7 @@ class SessionController:
                     overwrite=True,
                 )
                 self.datastore = DataStore(self.paths)
+                self.ollama.configure_from_ai_settings(self.datastore.load_ai_settings())
                 self.preflight = ModelPreflightService(self.datastore, self.ollama)
             self._sync_account_name_from_profile()
 
@@ -601,7 +618,7 @@ def _maybe_prompt_embedding_onboarding(
     if prompted_version == APP_VERSION:
         return
     try:
-        installed = ollama.installed_tags()
+        installed = ollama.installed_tags(use_cloud=False)
     except Exception:
         return
     if MODELS["nomic_embed_text_v2_moe"].primary_tag in installed:

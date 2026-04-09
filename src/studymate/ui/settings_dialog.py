@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import webbrowser
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon
@@ -32,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
-from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys
+from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys, text_llm_key_for_model_tag
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
 from studymate.workers.install_worker import ModelInstallWorker
@@ -61,6 +62,7 @@ MODEL_ROLE_COPY = {
     "ministral_3_14b": "Optional larger LLM with native tool calling for Ask AI and other text features.",
     "nomic_embed_text_v2_moe": "Semantic search, recommendations, topic clustering, and adaptive study features.",
 }
+OLLAMA_CLOUD_KEYS_URL = "https://ollama.com/settings/keys"
 
 
 class PopupMenuComboBox(AnimatedComboBox):
@@ -269,6 +271,8 @@ class SettingsDialog(QDialog):
         self._last_attention_value = 5
         self._last_ask_ai_emoji_value = 2
         self._model_worker_action = "install"
+        self._cloud_model_tags: list[str] = []
+        self._loading_cloud_models = False
 
         self.setWindowTitle("Settings")
         self.setObjectName("SettingsDialog")
@@ -575,6 +579,62 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
+
+        cloud_surface = QFrame()
+        cloud_surface.setObjectName("Surface")
+        polish_surface(cloud_surface)
+        cloud_layout = QVBoxLayout(cloud_surface)
+        cloud_layout.setContentsMargins(20, 20, 20, 20)
+        cloud_layout.setSpacing(10)
+
+        cloud_title = QLabel("Ollama cloud")
+        cloud_title.setObjectName("SectionTitle")
+        cloud_note = QLabel(
+            "Use Ollama Cloud inference with your API key. Cloud mode is off by default. "
+            "When enabled, cloud inference overrides local AI text-model selection until turned off. "
+            "Embedding stays local."
+        )
+        cloud_note.setObjectName("SectionText")
+        cloud_note.setWordWrap(True)
+        cloud_layout.addWidget(cloud_title)
+        cloud_layout.addWidget(cloud_note)
+
+        cloud_form = QFormLayout()
+        cloud_form.setHorizontalSpacing(16)
+        cloud_form.setVerticalSpacing(12)
+        cloud_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.cloud_enabled_checkbox = QCheckBox("Enable cloud service")
+        self.cloud_enabled_checkbox.toggled.connect(self._on_cloud_mode_toggled)
+        self.cloud_api_key_edit = AnimatedLineEdit()
+        self.cloud_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cloud_api_key_edit.setPlaceholderText("Paste Ollama API key")
+        self.cloud_api_key_edit.textChanged.connect(self._on_cloud_api_key_changed)
+        self.cloud_model_combo = AnimatedComboBox()
+        self.cloud_model_combo.setEnabled(False)
+
+        cloud_form.addRow("Cloud inference", self.cloud_enabled_checkbox)
+        cloud_form.addRow("API key", self.cloud_api_key_edit)
+        cloud_form.addRow("Cloud model variant", self.cloud_model_combo)
+        cloud_layout.addLayout(cloud_form)
+
+        cloud_actions = QHBoxLayout()
+        cloud_actions.setContentsMargins(0, 0, 0, 0)
+        cloud_actions.setSpacing(8)
+        self.open_cloud_keys_btn = AnimatedButton("Open API key page")
+        self.open_cloud_keys_btn.clicked.connect(self._open_ollama_cloud_keys)
+        self.refresh_cloud_models_btn = AnimatedButton("Load cloud models")
+        self.refresh_cloud_models_btn.clicked.connect(lambda: self._refresh_cloud_models(force=True))
+        cloud_actions.addWidget(self.open_cloud_keys_btn)
+        cloud_actions.addWidget(self.refresh_cloud_models_btn)
+        cloud_actions.addStretch(1)
+        cloud_layout.addLayout(cloud_actions)
+
+        self.cloud_status = QLabel("")
+        self.cloud_status.setObjectName("SmallMeta")
+        self.cloud_status.setWordWrap(True)
+        cloud_layout.addWidget(self.cloud_status)
+        layout.addWidget(cloud_surface)
 
         runtime_surface = QFrame()
         runtime_surface.setObjectName("Surface")
@@ -920,6 +980,18 @@ class SettingsDialog(QDialog):
         self.ask_ai_emoji_slider.setValue(emoji_value)
         self._last_ask_ai_emoji_value = emoji_value
         self._update_ask_ai_emoji_label(emoji_value)
+        cloud_enabled = bool(ai_settings.get("ollama_cloud_enabled", False))
+        cloud_api_key = str(ai_settings.get("ollama_cloud_api_key", "")).strip()
+        cloud_tag = str(ai_settings.get("ollama_cloud_selected_model_tag", "")).strip()
+        self.cloud_enabled_checkbox.blockSignals(True)
+        self.cloud_enabled_checkbox.setChecked(cloud_enabled)
+        self.cloud_enabled_checkbox.blockSignals(False)
+        self.cloud_api_key_edit.blockSignals(True)
+        self.cloud_api_key_edit.setText(cloud_api_key)
+        self.cloud_api_key_edit.blockSignals(False)
+        self._cloud_model_tags = []
+        self.cloud_model_combo.clear()
+        self._refresh_cloud_controls(force_reload_models=cloud_enabled, preferred_tag=cloud_tag)
         setup = self.datastore.load_setup()
         ftc_setup = dict(setup.get("ftc", {}))
         default_mode = str(ftc_setup.get("default_mode", "standard"))
@@ -955,6 +1027,145 @@ class SettingsDialog(QDialog):
         self._refresh_performance_mode()
         self._refresh_model_status()
 
+    def _cloud_mode_enabled(self) -> bool:
+        return bool(self.cloud_enabled_checkbox.isChecked())
+
+    def _open_ollama_cloud_keys(self) -> None:
+        webbrowser.open(OLLAMA_CLOUD_KEYS_URL)
+
+    def _on_cloud_mode_toggled(self, _checked: bool) -> None:
+        self._refresh_cloud_controls(force_reload_models=self._cloud_mode_enabled())
+
+    def _on_cloud_api_key_changed(self, _text: str) -> None:
+        self._cloud_model_tags = []
+        self.cloud_model_combo.clear()
+        if self._cloud_mode_enabled():
+            if self.cloud_api_key_edit.text().strip():
+                self.cloud_status.setText("API key updated. Press Load cloud models.")
+            else:
+                self.cloud_status.setText("Paste your Ollama API key to load cloud models.")
+        self._refresh_cloud_controls(force_reload_models=False)
+
+    def _cloud_candidate_specs(self) -> list[ModelSpec]:
+        specs: list[ModelSpec] = []
+        for key in non_embedding_llm_keys():
+            spec = MODELS.get(key)
+            if spec is not None:
+                specs.append(spec)
+        return specs
+
+    def _cloud_candidate_tags(self) -> list[str]:
+        tags: list[str] = []
+        seen: set[str] = set()
+        for spec in self._cloud_candidate_specs():
+            for tag in [spec.primary_tag, *spec.candidate_tags]:
+                clean = str(tag or "").strip()
+                if not clean or clean in seen:
+                    continue
+                seen.add(clean)
+                tags.append(clean)
+        return tags
+
+    def _cloud_label_for_tag(self, model_tag: str) -> str:
+        clean_tag = str(model_tag or "").strip()
+        for spec in self._cloud_candidate_specs():
+            if clean_tag == spec.primary_tag or clean_tag in spec.candidate_tags:
+                return f"{spec.display_name} (Cloud)"
+        return f"{clean_tag} (Cloud)" if clean_tag else "Cloud model"
+
+    def _refresh_cloud_controls(self, *, force_reload_models: bool = False, preferred_tag: str = "") -> None:
+        cloud_enabled = self._cloud_mode_enabled()
+        key_present = bool(self.cloud_api_key_edit.text().strip())
+        self.cloud_api_key_edit.setEnabled(cloud_enabled)
+        self.refresh_cloud_models_btn.setEnabled(cloud_enabled and key_present and not self._loading_cloud_models)
+        self.cloud_model_combo.setEnabled(cloud_enabled and self.cloud_model_combo.count() > 0)
+
+        if not cloud_enabled:
+            self.cloud_status.setText("Cloud service is off. ONCard uses local models.")
+            self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0)
+            return
+
+        if not key_present:
+            self.cloud_status.setText("Cloud mode is on. Paste an API key, then load cloud variants.")
+            self.cloud_model_combo.setEnabled(False)
+            self.selected_text_llm.setEnabled(False)
+            return
+
+        self.selected_text_llm.setEnabled(False)
+        if force_reload_models:
+            self._refresh_cloud_models(force=force_reload_models, preferred_tag=preferred_tag)
+        elif self.cloud_model_combo.currentIndex() >= 0:
+            current_label = str(self.cloud_model_combo.currentText() or "").strip()
+            self.cloud_status.setText(
+                f"Cloud model ready: {current_label}. Cloud mode overrides local model selection."
+                if current_label
+                else "Cloud model ready. Cloud mode overrides local model selection."
+            )
+        else:
+            self.cloud_status.setText("Cloud mode is ready. Press Load cloud models.")
+
+    def _refresh_cloud_models(self, *, force: bool = False, preferred_tag: str = "") -> None:
+        if not self._cloud_mode_enabled():
+            return
+        api_key = self.cloud_api_key_edit.text().strip()
+        if not api_key:
+            self.cloud_status.setText("Paste your Ollama API key to load cloud models.")
+            self.cloud_model_combo.clear()
+            self.cloud_model_combo.setEnabled(False)
+            return
+        if self._loading_cloud_models:
+            return
+        if self._cloud_model_tags and not force:
+            available_tags = list(self._cloud_model_tags)
+        else:
+            self._loading_cloud_models = True
+            self.refresh_cloud_models_btn.setEnabled(False)
+            self.cloud_status.setText("Loading cloud models...")
+            try:
+                tags = self.ollama.cloud_model_tags(api_key, timeout=8)
+            except OllamaError as exc:
+                self.cloud_status.setText(f"Cloud model lookup failed: {exc}")
+                self.cloud_model_combo.clear()
+                self.cloud_model_combo.setEnabled(False)
+                self._cloud_model_tags = []
+                self._loading_cloud_models = False
+                self.refresh_cloud_models_btn.setEnabled(True)
+                return
+            available_set = {str(item).strip() for item in tags if str(item).strip()}
+            available_tags = []
+            for spec in self._cloud_candidate_specs():
+                chosen = ""
+                for tag in [spec.primary_tag, *spec.candidate_tags]:
+                    clean_tag = str(tag or "").strip()
+                    if clean_tag in available_set:
+                        chosen = clean_tag
+                        break
+                if chosen:
+                    available_tags.append(chosen)
+            self._cloud_model_tags = list(available_tags)
+            self._loading_cloud_models = False
+
+        selected_before = preferred_tag.strip() or str(self.cloud_model_combo.currentData() or "").strip()
+        self.cloud_model_combo.blockSignals(True)
+        self.cloud_model_combo.clear()
+        for tag in available_tags:
+            self.cloud_model_combo.addItem(self._cloud_label_for_tag(tag), tag)
+        chosen = selected_before if selected_before in available_tags else (available_tags[0] if available_tags else "")
+        idx = self.cloud_model_combo.findData(chosen)
+        if idx >= 0:
+            self.cloud_model_combo.setCurrentIndex(idx)
+        self.cloud_model_combo.blockSignals(False)
+        self.cloud_model_combo.setEnabled(bool(available_tags))
+        if available_tags:
+            self.cloud_status.setText(
+                f"Loaded {len(available_tags)} cloud variants for ONCard models. "
+                "Cloud mode overrides local model selection."
+            )
+        else:
+            self.cloud_status.setText("No matching cloud versions were found for ONCard's current text models.")
+        self.refresh_cloud_models_btn.setEnabled(True)
+        self.selected_text_llm.setEnabled(False)
+
     def _save(self) -> None:
         profile_name = self.name_edit.text().strip()
         if not profile_name:
@@ -985,13 +1196,35 @@ class SettingsDialog(QDialog):
         ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
         ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
         ai_settings["use_selected_llm_for_text_features"] = True
+        cloud_enabled = self._cloud_mode_enabled()
+        cloud_api_key = self.cloud_api_key_edit.text().strip()
+        if cloud_enabled and not cloud_api_key:
+            QMessageBox.warning(self, "Settings", "Cloud mode is enabled, but API key is empty.")
+            return
+        cloud_model_tag = str(self.cloud_model_combo.currentData() or "").strip()
+        if not cloud_model_tag:
+            cloud_model_tag = str(ai_settings.get("ollama_cloud_selected_model_tag", "")).strip()
+        if cloud_enabled and not cloud_model_tag:
+            QMessageBox.warning(self, "Settings", "Select a cloud model first, then save.")
+            return
         selected_key = str(self.selected_text_llm.currentData() or "").strip()
-        if selected_key:
+        if cloud_enabled:
+            mapped_key = text_llm_key_for_model_tag(cloud_model_tag)
+            if mapped_key:
+                ai_settings["selected_text_llm_key"] = mapped_key
+        elif selected_key:
             ai_settings["selected_text_llm_key"] = selected_key
+        ai_settings["ollama_cloud_enabled"] = cloud_enabled
+        ai_settings["ollama_cloud_api_key"] = cloud_api_key
+        if cloud_model_tag:
+            ai_settings["ollama_cloud_selected_model_tag"] = cloud_model_tag
         ai_settings["ask_ai_tone"] = str(self.ask_ai_tone.currentData() or "warm")
         ai_settings["assistant_tone"] = ai_settings["ask_ai_tone"]
         ai_settings["ask_ai_emoji_level"] = max(1, min(4, self.ask_ai_emoji_slider.value()))
+        ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
         self.datastore.save_ai_settings(ai_settings)
+        self.ollama.configure_from_ai_settings(ai_settings)
+        self.preflight.invalidate()
 
         setup = self.datastore.load_setup()
         setup["ftc"] = {
@@ -1001,9 +1234,6 @@ class SettingsDialog(QDialog):
             "difficulty": str(self.ftc_difficulty.currentData() or "normal"),
             "use_ocr": bool(self.ftc_ocr_checkbox.isChecked()),
         }
-        ai_settings = self.datastore.load_ai_settings()
-        ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
-        self.datastore.save_ai_settings(ai_settings)
         setup["performance"] = {
             "mode": str(self.performance_mode.currentData() or "auto"),
             "startup_workers": self.startup_workers.value(),
@@ -1062,7 +1292,12 @@ class SettingsDialog(QDialog):
             selected_index = 0
         if selected_index >= 0:
             self.selected_text_llm.setCurrentIndex(selected_index)
-        self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0)
+        cloud_enabled = self._cloud_mode_enabled()
+        self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0 and not cloud_enabled)
+        if cloud_enabled:
+            self.selected_text_llm.setToolTip("Cloud mode is enabled. Use the Cloud model selector above.")
+        else:
+            self.selected_text_llm.setToolTip("")
         self.selected_text_llm.blockSignals(False)
 
     def _is_model_installed_ui(self, snapshot, model_key: str) -> bool:
@@ -1267,7 +1502,18 @@ class SettingsDialog(QDialog):
 
     def _refresh_model_status(self) -> None:
         snap = self.preflight.snapshot(force=True)
-        if not snap.cli_available:
+        if snap.cloud_mode:
+            if not snap.cloud_key_present:
+                self.ollama_status.setText("Cloud mode is enabled, but API key is missing.")
+                self.ollama_hint.setText("Paste your API key in the Ollama cloud section above.")
+            elif snap.error and not snap.installed_tags:
+                self.ollama_status.setText("Cloud mode is enabled, but ONCard could not read cloud model tags.")
+                self.ollama_hint.setText(snap.error or "Check the API key and internet connection, then refresh.")
+            else:
+                api_text = "Cloud API reachable." if snap.api_reachable else "Cloud API not responding yet."
+                self.ollama_status.setText(f"Ollama Cloud is active. {api_text}")
+                self.ollama_hint.setText("Install/Reinstall/Delete actions are disabled while cloud mode is active.")
+        elif not snap.cli_available:
             self.ollama_status.setText("Ollama CLI was not found on this system.")
             self.ollama_hint.setText("Install Ollama first, then use this tab to install or refresh ONCard's models.")
         elif snap.error and not snap.installed_tags:
@@ -1279,6 +1525,7 @@ class SettingsDialog(QDialog):
             self.ollama_hint.setText("Model status below comes from the live Ollama tag list.")
 
         installing = bool(self._install_worker and self._install_worker.isRunning())
+        text_keys = set(non_embedding_llm_keys())
         for key, spec in MODELS.items():
             row = self._model_rows[key]
             status_label = row["status"]
@@ -1286,6 +1533,19 @@ class SettingsDialog(QDialog):
             reinstall_btn = row["reinstall_btn"]
             delete_btn = row["delete_btn"]
             is_installed = self._is_model_installed_ui(snap, key)
+            if snap.cloud_mode:
+                if key in text_keys:
+                    status_text = "Available in cloud" if is_installed else "Unavailable in cloud"
+                else:
+                    status_text = "Installed" if is_installed else "Not installed"
+                install_btn.setVisible(False)
+                reinstall_btn.setVisible(False)
+                delete_btn.setVisible(False)
+                install_btn.setEnabled(False)
+                reinstall_btn.setEnabled(False)
+                delete_btn.setEnabled(False)
+                status_label.setText(status_text)
+                continue
             if snap.error and not snap.installed_tags and snap.cli_available:
                 status_text = "Saved installed" if is_installed else "Status unavailable"
             else:
@@ -1302,6 +1562,9 @@ class SettingsDialog(QDialog):
 
     def _install_model(self, model_key: str) -> None:
         if self._install_worker and self._install_worker.isRunning():
+            return
+        if self._cloud_mode_enabled():
+            QMessageBox.information(self, "Cloud mode active", "Turn off cloud mode to install local Ollama models.")
             return
         if shutil.which("ollama") is None:
             QMessageBox.warning(self, "Ollama missing", "Install Ollama first, then come back to install ONCard's models.")
@@ -1327,6 +1590,9 @@ class SettingsDialog(QDialog):
 
     def _delete_model(self, model_key: str) -> None:
         if self._install_worker and self._install_worker.isRunning():
+            return
+        if self._cloud_mode_enabled():
+            QMessageBox.information(self, "Cloud mode active", "Turn off cloud mode to remove local Ollama models.")
             return
         spec = MODELS.get(model_key)
         if spec is None:
@@ -1421,10 +1687,11 @@ class SettingsDialog(QDialog):
 
     def _set_install_buttons_enabled(self, enabled: bool) -> None:
         cli_installed = shutil.which("ollama") is not None
+        cloud_mode = self._cloud_mode_enabled()
         for row in self._model_rows.values():
-            row["install_btn"].setEnabled(enabled and cli_installed)
-            row["reinstall_btn"].setEnabled(enabled and cli_installed)
-            row["delete_btn"].setEnabled(enabled and cli_installed)
+            row["install_btn"].setEnabled(enabled and cli_installed and not cloud_mode)
+            row["reinstall_btn"].setEnabled(enabled and cli_installed and not cloud_mode)
+            row["delete_btn"].setEnabled(enabled and cli_installed and not cloud_mode)
         self.refresh_models_btn.setEnabled(enabled)
 
     def _refresh_performance_mode(self) -> None:

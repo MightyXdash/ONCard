@@ -178,7 +178,9 @@ def _render_inline(text: str) -> str:
         nonlocal text
 
         def replace(match: re.Match[str]) -> str:
-            key = f"__MD_PLACEHOLDER_{len(placeholders)}__"
+            # Keep placeholder markers free of markdown trigger chars
+            # (like `_` and `*`) so emphasis parsing cannot corrupt them.
+            key = f"MDPHX{len(placeholders)}XPH"
             placeholders[key] = builder(match)
             return key
 
