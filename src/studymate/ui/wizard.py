@@ -5,6 +5,7 @@ import html
 from pathlib import Path
 import re
 import shutil
+import sys
 import webbrowser
 
 from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRegularExpression, QSize, Qt, QTimer, Signal, QVariantAnimation
@@ -592,7 +593,7 @@ class GradePickerDialog(QDialog):
                 border: 1px solid rgba(205, 218, 230, 0.92);
                 border-radius: 15px;
                 padding: 8px 12px;
-                color: #142130;
+                color: #728292;
                 font-size: 13px;
                 font-weight: 700;
                 text-align: left;
@@ -604,7 +605,7 @@ class GradePickerDialog(QDialog):
             QPushButton#GradePickerOption[optionSelected="true"] {
                 background: rgba(221, 234, 247, 0.98);
                 border: 1px solid rgba(121, 160, 199, 0.92);
-                color: #102131;
+                color: #4f6477;
             }
             """
         )
@@ -1016,7 +1017,13 @@ class ProfilePage(OnboardingPage):
     import_profile_requested = Signal()
     remove_import_requested = Signal()
 
-    def __init__(self, banners_root: Path, sounds: UiSoundBank | None = None) -> None:
+    def __init__(
+        self,
+        banners_root: Path,
+        sounds: UiSoundBank | None = None,
+        *,
+        onboarding_placeholder_tint: bool = False,
+    ) -> None:
         super().__init__(
             title="Welcome to ONCard",
             body="",
@@ -1024,6 +1031,7 @@ class ProfilePage(OnboardingPage):
             banner_name="onboarding_profile_banner_16x9.png",
         )
         self.sounds = sounds
+        self._onboarding_placeholder_tint = bool(onboarding_placeholder_tint)
         self._last_attention_value = 5
         self._import_archive_path = ""
         self._imported_profile_active = False
@@ -1099,37 +1107,7 @@ class ProfilePage(OnboardingPage):
         self.attention_slider.setPageStep(1)
         self.attention_slider.setValue(5)
         self.attention_slider.setFixedHeight(28)
-        self.attention_slider.setStyleSheet(
-            """
-            QSlider#WizardAttentionSlider {
-                background: transparent;
-            }
-            QSlider#WizardAttentionSlider::groove:horizontal {
-                height: 8px;
-                margin: 0 2px;
-                border: none;
-                border-radius: 4px;
-                background: #d4deea;
-            }
-            QSlider#WizardAttentionSlider::sub-page:horizontal {
-                border: none;
-                border-radius: 4px;
-                background: #d4deea;
-            }
-            QSlider#WizardAttentionSlider::add-page:horizontal {
-                border: none;
-                border-radius: 4px;
-                background: #d4deea;
-            }
-            QSlider#WizardAttentionSlider::handle:horizontal {
-                width: 16px;
-                height: 16px;
-                margin: -4px 0;
-                border-radius: 8px;
-                background: #0f2539;
-            }
-            """
-        )
+        self.attention_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.attention_value = QLabel("Attention span per question: 5 min")
         self.attention_value.setObjectName("SectionText")
         self.attention_value.setContentsMargins(0, 0, 0, 0)
@@ -1170,11 +1148,13 @@ class ProfilePage(OnboardingPage):
         attention_shell = QWidget()
         attention_shell.setStyleSheet("background: transparent;")
         attention_layout = QVBoxLayout(attention_shell)
-        attention_layout.setContentsMargins(0, 14, 0, 10)
-        attention_layout.setSpacing(8)
-        attention_layout.addWidget(self.attention_value)
-        attention_layout.addWidget(self.attention_slider)
-        attention_shell.setFixedHeight(84)
+        attention_layout.setContentsMargins(0, 12, 0, 10)
+        attention_layout.setSpacing(6)
+        attention_layout.addWidget(self.attention_value, 0, Qt.AlignTop)
+        attention_layout.addWidget(self.attention_slider, 0, Qt.AlignTop)
+        attention_layout.addStretch(1)
+        attention_shell.setFixedHeight(90)
+        attention_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         grid.addWidget(attention_shell, 3, 0, 1, 2)
 
         surface_layout.addWidget(grid_host, 0, Qt.AlignTop)
@@ -1247,7 +1227,10 @@ class ProfilePage(OnboardingPage):
         self._set_widget_text_tint(self.age_edit, muted=is_placeholder)
 
     def _refresh_grade_visual_state(self) -> None:
-        self._set_widget_text_tint(self.grade_combo, muted=self.grade_combo.currentIndex() < 0)
+        self._set_widget_text_tint(
+            self.grade_combo,
+            muted=self._onboarding_placeholder_tint and self.grade_combo.currentIndex() < 0,
+        )
         self.grade_combo.update()
 
     def _open_grade_picker(self) -> None:
@@ -1296,7 +1279,10 @@ class ProfilePage(OnboardingPage):
         self.gender_combo.setFocus()
 
     def _refresh_gender_visual_state(self) -> None:
-        self._set_widget_text_tint(self.gender_combo, muted=self.gender_combo.currentIndex() < 0)
+        self._set_widget_text_tint(
+            self.gender_combo,
+            muted=self._onboarding_placeholder_tint and self.gender_combo.currentIndex() < 0,
+        )
         self.gender_combo.update()
 
     def _set_widget_text_tint(self, widget: QWidget, *, muted: bool) -> None:
@@ -1482,7 +1468,7 @@ class ModelInstallerPage(OnboardingPage):
     def __init__(self, banners_root: Path, icons: IconHelper, ollama: OllamaService) -> None:
         super().__init__(
             title="Install AI models",
-            body="ONCard installs the required AI models automatically, including Gemma for generation and Nomic for embeddings.",
+            body="",
             banner_path=banners_root / "onboarding_models_banner_16x9.png",
             banner_name="onboarding_models_banner_16x9.png",
         )
@@ -1510,25 +1496,13 @@ class ModelInstallerPage(OnboardingPage):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
-        self.summary_label = QLabel()
-        self.summary_label.setObjectName("SectionTitle")
-        self.summary_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.size_label = QLabel()
         self.size_label.setObjectName("SectionText")
         self.size_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        self.warning_label = QLabel()
-        self.warning_label.setObjectName("SmallMeta")
-        self.warning_label.setWordWrap(True)
-        self.warning_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        self.ollama_label = QLabel("Ollama is not installed yet. Install it first, then come back here.")
-        self.ollama_label.setObjectName("SmallMeta")
-        self.ollama_label.setWordWrap(True)
-        self.ollama_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.ollama_button = AnimatedButton("Open Ollama website")
         self.ollama_button.setProperty("disablePressMotion", True)
         self.ollama_button.clicked.connect(lambda: webbrowser.open("https://ollama.com/download"))
         if self.ollama_installed:
-            self.ollama_label.hide()
             self.ollama_button.hide()
 
         self.install_button = AnimatedButton("Install selected models")
@@ -1550,7 +1524,7 @@ class ModelInstallerPage(OnboardingPage):
         self.progress.setStyleSheet(
             """
             QProgressBar#InstallerThinProgress {
-                background: rgba(184, 200, 216, 0.45);
+                background: #d4deea;
                 border: none;
                 border-radius: 4px;
             }
@@ -1563,18 +1537,16 @@ class ModelInstallerPage(OnboardingPage):
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(84)
-        self.log.setMaximumHeight(110)
-        self.log.setPlaceholderText("Installation progress appears here.")
+        self.log.setMinimumHeight(260)
+        self.log.setMaximumHeight(360)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setPlaceholderText("")
 
-        layout.addWidget(self.summary_label)
         layout.addWidget(self.size_label)
-        layout.addWidget(self.warning_label)
-        layout.addWidget(self.ollama_label)
-        layout.addWidget(self.ollama_button, 0, Qt.AlignLeft)
+        layout.addWidget(self.ollama_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.install_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.log)
+        layout.addWidget(self.log, 1)
 
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
@@ -1589,30 +1561,16 @@ class ModelInstallerPage(OnboardingPage):
     def _refresh_copy(self) -> None:
         selected = self.selected_models()
         size_gb = total_selected_size_gb(selected)
-        can_install = self.ollama_installed and self.ram_gb >= 7
         if self.ram_gb < 7:
-            self.summary_label.setText("This device is below the minimum requirement for ONCard.")
             self.install_button.setEnabled(False)
         elif not self.ollama_installed:
-            self.summary_label.setText("Install Ollama first to unlock model downloads.")
             self.install_button.setEnabled(False)
-        elif self.ram_gb >= 23:
-            self.summary_label.setText("Your device is eligible for full download.")
-            self.install_button.setEnabled(True)
-        elif self.ram_gb >= 15:
-            self.summary_label.setText("Your device is eligible for the standard download.")
-            self.install_button.setEnabled(True)
         else:
-            self.summary_label.setText("Your device will use the lighter default download.")
             self.install_button.setEnabled(True)
 
-        self.size_label.setText(f"Selected download size: {size_gb:.1f} GB")
-        self.warning_label.setText(
-            "ONCard uses gemma3:4b for OCR and generation tasks, plus nomic-embed-text-v2-moe for adaptive-study embeddings."
+        self.size_label.setText(
+            f"Selected download size: {size_gb:.1f} GB | Models: Gemma3:4b and Nomic-embed-MoE"
         )
-        self.warning_label.show()
-
-        self.ollama_label.setVisible(not self.ollama_installed)
         self.ollama_button.setVisible(not self.ollama_installed)
 
     def selected_models(self) -> list[str]:
@@ -1722,7 +1680,7 @@ class PerformancePage(OnboardingPage):
     def __init__(self, banners_root: Path, ollama: OllamaService) -> None:
         super().__init__(
             title="Test performance",
-            body="Run the Gemma3:4b speed test. This step is required so ONCard can continue with the full setup flow.",
+            body="",
             banner_path=banners_root / "performance_default_banner_16x9.png",
             banner_name="performance_default_banner_16x9.png",
         )
@@ -1775,21 +1733,16 @@ class PerformancePage(OnboardingPage):
             }
             """
         )
-        self.result_title = QLabel("No test run yet.")
-        self.result_title.setObjectName("SectionTitle")
-        self.badge = QLabel("")
-        self.badge.setObjectName("TierBadge")
-        self.badge.hide()
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(84)
-        self.log.setMaximumHeight(110)
+        self.log.setMinimumHeight(260)
+        self.log.setMaximumHeight(360)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setPlaceholderText("")
 
         layout.addWidget(self.run_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.result_title)
-        layout.addWidget(self.badge)
-        layout.addWidget(self.log)
+        layout.addWidget(self.log, 1)
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
 
@@ -1811,8 +1764,6 @@ class PerformancePage(OnboardingPage):
             return
         self._reset_progress_sequence(0)
         self.log.clear()
-        self.result_title.setText("Running test...")
-        self.badge.hide()
         self.worker = PerformanceWorker(self.ollama)
         self.worker.progress.connect(self.log.append)
         self.worker.sample.connect(self._on_sample)
@@ -1827,15 +1778,20 @@ class PerformancePage(OnboardingPage):
     def _on_done(self, avg_tps: float, tier: str) -> None:
         self.avg_tps = avg_tps
         self.tier = tier
-        self.result_title.setText(f"Average TPS: {avg_tps}")
-        self.badge.setText(tier)
-        self.badge.show()
         self._enqueue_progress(100)
         self._set_banner_by_tier(tier)
+        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        StartupPopupDialog(
+            parent=parent_widget,
+            blur_target=blur_target,
+            message=f"Performance level: {tier}",
+            buttons=["Okay"],
+            default_button="Okay",
+        ).exec_with_backdrop()
         self.changed.emit()
 
     def _on_failed(self, message: str) -> None:
-        self.result_title.setText("Performance test failed.")
         self.log.append(message)
         self.changed.emit()
 
@@ -1970,7 +1926,7 @@ class OnboardingWizard(QDialog):
             """
             QFrame#OnboardingWindowShell {
                 background: #ffffff;
-                border: none;
+                border: 1px solid rgba(198, 210, 223, 0.92);
                 border-radius: 30px;
             }
             QStackedWidget#OnboardingStack,
@@ -1987,11 +1943,28 @@ class OnboardingWizard(QDialog):
         shell_surface = QFrame(self)
         shell_surface.setObjectName("OnboardingWindowShell")
         polish_surface(shell_surface)
+        self._shell_shadow_effect = None
+        if not (sys.platform == "win32" and self.testAttribute(Qt.WA_TranslucentBackground)):
+            shell_shadow = QGraphicsDropShadowEffect(shell_surface)
+            shell_shadow.setBlurRadius(34)
+            shell_shadow.setOffset(0, 10)
+            shell_shadow.setColor(QColor(17, 35, 57, 68))
+            shell_surface.setGraphicsEffect(shell_shadow)
+            self._shell_shadow_effect = shell_shadow
         root.addWidget(shell_surface, 1)
 
         shell = QVBoxLayout(shell_surface)
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
+        self._shell_surface = shell_surface
+        self.close_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "cross_two.png",
+            tooltip="Close",
+            button_size=34,
+            icon_size=12,
+            parent=shell_surface,
+        )
+        self.close_btn.clicked.connect(self.reject)
 
         blur_layer = QWidget(shell_surface)
         blur_layer.setObjectName("OnboardingBlurLayer")
@@ -2004,7 +1977,11 @@ class OnboardingWizard(QDialog):
 
         self.stack = AnimatedStackedWidget()
         self.stack.setObjectName("OnboardingStack")
-        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self.profile_page = ProfilePage(
+            self.paths.banners,
+            self.sounds,
+            onboarding_placeholder_tint=True,
+        )
         self.profile_page.set_allow_import_removal(False)
         self.profile_page.set_inline_import_control_visible(False)
         self.about_page = AboutPage(self.paths.banners)
@@ -2026,14 +2003,14 @@ class OnboardingWizard(QDialog):
         blur_layout.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
-        nav.setSpacing(8)
-        self.nav_import_handshake_btn = FadingIconButton(
+        nav.setContentsMargins(0, 8, 8, 4)
+        nav.setSpacing(0)
+        self.add_profile_btn = FadingIconButton(
             icon_path=self.paths.icons / "common" / "handshake.png",
-            tooltip="Import profile",
+            tooltip="Add Profile",
             button_size=34,
             icon_size=14,
         )
-        self.nav_import_handshake_btn.clicked.connect(self._import_profile_into_profile_page)
         self.back_btn = FadingIconButton(
             icon_path=self.paths.icons / "common" / "angle-left.png",
             tooltip="Back",
@@ -2052,24 +2029,22 @@ class OnboardingWizard(QDialog):
             button_size=34,
             icon_size=12,
         )
-        self.cancel_btn = FadingIconButton(
-            icon_path=self.paths.icons / "common" / "cross_two.png",
-            tooltip="Cancel",
-            button_size=34,
-            icon_size=12,
-        )
+        self.add_profile_btn.clicked.connect(self._import_profile_into_profile_page)
         self.back_btn.clicked.connect(self._go_back)
         self.next_btn.clicked.connect(self._go_next)
         self.finish_btn.clicked.connect(self.accept)
-        self.cancel_btn.clicked.connect(self.reject)
-        nav.addWidget(self.nav_import_handshake_btn)
         nav.addStretch(1)
-        nav.addWidget(self.back_btn)
-        nav.addWidget(self.next_btn)
-        nav.addWidget(self.finish_btn)
-        nav.addWidget(self.cancel_btn)
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+        action_row.addWidget(self.add_profile_btn)
+        action_row.addWidget(self.back_btn)
+        action_row.addWidget(self.next_btn)
+        action_row.addWidget(self.finish_btn)
+        nav.addLayout(action_row)
         blur_layout.addLayout(nav)
         shell.addWidget(blur_layer, 1)
+        self._position_close_button()
 
         polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
         self._show_page(0)
@@ -2077,6 +2052,21 @@ class OnboardingWizard(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+        self._position_close_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_close_button()
+
+    def _position_close_button(self) -> None:
+        if not hasattr(self, "close_btn") or not hasattr(self, "_shell_surface"):
+            return
+        margin_right = 18
+        margin_top = 14
+        x = self._shell_surface.width() - self.close_btn.width() - margin_right
+        y = margin_top
+        self.close_btn.move(max(0, x), max(0, y))
+        self.close_btn.raise_()
 
     def _show_page(self, index: int) -> None:
         self.current_index = index
@@ -2093,7 +2083,7 @@ class OnboardingWizard(QDialog):
         else:
             self.back_btn.setEnabled(self.current_index > 0)
         on_profile_page = self.current_index == self.pages.index(self.profile_page)
-        self.nav_import_handshake_btn.setVisible(on_profile_page and not self._import_flow_locked)
+        self.add_profile_btn.setVisible(on_profile_page and not self._import_flow_locked)
         self.next_btn.setVisible(not last)
         self.finish_btn.setVisible(last)
         self.next_btn.setEnabled(current.can_continue())
@@ -2201,30 +2191,88 @@ class ProfileMakerDialog(QDialog):
         self.import_archive_path = ""
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
 
-        self.setWindowTitle("Profile maker")
+        self.setWindowTitle("Profile setup")
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
         self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
-        self.setFixedSize(980, 700)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(1040, 760)
+        self.setStyleSheet(
+            """
+            QFrame#OnboardingWindowShell {
+                background: #ffffff;
+                border: none;
+                border-radius: 30px;
+            }
+            """
+        )
 
-        shell = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        shell_surface = QFrame(self)
+        shell_surface.setObjectName("OnboardingWindowShell")
+        polish_surface(shell_surface)
+        root.addWidget(shell_surface, 1)
+
+        shell = QVBoxLayout(shell_surface)
         shell.setContentsMargins(18, 14, 18, 14)
         shell.setSpacing(12)
 
-        self.profile_page = ProfilePage(self.paths.banners, self.sounds)
+        self._shell_surface = shell_surface
+        self.close_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "cross_two.png",
+            tooltip="Close",
+            button_size=34,
+            icon_size=12,
+            parent=shell_surface,
+        )
+        self.close_btn.clicked.connect(self.reject)
+
+        self.profile_page = ProfilePage(
+            self.paths.banners,
+            self.sounds,
+            onboarding_placeholder_tint=True,
+        )
         self.profile_page.import_profile_requested.connect(self._import_profile)
         self.profile_page.remove_import_requested.connect(self._remove_imported_profile)
         shell.addWidget(self.profile_page, 1)
 
         nav = QHBoxLayout()
+        nav.setContentsMargins(0, 8, 8, 4)
+        nav.setSpacing(0)
         nav.addStretch(1)
-        self.create_btn = AnimatedButton("Add profile")
-        self.create_btn.setObjectName("PrimaryButton")
-        self.cancel_btn = AnimatedButton("Cancel")
-        self.create_btn.clicked.connect(self._accept_if_valid)
-        self.cancel_btn.clicked.connect(self.reject)
-        nav.addWidget(self.create_btn)
-        nav.addWidget(self.cancel_btn)
+        self.finish_btn = FadingIconButton(
+            icon_path=self.paths.icons / "common" / "check.png",
+            tooltip="Create profile",
+            button_size=34,
+            icon_size=12,
+        )
+        self.finish_btn.clicked.connect(self._accept_if_valid)
+        nav.addWidget(self.finish_btn)
         shell.addLayout(nav)
+        self._position_close_button()
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+        self._position_close_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_close_button()
+
+    def _position_close_button(self) -> None:
+        if not hasattr(self, "close_btn") or not hasattr(self, "_shell_surface"):
+            return
+        margin_right = 18
+        margin_top = 14
+        x = self._shell_surface.width() - self.close_btn.width() - margin_right
+        y = margin_top
+        self.close_btn.move(max(0, x), max(0, y))
+        self.close_btn.raise_()
 
     def _import_profile(self) -> None:
         if self.archive_service is None:

@@ -5,6 +5,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QMou
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QGraphicsBlurEffect,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
-from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedStackedWidget
+from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
 from studymate.ui.audio import ClickSoundFilter, UiSoundBank
 from studymate.ui.create_tab import CreateTab
 from studymate.ui.icon_helper import IconHelper
@@ -81,7 +82,7 @@ class WindowDragBar(QFrame):
 
 
 class AppIconMenu(QWidget):
-    account_selected = Signal(str)
+    profiles_requested = Signal()
 
     LINKS = (
         ("ONCard", "https://github.com/MightyXdash/ONCard"),
@@ -98,6 +99,8 @@ class AppIconMenu(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._animation_group: QParallelAnimationGroup | None = None
+        self._accounts: list[dict] = []
+        self._active_id = ""
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(10, 10, 10, 10)
@@ -116,12 +119,14 @@ class AppIconMenu(QWidget):
         surface_layout.setContentsMargins(8, 8, 8, 8)
         surface_layout.setSpacing(4)
 
-        self.account_combo = AnimatedComboBox(self.surface)
-        self.account_combo.setObjectName("AppIconAccountsCombo")
-        self.account_combo.setPlaceholderText("")
-        self.account_combo.setCurrentIndex(-1)
-        self.account_combo.currentIndexChanged.connect(self._account_combo_changed)
-        surface_layout.addWidget(self.account_combo)
+        self.profiles_btn = AnimatedButton("Profiles")
+        self.profiles_btn.setObjectName("AppIconMenuButton")
+        self.profiles_btn.setProperty("skipClickSfx", True)
+        self.profiles_btn.setMinimumWidth(176)
+        self.profiles_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.profiles_btn.set_motion_scale_range(0.012)
+        self.profiles_btn.clicked.connect(self._open_profiles)
+        surface_layout.addWidget(self.profiles_btn)
 
         links_header = QLabel("Links")
         links_header.setObjectName("SmallMeta")
@@ -138,17 +143,8 @@ class AppIconMenu(QWidget):
             surface_layout.addWidget(button)
 
     def set_accounts(self, accounts: list[dict], active_id: str) -> None:
-        self.account_combo.blockSignals(True)
-        self.account_combo.clear()
-        active_index = -1
-        for account in accounts:
-            account_id = str(account.get("id", "")).strip()
-            name = str(account.get("name", "")).strip() or f"Account {account_id[:6]}"
-            self.account_combo.addItem(name, account_id)
-            if account_id and account_id == active_id:
-                active_index = self.account_combo.count() - 1
-        self.account_combo.setCurrentIndex(active_index)
-        self.account_combo.blockSignals(False)
+        self._accounts = [dict(account) for account in accounts]
+        self._active_id = str(active_id or "")
 
     def popup_from(self, anchor: QWidget) -> None:
         if self.isVisible():
@@ -199,15 +195,194 @@ class AppIconMenu(QWidget):
         self.hide()
         QDesktopServices.openUrl(QUrl(url))
 
-    def _choose_account(self, account_id: str) -> None:
+    def _open_profiles(self) -> None:
         self.hide()
-        self.account_selected.emit(account_id)
+        self.profiles_requested.emit()
 
-    def _account_combo_changed(self, index: int) -> None:
-        account_id = str(self.account_combo.itemData(index) or "").strip()
-        if not account_id:
+
+class ProfilesOverlayDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        icons: IconHelper,
+        accounts: list[dict],
+        active_id: str,
+        blur_target: QWidget | None,
+        anchor: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._accounts = [dict(account) for account in accounts]
+        self._active_id = str(active_id or "")
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._anchor = anchor
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._selected_account_id = ""
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(40, 40, 40, 40)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("AppIconMenuSurface")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(15, 37, 57, 72))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+        self._card = card
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(18, 16, 18, 16)
+        body.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        title = QLabel("Profiles")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+
+        self.close_btn = AnimatedButton("")
+        self.close_btn.setObjectName("ProfilesOverlayCloseButton")
+        self.close_btn.setFixedSize(28, 28)
+        self.close_btn.setIcon(icons.icon("common", "cross_two", "X"))
+        self.close_btn.setIconSize(QSize(11, 11))
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.close_btn.setProperty("disablePressMotion", True)
+        self.close_btn.set_motion_scale_range(0.0)
+        self.close_btn.set_motion_hover_grow(0, 0)
+        self.close_btn.set_motion_lift(0.0)
+        self.close_btn.set_motion_press_scale(0.0)
+        self.close_btn.setStyleSheet(
+            """
+            QPushButton#ProfilesOverlayCloseButton {
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+            }
+            QPushButton#ProfilesOverlayCloseButton:hover {
+                background: rgba(228, 236, 244, 0.95);
+                border: 1px solid rgba(170, 186, 203, 0.75);
+                border-radius: 10px;
+            }
+            QPushButton#ProfilesOverlayCloseButton:pressed {
+                background: rgba(218, 229, 240, 0.98);
+                border: 1px solid rgba(159, 177, 196, 0.82);
+                border-radius: 10px;
+            }
+            """
+        )
+        self.close_btn.clicked.connect(self.reject)
+        header.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignTop)
+        body.addLayout(header)
+
+        if self._accounts:
+            for account in self._accounts:
+                account_id = str(account.get("id", "")).strip()
+                if not account_id:
+                    continue
+                name = str(account.get("name", "")).strip() or f"Account {account_id[:6]}"
+                if account_id == self._active_id:
+                    name = f"{name} (Current)"
+                button = AnimatedButton(name)
+                button.setObjectName("AppIconAccountButton")
+                button.setProperty("skipClickSfx", True)
+                button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                button.set_motion_scale_range(0.012)
+                button.clicked.connect(lambda _checked=False, target=account_id: self._select_account(target))
+                body.addWidget(button)
+        else:
+            empty = QLabel("No profiles available.")
+            empty.setObjectName("SmallMeta")
+            body.addWidget(empty)
+
+        self.setMinimumWidth(420)
+
+    def exec_with_backdrop(self) -> str:
+        self._apply_backdrop()
+        try:
+            self.adjustSize()
+            self._position_near_anchor()
+            self.exec()
+            return self._selected_account_id
+        finally:
+            self._clear_backdrop()
+
+    def mousePressEvent(self, event) -> None:
+        if not self._card.geometry().contains(event.position().toPoint()):
+            self.reject()
+            event.accept()
             return
-        self._choose_account(account_id)
+        super().mousePressEvent(event)
+
+    def _select_account(self, account_id: str) -> None:
+        self._selected_account_id = str(account_id or "")
+        self.accept()
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _position_near_anchor(self) -> None:
+        if self._anchor is None:
+            self._center_on_parent()
+            return
+        anchor_top_left = self._anchor.mapToGlobal(QPoint(0, 0))
+        x = int(anchor_top_left.x())
+        y = int(anchor_top_left.y() + self._anchor.height() + 10)
+        target = QRect(x, y, self.width(), self.height())
+        screen = QGuiApplication.screenAt(target.center()) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if target.right() > available.right() - 8:
+                target.moveRight(available.right() - 8)
+            if target.bottom() > available.bottom() - 8:
+                target.moveBottom(available.bottom() - 8)
+            if target.left() < available.left() + 8:
+                target.moveLeft(available.left() + 8)
+            if target.top() < available.top() + 8:
+                target.moveTop(available.top() + 8)
+        self.move(target.topLeft())
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(12.0)
+        self._blur_target.setGraphicsEffect(blur)
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.22);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._previous_effect = None
 
 
 class UserProfileMenu(QWidget):
@@ -431,7 +606,7 @@ class MainWindow(QMainWindow):
         self._app_menu = AppIconMenu(self)
         self._profile_menu = UserProfileMenu(self)
         self._notifications_menu = NotificationsMenu(self)
-        self._app_menu.account_selected.connect(self._on_account_selected)
+        self._app_menu.profiles_requested.connect(self._open_profiles_overlay)
         self._profile_menu.view_stats_requested.connect(self._open_stats_dialog)
         self._notifications_menu.notifications_toggled.connect(self._set_notifications_enabled)
         self._profile_hover_timer = QTimer(self)
@@ -517,7 +692,7 @@ class MainWindow(QMainWindow):
         self.feedback_btn = self._build_icon_button(
             "bug",
             "Feedback",
-            lambda: QDesktopServices.openUrl(QUrl("https://github.com/MightyXdash/ONCard/issues")),
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/MightyXdash/ONCard/issues/new")),
         )
         left_layout.addWidget(self.feedback_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.envelope_btn = self._build_icon_button("envelope", "Notifications", self._toggle_notifications_menu)
@@ -603,6 +778,7 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
         self._sync_nav_icons()
         self._sync_window_controls()
+        self._switch_tab(1)
 
     def _position_stats_overlay(self) -> None:
         overlay = getattr(self, "_stats_overlay", None)
@@ -613,7 +789,7 @@ class MainWindow(QMainWindow):
 
     def _apply_native_window_chrome(self) -> None:
         rounded = not (self._pseudo_maximized or self.isMaximized())
-        polish_windows_window(self, rounded=rounded, small_corners=False, remove_border=True)
+        polish_windows_window(self, rounded=rounded, small_corners=False, remove_border=True, native_shadow=True)
 
     def _build_icon_button(self, icon_name: str, label: str, callback) -> AnimatedButton:
         button = AnimatedButton("")
@@ -670,6 +846,26 @@ class MainWindow(QMainWindow):
         if self.session_controller is not None:
             self._app_menu.set_accounts(self.session_controller.list_accounts(), self.session_controller.active_account_id())
         self._app_menu.popup_from(self.app_icon_btn)
+
+    def _open_profiles_overlay(self) -> None:
+        if self.session_controller is None:
+            return
+        if self._profile_menu.isVisible():
+            self._profile_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
+        accounts = self.session_controller.list_accounts()
+        active_id = self.session_controller.active_account_id()
+        selected_id = ProfilesOverlayDialog(
+            parent=self,
+            icons=self.icons,
+            accounts=accounts,
+            active_id=active_id,
+            blur_target=self._app_shell,
+            anchor=self.app_icon_btn,
+        ).exec_with_backdrop()
+        if selected_id and selected_id != active_id:
+            self._on_account_selected(selected_id)
 
     def _toggle_profile_menu(self) -> None:
         if self._app_menu.isVisible():
