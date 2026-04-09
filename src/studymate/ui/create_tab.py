@@ -346,6 +346,7 @@ class ActivityLogBrowser(QTextBrowser):
 
 class CreateTab(QWidget):
     card_saved = Signal()
+    ftc_completed = Signal(str)
 
     def __init__(
         self,
@@ -1160,6 +1161,7 @@ class CreateTab(QWidget):
             self._add_activity(kind="status", title="Files To Cards", text="Files To Cards stopped. Generated cards were removed.")
         elif self.ftc_run.phase == "autofill":
             self._add_activity(kind="status", title="Files To Cards", text="Files To Cards finished successfully.")
+            self.ftc_completed.emit(self._dominant_run_subject(run_id))
 
         self._cleanup_run_runtime(run_id)
         self.ftc_run = None
@@ -1204,6 +1206,19 @@ class CreateTab(QWidget):
         run_dir = self.datastore.paths.runtime / "files_to_cards" / run_id
         if run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
+
+    def _dominant_run_subject(self, run_id: str) -> str:
+        counts: dict[str, int] = {}
+        for card in self.datastore.list_all_cards():
+            if str(card.get("run_id", "")).strip() != run_id:
+                continue
+            subject = str(card.get("subject", "")).strip()
+            if not subject:
+                continue
+            counts[subject] = counts.get(subject, 0) + 1
+        if not counts:
+            return "study"
+        return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
     def _enqueue_embedding(self, card: dict) -> None:
         card_id = str(card.get("id", "")).strip()

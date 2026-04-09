@@ -4,6 +4,7 @@ from PySide6.QtCore import QEvent, QParallelAnimationGroup, QPoint, QPropertyAni
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QMouseEvent, QPainter, QPainterPath, QPixmap, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QGraphicsBlurEffect,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -319,6 +321,94 @@ class UserProfileMenu(QWidget):
         self.view_stats_requested.emit()
 
 
+class NotificationsMenu(QWidget):
+    notifications_toggled = Signal(bool)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setObjectName("NotificationsMenu")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._animation_group: QParallelAnimationGroup | None = None
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setSpacing(0)
+
+        self.surface = QFrame(self)
+        self.surface.setObjectName("NotificationsMenuSurface")
+        shadow = QGraphicsDropShadowEffect(self.surface)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(15, 37, 57, 26))
+        self.surface.setGraphicsEffect(shadow)
+        root_layout.addWidget(self.surface)
+
+        surface_layout = QVBoxLayout(self.surface)
+        surface_layout.setContentsMargins(12, 12, 12, 12)
+        surface_layout.setSpacing(8)
+
+        header = QLabel("Notifications")
+        header.setObjectName("SmallMeta")
+        surface_layout.addWidget(header)
+
+        self.toggle = QCheckBox("Notifications")
+        self.toggle.setObjectName("NotificationsToggle")
+        self.toggle.stateChanged.connect(lambda _state: self.notifications_toggled.emit(self.toggle.isChecked()))
+        surface_layout.addWidget(self.toggle)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(enabled)
+        self.toggle.blockSignals(False)
+
+    def popup_from(self, anchor: QWidget) -> None:
+        if self.isVisible():
+            self.hide()
+            return
+
+        self.adjustSize()
+        end_rect = QRect(anchor.mapToGlobal(QPoint(0, anchor.height() + 2)), self.sizeHint())
+        screen = QGuiApplication.screenAt(end_rect.center()) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if end_rect.right() > available.right() - 8:
+                end_rect.moveRight(available.right() - 8)
+            if end_rect.bottom() > available.bottom() - 8:
+                end_rect.moveBottom(available.bottom() - 8)
+            if end_rect.left() < available.left() + 8:
+                end_rect.moveLeft(available.left() + 8)
+
+        start_rect = QRect(end_rect)
+        start_rect.translate(0, -2)
+
+        self.setGeometry(start_rect)
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+
+        if self._animation_group is not None:
+            self._animation_group.stop()
+
+        geometry_animation = QPropertyAnimation(self, b"geometry", self)
+        geometry_animation.setDuration(_motion_duration(170))
+        geometry_animation.setStartValue(start_rect)
+        geometry_animation.setEndValue(end_rect)
+        geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        opacity_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        opacity_animation.setDuration(_motion_duration(160))
+        opacity_animation.setStartValue(0.0)
+        opacity_animation.setEndValue(1.0)
+        opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._animation_group = QParallelAnimationGroup(self)
+        self._animation_group.addAnimation(geometry_animation)
+        self._animation_group.addAnimation(opacity_animation)
+        self._animation_group.start()
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -340,8 +430,10 @@ class MainWindow(QMainWindow):
         self._click_sfx_filter = ClickSoundFilter(self.sounds, self)
         self._app_menu = AppIconMenu(self)
         self._profile_menu = UserProfileMenu(self)
+        self._notifications_menu = NotificationsMenu(self)
         self._app_menu.account_selected.connect(self._on_account_selected)
         self._profile_menu.view_stats_requested.connect(self._open_stats_dialog)
+        self._notifications_menu.notifications_toggled.connect(self._set_notifications_enabled)
         self._profile_hover_timer = QTimer(self)
         self._profile_hover_timer.setSingleShot(True)
         self._profile_hover_timer.timeout.connect(self._show_profile_menu_from_hover)
@@ -364,6 +456,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 540)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self._apply_initial_geometry()
+        self._init_tray_icon()
+        self._ensure_notification_defaults()
         self._build_ui()
         self._apply_native_window_chrome()
 
@@ -420,11 +514,15 @@ class MainWindow(QMainWindow):
         self.user_btn.setToolTip("")
         self.user_btn.installEventFilter(self)
         left_layout.addWidget(self.user_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.feedback_btn = self._build_icon_button("feedback", "Feedback", lambda: self.show_update_notice("Feedback coming soon", 3000))
+        self.feedback_btn = self._build_icon_button(
+            "bug",
+            "Feedback",
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/MightyXdash/ONCard/issues")),
+        )
         left_layout.addWidget(self.feedback_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.envelope_btn = self._build_icon_button("envelope", "Notifications", lambda: self.show_update_notice("Notifications coming soon", 3000))
+        self.envelope_btn = self._build_icon_button("envelope", "Notifications", self._toggle_notifications_menu)
         left_layout.addWidget(self.envelope_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.quick_add_btn = self._build_icon_button("plus", "Quick add", lambda: self.show_update_notice("Quick add coming soon", 3000))
+        self.quick_add_btn = self._build_icon_button("plus", "Quick add", self._open_quick_add_notice)
         left_layout.addWidget(self.quick_add_btn, 0, Qt.AlignmentFlag.AlignLeft)
         title_layout.addWidget(left_cluster, 0, Qt.AlignmentFlag.AlignLeft)
 
@@ -490,6 +588,7 @@ class MainWindow(QMainWindow):
         self.create_tab = CreateTab(self.datastore, self.ollama, self.icons, self.preflight)
         self.study_tab = StudyTab(self.datastore, self.ollama, self.icons, self.preflight)
         self.create_tab.card_saved.connect(self.study_tab.mark_cards_dirty)
+        self.create_tab.ftc_completed.connect(self._notify_ftc_completed)
         self.stack.addWidget(self.create_tab)
         self.stack.addWidget(self.study_tab)
         layout.addWidget(self.stack, 1)
@@ -566,6 +665,8 @@ class MainWindow(QMainWindow):
     def _toggle_app_menu(self) -> None:
         if self._profile_menu.isVisible():
             self._profile_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
         if self.session_controller is not None:
             self._app_menu.set_accounts(self.session_controller.list_accounts(), self.session_controller.active_account_id())
         self._app_menu.popup_from(self.app_icon_btn)
@@ -573,8 +674,26 @@ class MainWindow(QMainWindow):
     def _toggle_profile_menu(self) -> None:
         if self._app_menu.isVisible():
             self._app_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
         self._profile_menu.set_profile(self.datastore.load_profile())
         self._profile_menu.popup_from(self.user_btn)
+
+    def _toggle_notifications_menu(self) -> None:
+        if self._app_menu.isVisible():
+            self._app_menu.hide()
+        if self._profile_menu.isVisible():
+            self._profile_menu.hide()
+        enabled = bool(self.datastore.load_setup().get("notifications", {}).get("enabled", False))
+        self._notifications_menu.set_enabled(enabled)
+        self._notifications_menu.popup_from(self.envelope_btn)
+
+    def _open_quick_add_notice(self) -> None:
+        QMessageBox.information(
+            self,
+            "Quick add",
+            "Still, under development:\n\n- Set study routines.\n- Set up your personalized study plan automatically.",
+        )
 
     def _show_profile_menu_from_hover(self) -> None:
         if self._profile_menu.isVisible():
@@ -685,6 +804,47 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Accounts", str(exc))
 
+    def _set_notifications_enabled(self, enabled: bool) -> None:
+        setup = self.datastore.load_setup()
+        notifications = dict(setup.get("notifications", {}))
+        notifications["enabled"] = bool(enabled)
+        setup["notifications"] = notifications
+        self.datastore.save_setup(setup)
+
+    def _ensure_notification_defaults(self) -> None:
+        setup = self.datastore.load_setup()
+        notifications = dict(setup.get("notifications", {}))
+        if "enabled" not in notifications:
+            notifications["enabled"] = True
+            setup["notifications"] = notifications
+            self.datastore.save_setup(setup)
+
+    def _init_tray_icon(self) -> None:
+        self._tray_icon: QSystemTrayIcon | None = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray_icon = self.windowIcon()
+        if tray_icon.isNull():
+            tray_icon = self.icons.icon("app", "app_logo", "O")
+        self._tray_icon = QSystemTrayIcon(tray_icon, self)
+        self._tray_icon.setToolTip("ONCard")
+        self._tray_icon.show()
+
+    def _notify_ftc_completed(self, subject: str) -> None:
+        enabled = bool(self.datastore.load_setup().get("notifications", {}).get("enabled", False))
+        if not enabled:
+            return
+        message_subject = str(subject).strip() or "study"
+        message_text = f"We have completed making your {message_subject} slides"
+        if self._tray_icon is not None and self._tray_icon.isVisible():
+            self._tray_icon.showMessage(
+                "ONCard - FTC",
+                message_text,
+                QSystemTrayIcon.MessageIcon.Information,
+                6000,
+            )
+        self.show_update_notice(message_text, 6000)
+
     def begin_update_shutdown(self) -> None:
         self._update_shutdown_requested = True
 
@@ -708,6 +868,8 @@ class MainWindow(QMainWindow):
             self._app_menu.hide()
         if self._profile_menu.isVisible():
             self._profile_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
         if self._pseudo_maximized and self._maximized_geometry is not None and not self._sizing_pseudo:
             if self.geometry().topLeft() != self._maximized_geometry.topLeft():
                 self._pseudo_maximized = False
@@ -719,6 +881,8 @@ class MainWindow(QMainWindow):
             self._app_menu.hide()
         if self._profile_menu.isVisible():
             self._profile_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
         if self._pseudo_maximized and self._maximized_geometry is not None and not self._sizing_pseudo:
             if self.geometry().size() != self._maximized_geometry.size():
                 self._pseudo_maximized = False
