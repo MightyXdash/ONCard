@@ -30,7 +30,7 @@ def generate_card_payload(
         core = SUBJECT_TAXONOMY.get(subject, {}).get("core", [])
         subtopics = SUBJECT_TAXONOMY.get(subject, {}).get("subtopics", [])
         return {
-            "title": cleanup_plain_text(question[:72] or "New Question"),
+            "title": _enforce_title_word_range(cleanup_plain_text(question[:72] or "New Question"), question),
             "subject": subject,
             "category": category_override or (random.choice(core) if core else "All"),
             "subtopic": subtopic_override or (random.choice(subtopics) if subtopics else "All"),
@@ -71,6 +71,8 @@ def generate_card_payload(
     override_lines.append(
         "Return clean values for title, category, subtopic, hints, exactly 5 short search_terms, answer, difficulty and response_to_user."
     )
+    override_lines.append("Title must be strictly 2 to 6 words only.")
+    override_lines.append("If the best title is longer, shorten it to a meaningful 2 to 6 word title.")
     user_prompt = f"{profile_text}Question: {question}\n" + "\n".join(override_lines)
     try:
         payload = ollama.structured_chat(
@@ -84,7 +86,7 @@ def generate_card_payload(
     except OllamaError:
         payload = fallback()
 
-    payload["title"] = cleanup_plain_text(str(payload.get("title", "")))
+    payload["title"] = _enforce_title_word_range(cleanup_plain_text(str(payload.get("title", ""))), question)
     payload["subject"] = cleanup_plain_text(str(payload.get("subject", subject_override or "Mathematics")))
     payload["category"] = cleanup_plain_text(str(payload.get("category", category_override or "All")))
     payload["subtopic"] = cleanup_plain_text(str(payload.get("subtopic", subtopic_override or "All")))
@@ -230,3 +232,56 @@ def _default_search_terms(seed_text: str) -> list[str]:
         if len(candidates) >= 5:
             return candidates
     return candidates[:5]
+
+
+def _enforce_title_word_range(title: str, question: str) -> str:
+    cleaned = cleanup_plain_text(title)
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", cleaned)
+    if 2 <= len(words) <= 6:
+        return " ".join(words)
+
+    if len(words) > 6:
+        return " ".join(words[:6])
+
+    question_words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", cleanup_plain_text(question))
+    filtered_question_words: list[str] = []
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "what",
+        "when",
+        "where",
+        "which",
+        "why",
+        "with",
+    }
+    for word in question_words:
+        lowered = word.lower()
+        if lowered not in stop_words:
+            filtered_question_words.append(word)
+        if len(filtered_question_words) >= 6:
+            break
+
+    if len(filtered_question_words) >= 2:
+        return " ".join(filtered_question_words[:6])
+    if filtered_question_words:
+        return f"{filtered_question_words[0]} Overview"
+    if words:
+        return f"{words[0]} Overview"
+    return "Study Overview"

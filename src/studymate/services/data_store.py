@@ -101,6 +101,9 @@ class DataStore:
             "stats": {
                 "default_range": "daily",
             },
+            "notifications": {
+                "enabled": True,
+            },
             "updated_at": cls.now_iso(),
         }
 
