@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -18,6 +20,19 @@ from studymate.services.update_service import ReleaseInfo
 from studymate.ui.animated import AnimatedButton
 from studymate.ui.audio import UiSoundBank
 from studymate.ui.banner_widget import BannerWidget
+
+
+def _use_frameless_surface(dialog: QDialog) -> None:
+    dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+
+def _add_surface_shadow(surface: QFrame) -> None:
+    shadow = QGraphicsDropShadowEffect(surface)
+    shadow.setBlurRadius(42)
+    shadow.setOffset(0, 14)
+    shadow.setColor(QColor(15, 37, 57, 72))
+    surface.setGraphicsEffect(shadow)
 
 
 class UpdateDialog(QDialog):
@@ -63,19 +78,105 @@ class UpdateDialog(QDialog):
         layout.addLayout(buttons)
 
 
+class WhatsNewSummaryDialog(QDialog):
+    def __init__(self, *, version: str, content: PackagedUpdateContent) -> None:
+        super().__init__()
+        self.setWindowTitle("What's new")
+        _use_frameless_surface(self)
+        self.setFixedSize(660, 660)
+        self.dive_deeper_requested = False
+        self.sounds = UiSoundBank(content.banner1.parents[2] / "sfx")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(0)
+
+        surface = QFrame()
+        surface.setObjectName("Surface")
+        _add_surface_shadow(surface)
+        surface_layout = QVBoxLayout(surface)
+        surface_layout.setContentsMargins(18, 18, 18, 18)
+        surface_layout.setSpacing(14)
+        layout.addWidget(surface, 1)
+
+        title = QLabel(content.update_name or f"Welcome to ONCard {version}")
+        title.setObjectName("PageTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
+        surface_layout.addWidget(title)
+
+        subtitle = QLabel(
+            "ONCard 1.3.7 helps you understand your study habits with the new stats tool. "
+            "Press the profile icon in the top left, then choose \"View stats\" to see how you are doing."
+        )
+        subtitle.setObjectName("UpdateSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        surface_layout.addWidget(subtitle)
+
+        summary_banner = content.banner1.parent / "whats_new_showcase_16x9.png"
+        if not summary_banner.exists():
+            summary_banner = content.banner1
+        banner = BannerWidget(
+            banner_path=summary_banner,
+            placeholder_text="whats_new_top_banner_16x9.png",
+            height=260,
+            radius=24,
+        )
+        surface_layout.addWidget(banner, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        description = QLabel(
+            "There is more in this update too: Ask AI can browse cards, respond with vision, use tones, "
+            "follow emoji preferences, and work with expanded model support including Ollama Cloud."
+        )
+        description.setObjectName("SectionText")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setWordWrap(True)
+        surface_layout.addWidget(description)
+
+        surface_layout.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        okay_btn = AnimatedButton("Okay")
+        dive_btn = AnimatedButton("Learn More")
+        dive_btn.setObjectName("PrimaryButton")
+        okay_btn.setFixedWidth(132)
+        dive_btn.setFixedWidth(156)
+        okay_btn.setProperty("skipClickSfx", True)
+        dive_btn.setProperty("skipClickSfx", True)
+        okay_btn.clicked.connect(self._okay)
+        dive_btn.clicked.connect(self._dive_deeper)
+        buttons.addWidget(okay_btn)
+        buttons.addWidget(dive_btn)
+        buttons.addStretch(1)
+        surface_layout.addLayout(buttons)
+
+    def _okay(self) -> None:
+        self.sounds.play("click")
+        QTimer.singleShot(45, self.accept)
+
+    def _dive_deeper(self) -> None:
+        self.dive_deeper_requested = True
+        self.sounds.play("click")
+        QTimer.singleShot(45, self.accept)
+
+
 class WhatsNewDialog(QDialog):
     def __init__(self, *, version: str, content: PackagedUpdateContent) -> None:
         super().__init__()
         self.setWindowTitle("What's new")
-        self.resize(760, 860)
+        _use_frameless_surface(self)
+        self.resize(800, 900)
         self.sounds = UiSoundBank(content.banner1.parents[2] / "sfx")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(0)
 
         surface = QFrame()
         surface.setObjectName("Surface")
+        _add_surface_shadow(surface)
         surface_layout = QVBoxLayout(surface)
         surface_layout.setContentsMargins(18, 18, 18, 18)
         surface_layout.setSpacing(16)

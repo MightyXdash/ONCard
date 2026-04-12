@@ -2,7 +2,7 @@
 
 1. Sync local `main` with `origin/main` before packaging a release.
 2. Bump the app version in `src/studymate/version.py`.
-3. Build the Windows installer with a filename that starts with `ONCards-Setup`.
+3. Build the Windows installer with a filename that starts with `ONCard-Setup`.
 4. Create a GitHub release with a newer tag than the installed version, for example `v1.0.0-beta.5`.
 5. Upload the installer `.exe` to that GitHub release.
 6. Write release notes in the GitHub release body.
@@ -23,5 +23,5 @@
 - Latest release is read from GitHub Releases API.
 - The updater compares semantic versions from the GitHub tag.
 - The installer asset must be a `.exe`.
-- The installer asset name should include `ONCards-Setup`.
+- The installer asset name should include `ONCard-Setup`.
 - Update-note images come from URLs inside the GitHub release body, not from local packaged assets.

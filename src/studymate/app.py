@@ -23,7 +23,7 @@ from studymate.theme import app_stylesheet
 from studymate.ui.icon_helper import IconHelper
 from studymate.ui.main_window import MainWindow
 from studymate.ui.startup_splash import StartupSplash
-from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog
+from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, WhatsNewDialog, WhatsNewSummaryDialog
 from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
 from studymate.version import APP_VERSION
@@ -600,8 +600,11 @@ def _show_whats_new_if_needed(
     if state.get("show_whats_new_for") != APP_VERSION:
         return
     content = load_packaged_update_content(paths.assets, APP_VERSION)
-    dialog = WhatsNewDialog(version=APP_VERSION, content=content)
-    dialog.exec()
+    intro = WhatsNewSummaryDialog(version=APP_VERSION, content=content)
+    intro.exec()
+    if intro.dive_deeper_requested:
+        dialog = WhatsNewDialog(version=APP_VERSION, content=content)
+        dialog.exec()
     _maybe_prompt_embedding_onboarding(app, window, datastore, ollama, content)
     update_service.clear_update_state()
 
