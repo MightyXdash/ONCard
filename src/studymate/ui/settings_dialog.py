@@ -89,6 +89,8 @@ class FTCPopupChoiceDialog(QDialog):
         title: str,
         options: list[tuple[str, str]],
         current_value: str,
+        vertical_choices: bool = False,
+        icon_provider=None,
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
@@ -132,7 +134,6 @@ class FTCPopupChoiceDialog(QDialog):
         header.addWidget(header_title)
         header.addStretch(1)
 
-        icon_provider = getattr(parent, "icons", None)
         if icon_provider is not None and hasattr(icon_provider, "icon"):
             save_icon = icon_provider.icon("common", "check", "C")
             close_icon = icon_provider.icon("common", "cross_two", "X")
@@ -161,7 +162,7 @@ class FTCPopupChoiceDialog(QDialog):
 
         choices_shell = QFrame()
         choices_shell.setObjectName("FTCPopupFieldShell")
-        choices_layout = QHBoxLayout(choices_shell)
+        choices_layout = QVBoxLayout(choices_shell) if vertical_choices else QHBoxLayout(choices_shell)
         choices_layout.setContentsMargins(8, 8, 8, 8)
         choices_layout.setSpacing(8)
         for label, value in options_clean:
@@ -171,11 +172,14 @@ class FTCPopupChoiceDialog(QDialog):
             button.setProperty("disablePressMotion", True)
             button.set_motion_scale_range(0.0)
             button.clicked.connect(lambda _checked=False, selected=value: self._set_value(selected))
-            choices_layout.addWidget(button, 1)
+            if vertical_choices:
+                choices_layout.addWidget(button)
+            else:
+                choices_layout.addWidget(button, 1)
             self._choice_buttons[value] = button
         body.addWidget(choices_shell)
         self._refresh_buttons()
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(360 if vertical_choices else 500)
 
     def selected_value(self) -> str:
         return str(self._selected_value or "")
@@ -183,6 +187,7 @@ class FTCPopupChoiceDialog(QDialog):
     def exec_with_backdrop(self) -> int:
         self._apply_backdrop()
         try:
+            self.adjustSize()
             self._center_on_parent()
             return self.exec()
         finally:
@@ -210,6 +215,156 @@ class FTCPopupChoiceDialog(QDialog):
 
     def _save_and_accept(self) -> None:
         self.done(QDialog.DialogCode.Accepted)
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _apply_backdrop(self) -> None:
+        if self._blur_target is None:
+            return
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(8.0)
+        self._blur_target.setGraphicsEffect(blur)
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.10);")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        if self._blur_target is not None:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        self._previous_effect = None
+
+
+class ExportAccountDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        blur_target: QWidget | None,
+        icons_root: Path | None,
+    ) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._download_requested = False
+        self._blur_target = blur_target or parent
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._icons_root = icons_root
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(44, 44, 44, 44)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("ExportAccountPopupCard")
+        card.setStyleSheet(
+            """
+            QFrame#ExportAccountPopupCard {
+                background: rgba(255, 255, 255, 0.96);
+                border: 1px solid rgba(220, 228, 236, 0.85);
+                border-radius: 28px;
+            }
+            QToolButton#ExportAccountIconButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 12px;
+                padding: 0px;
+            }
+            QToolButton#ExportAccountIconButton:hover {
+                background-color: rgba(15, 37, 57, 0.08);
+                border-color: rgba(15, 37, 57, 0.08);
+            }
+            QToolButton#ExportAccountIconButton:pressed {
+                background-color: rgba(15, 37, 57, 0.14);
+                border-color: rgba(15, 37, 57, 0.14);
+            }
+            """
+        )
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(44)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(13, 26, 39, 110))
+        card.setGraphicsEffect(shadow)
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(24, 22, 24, 20)
+        body.setSpacing(16)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        title = QLabel("Export account")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        body.addLayout(header)
+
+        message = QLabel("We made a copy of your data. Press download to save it to your Downloads folder.")
+        message.setObjectName("SectionText")
+        message.setWordWrap(True)
+        body.addWidget(message)
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(8)
+        actions.addStretch(1)
+        download_btn = self._icon_button("download", "Download to Downloads")
+        download_btn.clicked.connect(self._download)
+        actions.addWidget(download_btn)
+        close_btn = self._icon_button("cross_two", "Cancel")
+        close_btn.clicked.connect(self.reject)
+        actions.addWidget(close_btn)
+        body.addLayout(actions)
+
+        self.setFixedSize(560, 270)
+
+    def download_requested(self) -> bool:
+        return self._download_requested
+
+    def exec_with_backdrop(self) -> int:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            return self.exec()
+        finally:
+            self._clear_backdrop()
+
+    def _download(self) -> None:
+        self._download_requested = True
+        self.accept()
+
+    def _icon_button(self, icon_name: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("ExportAccountIconButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setToolTip(tooltip)
+        button.setFixedSize(34, 34)
+        if self._icons_root is not None:
+            button.setIcon(QIcon(str(self._icons_root / "common" / f"{icon_name}.png")))
+            button.setIconSize(QSize(15, 15))
+        return button
 
     def _center_on_parent(self) -> None:
         parent_widget = self.parentWidget()
@@ -294,13 +449,14 @@ class SettingsDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
+        root.setSpacing(18)
 
         title = QLabel("Settings")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("SettingsTabs")
         self.tabs.addTab(self._build_general_tab(), "General")
         self.tabs.addTab(self._build_stats_tab(), "Stats")
         self.tabs.addTab(self._build_ai_tab(), "AI")
@@ -308,6 +464,8 @@ class SettingsDialog(QDialog):
         root.addWidget(self.tabs, 1)
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 8, 4, 0)
+        actions.setSpacing(16)
         actions.addStretch(1)
         self.cancel_btn = AnimatedButton("Cancel")
         self.save_btn = AnimatedButton("Save")
@@ -318,14 +476,19 @@ class SettingsDialog(QDialog):
         actions.addWidget(self.save_btn)
         root.addLayout(actions)
 
-    def _build_general_tab(self) -> QWidget:
+    def _settings_scroll_area(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setViewportMargins(0, 10, 18, 0)
+        return scroll
+
+    def _build_general_tab(self) -> QWidget:
+        scroll = self._settings_scroll_area()
 
         host = QWidget()
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(18)
 
         intro = QLabel("Update the basic student profile ONCard uses when generating and grading responses.")
         intro.setObjectName("SectionText")
@@ -545,9 +708,17 @@ class SettingsDialog(QDialog):
             title="Difficulty",
             control=self.ftc_difficulty,
             fallback_value="normal",
+            vertical_choices=True,
         )
 
-    def _open_ftc_choice_picker(self, *, title: str, control: QComboBox, fallback_value: str) -> None:
+    def _open_ftc_choice_picker(
+        self,
+        *,
+        title: str,
+        control: QComboBox,
+        fallback_value: str,
+        vertical_choices: bool = False,
+    ) -> None:
         options: list[tuple[str, str]] = []
         for index in range(control.count()):
             label = str(control.itemText(index)).strip()
@@ -555,14 +726,18 @@ class SettingsDialog(QDialog):
             if label and value:
                 options.append((label, value))
         current_value = str(control.currentData() or fallback_value).strip() or fallback_value
-        parent_widget = self.window() if isinstance(self.window(), QWidget) else self
-        blur_target = getattr(parent_widget, "_popup_blur_target", parent_widget)
+        parent_widget = self
+        app_window = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(app_window, "_popup_blur_target", parent_widget)
+        icon_provider = getattr(app_window, "icons", None) or getattr(self.parentWidget(), "icons", None)
         picker = FTCPopupChoiceDialog(
             parent=parent_widget,
             blur_target=blur_target,
             title=title,
             options=options,
             current_value=current_value,
+            vertical_choices=vertical_choices,
+            icon_provider=icon_provider,
         )
         if picker.exec_with_backdrop() != QDialog.DialogCode.Accepted:
             return
@@ -572,13 +747,12 @@ class SettingsDialog(QDialog):
             control.setCurrentIndex(selected_index)
 
     def _build_ai_tab(self) -> QWidget:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        scroll = self._settings_scroll_area()
 
         host = QWidget()
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(18)
 
         cloud_surface = QFrame()
         cloud_surface.setObjectName("Surface")
@@ -1355,30 +1529,15 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Export account", str(exc))
             return False
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Export account")
-        msg.setText("We have made a copy of your data. Where would you like to save it?")
-        choose_btn = msg.addButton("I will choose", QMessageBox.AcceptRole)
-        downloads_btn = msg.addButton("Downloads folder", QMessageBox.AcceptRole)
-        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
-        msg.exec()
-        clicked = msg.clickedButton()
-        if clicked == cancel_btn:
+        app_window = self.window() if isinstance(self.window(), QWidget) else self
+        blur_target = getattr(app_window, "_popup_blur_target", self)
+        icons_root = getattr(getattr(self.parentWidget(), "paths", None), "icons", None)
+        dialog = ExportAccountDialog(parent=self, blur_target=blur_target, icons_root=icons_root)
+        if dialog.exec_with_backdrop() != QDialog.DialogCode.Accepted or not dialog.download_requested():
             self._cleanup_temp_export(temp_zip)
             return False
 
-        destination: Path | None = None
-        if clicked == downloads_btn:
-            destination = Path.home() / "Downloads" / temp_zip.name
-        elif clicked == choose_btn:
-            filename, _ = QFileDialog.getSaveFileName(self, "Save exported account", temp_zip.name, "Zip files (*.zip)")
-            if not filename:
-                self._cleanup_temp_export(temp_zip)
-                return False
-            destination = Path(filename)
-        if destination is None:
-            self._cleanup_temp_export(temp_zip)
-            return False
+        destination = Path.home() / "Downloads" / temp_zip.name
 
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1467,6 +1626,25 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, "Change account", "Account data was imported and overwritten successfully.")
         self.accept()
 
+    def _confirmation_icon_button(self, icon_name: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("NewAccountConfirmIconButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(34, 34)
+        button.setText("")
+        button.setToolTip(tooltip)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        icon_provider = getattr(self.parentWidget(), "icons", None)
+        if icon_provider is not None and hasattr(icon_provider, "icon"):
+            button.setIcon(icon_provider.icon("common", icon_name, tooltip[:1]))
+            button.setIconSize(QSize(15, 15))
+        else:
+            icon_root = getattr(getattr(self.parentWidget(), "paths", None), "icons", None)
+            if isinstance(icon_root, Path):
+                button.setIcon(QIcon(str(icon_root / "common" / f"{icon_name}.png")))
+                button.setIconSize(QSize(15, 15))
+        return button
+
     def _new_account_flow(self) -> None:
         if self.session_controller is None:
             return
@@ -1477,8 +1655,10 @@ class SettingsDialog(QDialog):
         first.setText(
             f"Hey, {name}. It is nice to see you making another account. Creating a new account won't affect any of your existing account(s). you can change it anytime by pressing on the app icon > pressing accounts > and pressing on your prefered account"
         )
-        yes_btn = first.addButton("yes, I am in!", QMessageBox.AcceptRole)
-        first.addButton("cancel", QMessageBox.RejectRole)
+        yes_btn = self._confirmation_icon_button("check", "yes, I am in!")
+        cancel_btn = self._confirmation_icon_button("cross_two", "cancel")
+        first.addButton(yes_btn, QMessageBox.AcceptRole)
+        first.addButton(cancel_btn, QMessageBox.RejectRole)
         first.exec()
         if first.clickedButton() != yes_btn:
             return
@@ -1486,8 +1666,10 @@ class SettingsDialog(QDialog):
         second = QMessageBox(self)
         second.setWindowTitle("New account")
         second.setText("Nice! New account will be made. The app will open a new profile maker window for you to make a new account.")
-        okay_btn = second.addButton("Okay", QMessageBox.AcceptRole)
-        second.addButton("nevermind, I changed my mind", QMessageBox.RejectRole)
+        okay_btn = self._confirmation_icon_button("check", "Okay")
+        nevermind_btn = self._confirmation_icon_button("cross_two", "nevermind, I changed my mind")
+        second.addButton(okay_btn, QMessageBox.AcceptRole)
+        second.addButton(nevermind_btn, QMessageBox.RejectRole)
         second.exec()
         if second.clickedButton() != okay_btn:
             return

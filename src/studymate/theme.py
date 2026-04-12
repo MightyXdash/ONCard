@@ -645,6 +645,9 @@ def app_stylesheet() -> str:
         border: none;
         background: transparent;
     }
+    QTabWidget#SettingsTabs::pane {
+        margin-top: 8px;
+    }
     QTabBar::tab {
         background-color: rgba(255, 255, 255, 0.9);
         border: 1px solid rgba(166, 181, 197, 0.44);
@@ -946,6 +949,22 @@ def app_stylesheet() -> str:
     QToolButton#FTCPopupIconButton:pressed {
         background-color: rgba(15, 37, 57, 0.14);
         border-color: rgba(15, 37, 57, 0.14);
+    }
+    QToolButton#NewAccountConfirmIconButton {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 0px;
+    }
+    QToolButton#NewAccountConfirmIconButton:hover {
+        background-color: rgba(15, 37, 57, 0.08);
+        border-color: rgba(15, 37, 57, 0.08);
+        border-radius: 12px;
+    }
+    QToolButton#NewAccountConfirmIconButton:pressed {
+        background-color: rgba(15, 37, 57, 0.14);
+        border-color: rgba(15, 37, 57, 0.14);
+        border-radius: 12px;
     }
     QPushButton#FTCGenerateButton {
         background-color: rgba(255, 255, 255, 0.98);

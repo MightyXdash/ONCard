@@ -20,10 +20,34 @@ venv/
 env/
 ENV/
 .env
+.env.*
+*.env
 .envrc
 
-# Local runtime data
+# Local runtime data and profiles
 data/
+/.codex/
+/profiles/
+/profile/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Local API credentials / secrets
+/.secrets/
+/secrets/
+*.secret
+*.secrets
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+token.json
+api_keys.json
 
 # Build outputs
 build/
@@ -40,3 +64,11 @@ MANIFEST
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Local logs and generated debug captures
+*.log
+/logs/
+/debug/
+*_debug.png
+*_debug_*.png
+/tools/debug/
