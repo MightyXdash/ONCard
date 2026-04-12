@@ -11,7 +11,7 @@ _The app doesn’t have a license yet. If Windows Defender shows a warning durin
 _If you are using Linux, please refer to [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux)_
 # How to install ONCard:
 ### Step One:
-- Go to [Ollama's](https://ollama.com/download) website, and download & install ollama.
+- Go to _[Ollama's](https://ollama.com/download)_ website, and download & install ollama.
 ### Step Two:
 - Go to the [releases](https://github.com/MightyXdash/ONCard/releases) page of this repo.
 - Then scroll down until you find the latest version assets.
