@@ -1,81 +1,89 @@
-# ONCards
-Elevate your learning experience.
+# ONCard
+Elevate your learning experience with a fully offline AI-powered study app.
 
-<img width="1280" height="720" alt="Untitled" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
+<img width="1280" height="720" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
 
+## Table of Contents
+- [About ONCard](#about-oncard)
+- [Features](#features)
+- [Installation](#installation)
+- [How to Use ONCard](#how-to-use-oncard)
+- [Recommended Requirements](#recommended-requirements)
+- [Citation](#citation)
 
+## About ONCard
+**ONCard (Open-source Neural-Accelerated Cards)** is a fully offline study app with a virtual teacher and an adaptive learning algorithm that improves context and teaching quality over time.
 
+<img width="2559" height="1439" alt="ONCard study interface" src="https://github.com/user-attachments/assets/6115c89a-2c6f-42ac-951b-39721495b1db" />
 
+## Features
+These are the core features that make ONCard powerful for daily studying:
 
-_The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._
-_If you are using Linux, please refer to [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux)_
-# How to install ONCard:
-### Step One:
-- Go to _[Ollama's](https://ollama.com/download)_ website, and download & install ollama.
-### Step Two:
-- Go to the [releases](https://github.com/MightyXdash/ONCard/releases) page of this repo.
-- Then scroll down until you find the latest version assets.
-- Download the .exe file.
+- **Fully Offline AI Workflow**
+  ONCard runs locally with Ollama, so your study sessions continue without cloud dependency.
 
-_(if you are on Linux, please refer to [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux))_
-# What is ONCard?
- **ONCard — Opensource Neural-accellerated Cards**
-A fully offline study app with a virtual teacher and an algorithm which learns you as you go for better context and teach you better as you keep using the app.
- <img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/6115c89a-2c6f-42ac-951b-39721495b1db" />
+- **One-Input Card Generation**
+  Enter a single prompt from your notes or slides and ONCard auto-generates:
+  - title
+  - hints
+  - answer
+  - difficulty
+  - suggested subject location/path
 
-# How to use it:
-- When the user opens the app, they will see the "create" tab.
-- You can write your question (from your notes or slides)
-- AI will complete the rest for you: title, hints, answer, difficulty, even the question location (eg: something related to "python language" will go to the "...\computer science\languages\Python..." path.
-- you can go over to the "Cards" tab and press "Start" or click on a card to start studying your subject. Make sure to be on the correct subject path when you want to study a specific subject.
-- You can write your answer (or reveal a hint if you are not sure)
-- Press "grade" to see a virtual teacher grading your answer in real time.
-- if you want help, just type a follow-up question and press enter for the teacher to explain it to you.
+- **Virtual Teacher with Real-Time Grading**
+  Submit your answer and get instant evaluation and study feedback.
 
-<details>
-<summary><strong>🚀 Features for the Next Updates</strong></summary>
+- **Follow-Up Teaching Chat**
+  Ask follow-up questions directly after grading to get concept explanations while context is still fresh.
 
-> Ongoing improvements focused on introducing practical features and reducing overall application size for better performance and accessibility.
+- **Subject-Path Organization**
+  Cards are structured by topic paths (for example, computer science → languages → Python) so large subjects stay organized.
 
+- **Adaptive Learning Behavior**
+  ONCard improves how it helps you as you keep studying, creating a more personalized learning flow over time.
 
+- **Fast Study Loop**
+  Create, review, answer, grade, and clarify in one app without switching tools.
 
-### 🔴 Important
+- **Focused UI for Study Sessions**
+  The Create and Cards workflow is designed to keep attention on learning instead of setup.
 
-- **Discuss (AI Study Assistant)**  
-  A dedicated AI assistant optimized for learning. Users can tag cards and ask follow-up questions for deeper understanding.  
-  Includes three levels of context awareness:  
-  - **Global Awareness** – Uses predefined user data (e.g., name, age) to generate age-appropriate responses.  
-  - **Self Attention** – Maintains short-term conversational context.  
-  - **Long-Term Short Memories (LTSM)** – Gradually learns user behavior over time to deliver more personalized interactions.
+## Installation
 
-- **Memories**  
-  Stores user-specific traits such as strengths, weaknesses, personality, and interests to enhance personalization.  
-  *(Separate system from LTSM.)*
-  
-- Search bar commands such as ```/ai``` and ```/sett``` enable users to interact with the AI for assistance, system optimization, and configuration adjustments. Additional features and improvements will be introduced in future updates.
+> **Note:** The app does not currently have a license file.
+>
+> If Windows Defender shows a warning during installation, you may need to allow the app manually.
 
+### Windows
+1. Download and install [Ollama](https://ollama.com/download).
+2. Go to this repository’s [Releases](https://github.com/MightyXdash/ONCard/releases) page.
+3. Download the latest `.exe` from the release assets.
 
+### Linux
+Use the Linux-specific version here: [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux).
 
-### 🟡 Minor Improvements
+## How to Use ONCard
+1. Open ONCard and go to the **Create** tab.
+2. Enter a question from your notes or slides.
+3. ONCard generates the rest automatically: title, hints, answer, difficulty, and suggested subject path.
+4. Go to the **Cards** tab and press **Start** (or click any card) to begin studying.
+5. Submit your answer or reveal a hint if needed.
+6. Press **Grade** to receive real-time feedback from the virtual teacher.
+7. Ask follow-up questions in chat for further explanation.
 
-- **Enhanced UI**  
-  Refactoring existing interface design to improve usability, clarity, and focus. Poor design decisions are being replaced with a cleaner, more intuitive experience.
+## Recommended Requirements
+For a smooth experience:
+- Intel i5-8100
+- 16 GB DDR4 RAM
+- NVIDIA RTX 2060 Super
 
-- **Sound Effects**  
-  Subtle audio feedback to improve responsiveness and engagement, encouraging consistent interaction and study flow.
+## Citation
+If you use this project or parts of its code, please cite:
 
-</details>
-
-**Recomended Requirements (For a decent experience):**
-- i5 8100
-- 16GB DDR4
-- RTX 2060 super
-
-# Citation:
-If you are using my code or elements from this project, please cite:
-```
+```bibtex
 @MightyXdash/ONCard, 2026
 https://github.com/MightyXdash/ONCard
 ```
-Thanks for using my app🤗.
-Love to the opensource community🥰.
+
+Thanks for using ONCard 🤗
+Love to the open-source community 🥰
