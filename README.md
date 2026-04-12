@@ -5,19 +5,25 @@ Elevate your learning experience.
 
 
 
-**Recomended Requirements (For a decent experience):**
-- i5 8100
-- 16GB DDR4
-- RTX 2060 super
 
-⚠️ _The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._ ⚠️
-### If you are using Linux, please download from this repo --> [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux)
-# What is ONCards?
- **ONCards — Opensource Neural-accellerated Cards**
+
+_The app doesn’t have a license yet. If Windows Defender shows a warning during installation, you can safely ignore it and continue._
+_If you are using Linux, please refer to [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux)_
+# How to install ONCard:
+### Step One:
+- Go to [Ollama's](https://ollama.com/download) website, and download & install ollama.
+### Step Two:
+- Go to the [releases](https://github.com/MightyXdash/ONCard/releases) page of this repo.
+- Then scroll down until you find the latest version assets.
+- Download the .exe file.
+
+_(if you are on Linux, please refer to [ONCard-Linux](https://github.com/Corban1620/ONCard-Linux))_
+# What is ONCard?
+ **ONCard — Opensource Neural-accellerated Cards**
 A fully offline study app with a virtual teacher and an algorithm which learns you as you go for better context and teach you better as you keep using the app.
  <img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/6115c89a-2c6f-42ac-951b-39721495b1db" />
 
-### How to use it:
+# How to use it:
 - When the user opens the app, they will see the "create" tab.
 - You can write your question (from your notes or slides)
 - AI will complete the rest for you: title, hints, answer, difficulty, even the question location (eg: something related to "python language" will go to the "...\computer science\languages\Python..." path.
@@ -59,6 +65,11 @@ A fully offline study app with a virtual teacher and an algorithm which learns y
   Subtle audio feedback to improve responsiveness and engagement, encouraging consistent interaction and study flow.
 
 </details>
+
+**Recomended Requirements (For a decent experience):**
+- i5 8100
+- 16GB DDR4
+- RTX 2060 super
 
 # Citation:
 If you are using my code or elements from this project, please cite:
