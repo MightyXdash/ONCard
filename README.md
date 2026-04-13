@@ -53,6 +53,7 @@ These are the core features that make ONCard powerful for daily studying:
 > **Note:** The app does not currently have a license file.
 >
 > If Windows Defender shows a warning during installation, you may need to allow the app manually.
+> ("More info" -> "Run anyways")
 
 ### Windows
 1. Download and install [Ollama](https://ollama.com/download).
