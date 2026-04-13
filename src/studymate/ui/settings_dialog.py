@@ -5,7 +5,7 @@ import shutil
 import webbrowser
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QIcon
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -462,24 +462,32 @@ class SettingsDialog(QDialog):
             }
             QToolButton#SettingsHeaderIconButton,
             QToolButton#SettingsHeaderActionButton {
-                background: transparent;
-                border: 1px solid transparent;
+                background-color: transparent;
+                border: none;
                 border-radius: 13px;
                 padding: 0px;
                 outline: none;
             }
             QToolButton#SettingsHeaderIconButton:hover,
             QToolButton#SettingsHeaderActionButton:hover {
-                background-color: rgba(15, 37, 57, 0.08);
-                border-color: rgba(15, 37, 57, 0.08);
+                background-color: #e8edf2;
+                border: none;
             }
             QToolButton#SettingsHeaderIconButton:checked {
                 background-color: #0f2539;
-                border-color: #0f2539;
+                border: none;
+            }
+            QToolButton#SettingsHeaderIconButton:checked:hover {
+                background-color: #0f2539;
+                border: none;
             }
             QToolButton#SettingsHeaderActionButton:pressed {
-                background-color: rgba(15, 37, 57, 0.14);
-                border-color: rgba(15, 37, 57, 0.14);
+                background-color: #dbe4ed;
+                border: none;
+            }
+            QToolButton#SettingsHeaderIconButton:focus,
+            QToolButton#SettingsHeaderActionButton:focus {
+                border: none;
             }
             """
         )
@@ -594,16 +602,36 @@ class SettingsDialog(QDialog):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(tooltip)
         button.setCheckable(checkable)
+        button.setAutoRaise(False)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setFixedSize(34, 34)
         icon_path = self._icon_path(icon_name)
         if icon_path is not None:
-            button.setIcon(self._settings_icon(icon_path, icon_name))
-            button.setIconSize(QSize(12, 12))
+            icon_size = QSize(14, 14)
+            button.setIcon(self._header_padded_icon(icon_path, icon_size))
+            button.setIconSize(icon_size)
         return button
 
-    def _settings_icon(self, icon_path: Path, _icon_name: str) -> QIcon:
-        return QIcon(str(icon_path))
+    def _header_padded_icon(self, icon_path: Path, target_size: QSize) -> QIcon:
+        source = QPixmap(str(icon_path))
+        if source.isNull():
+            return QIcon(str(icon_path))
+
+        width = max(1, int(target_size.width()))
+        height = max(1, int(target_size.height()))
+
+        # Keep a transparent inset so tiny antialias pixels do not touch icon bounds.
+        inner = QSize(max(1, width - 2), max(1, height - 2))
+        scaled = source.scaled(inner, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        canvas = QPixmap(width, height)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        x = (width - scaled.width()) // 2
+        y = (height - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+        return QIcon(canvas)
 
     def _set_settings_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
