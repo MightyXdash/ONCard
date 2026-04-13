@@ -250,7 +250,13 @@ class FTCPopupChoiceDialog(QDialog):
             self._overlay.deleteLater()
             self._overlay = None
         if self._blur_target is not None:
-            self._blur_target.setGraphicsEffect(self._previous_effect)
+            try:
+                self._blur_target.setGraphicsEffect(self._previous_effect)
+            except RuntimeError:
+                try:
+                    self._blur_target.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
         self._previous_effect = None
 
 
@@ -400,7 +406,13 @@ class ExportAccountDialog(QDialog):
             self._overlay.deleteLater()
             self._overlay = None
         if self._blur_target is not None:
-            self._blur_target.setGraphicsEffect(self._previous_effect)
+            try:
+                self._blur_target.setGraphicsEffect(self._previous_effect)
+            except RuntimeError:
+                try:
+                    self._blur_target.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
         self._previous_effect = None
 
 
@@ -493,6 +505,7 @@ class SettingsDialog(QDialog):
         )
         self._apply_initial_geometry()
         self._build_ui()
+        self._disable_settings_motion_transforms()
         self._load()
         self._sfx_ready = True
         polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
@@ -634,9 +647,11 @@ class SettingsDialog(QDialog):
         return QIcon(canvas)
 
     def _set_settings_page(self, index: int) -> None:
+        self._reset_settings_transient_state()
         self.pages.setCurrentIndex(index)
         for button_index, button in enumerate(self._settings_nav_buttons):
             button.setChecked(button_index == index)
+        self._reset_settings_transient_state()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -676,6 +691,43 @@ class SettingsDialog(QDialog):
         )
         self._top_fade.raise_()
         self._bottom_fade.raise_()
+
+    def _disable_settings_motion_transforms(self) -> None:
+        """Disable scale/lift/grow motion in Settings to prevent hover jitter."""
+        for widget in self.findChildren(QWidget):
+            if hasattr(widget, "set_motion_scale_range"):
+                widget.set_motion_scale_range(0.0)
+            if hasattr(widget, "set_motion_lift"):
+                widget.set_motion_lift(0.0)
+            if hasattr(widget, "set_motion_press_scale"):
+                widget.set_motion_press_scale(0.0)
+            if hasattr(widget, "set_motion_hover_grow"):
+                widget.set_motion_hover_grow(0, 0)
+            # Covers AnimatedButton / AnimatedToolButton-style press offset logic.
+            if widget.property("disablePressMotion") is not None or hasattr(widget, "_press_animation"):
+                widget.setProperty("disablePressMotion", True)
+            if isinstance(widget, (QPushButton, QToolButton)):
+                widget.setProperty("disablePressMotion", True)
+
+    def _reset_settings_transient_state(self) -> None:
+        """Clear stale hover/focus dynamic state when pages are swapped in/out."""
+        focus_widget = self.focusWidget()
+        if isinstance(focus_widget, QWidget) and (focus_widget is self or self.isAncestorOf(focus_widget)):
+            focus_widget.clearFocus()
+
+        for widget in self.findChildren(QWidget):
+            changed = False
+            if widget.property("hovered") is not None:
+                widget.setProperty("hovered", False)
+                changed = True
+            if widget.property("focusRing") is not None:
+                widget.setProperty("focusRing", False)
+                changed = True
+            if changed:
+                style = widget.style()
+                style.unpolish(widget)
+                style.polish(widget)
+                widget.update()
 
     def exec(self) -> int:
         self._apply_backdrop()
@@ -794,6 +846,7 @@ class SettingsDialog(QDialog):
         gender_layout.addWidget(self.gender_custom_edit)
         self.attention_slider = QSlider(Qt.Horizontal)
         self.attention_slider.setObjectName("SettingsAttentionSlider")
+        self.attention_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.attention_slider.setRange(1, 10)
         self.attention_slider.setSingleStep(1)
         self.attention_slider.setPageStep(1)
@@ -801,6 +854,7 @@ class SettingsDialog(QDialog):
         self.attention_slider.setStyleSheet(
             """
             QSlider#SettingsAttentionSlider {
+                min-height: 24px;
                 background: transparent;
             }
             QSlider#SettingsAttentionSlider::groove:horizontal {
@@ -817,10 +871,17 @@ class SettingsDialog(QDialog):
                 border-radius: 4px;
             }
             QSlider#SettingsAttentionSlider::handle:horizontal {
-                width: 20px;
-                height: 20px;
-                margin: -7px 0;
-                border-radius: 10px;
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+                background: #0f2539;
+            }
+            QSlider#SettingsAttentionSlider::handle:horizontal:pressed {
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
                 background: #0f2539;
             }
             """
@@ -991,8 +1052,8 @@ class SettingsDialog(QDialog):
                 options.append((label, value))
         current_value = str(control.currentData() or fallback_value).strip() or fallback_value
         parent_widget = self
+        blur_target = self._shell_surface if hasattr(self, "_shell_surface") else parent_widget
         app_window = self.window() if isinstance(self.window(), QWidget) else self
-        blur_target = getattr(app_window, "_popup_blur_target", parent_widget)
         icon_provider = getattr(app_window, "icons", None) or getattr(self.parentWidget(), "icons", None)
         picker = FTCPopupChoiceDialog(
             parent=parent_widget,
@@ -1161,6 +1222,7 @@ class SettingsDialog(QDialog):
             self.ask_ai_tone.addItem(label, value)
         self.ask_ai_emoji_slider = QSlider(Qt.Orientation.Horizontal)
         self.ask_ai_emoji_slider.setObjectName("SettingsAskAiEmojiSlider")
+        self.ask_ai_emoji_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.ask_ai_emoji_slider.setRange(1, 4)
         self.ask_ai_emoji_slider.setSingleStep(1)
         self.ask_ai_emoji_slider.setPageStep(1)
@@ -1186,10 +1248,17 @@ class SettingsDialog(QDialog):
                 background: rgba(15, 37, 57, 0.18);
             }
             QSlider#SettingsAskAiEmojiSlider::handle:horizontal {
-                width: 20px;
-                height: 20px;
-                margin: -7px 0;
-                border-radius: 10px;
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+                background: #0f2539;
+            }
+            QSlider#SettingsAskAiEmojiSlider::handle:horizontal:pressed {
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
                 background: #0f2539;
             }
             """
