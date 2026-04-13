@@ -104,6 +104,9 @@ class DataStore:
             "notifications": {
                 "enabled": True,
             },
+            "mcq": {
+                "enabled": False,
+            },
             "updated_at": cls.now_iso(),
         }
 

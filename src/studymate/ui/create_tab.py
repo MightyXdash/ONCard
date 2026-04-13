@@ -49,6 +49,7 @@ from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, polish_surface
 from studymate.ui.icon_helper import IconHelper
 from studymate.workers.autofill_worker import AutofillWorker
+from studymate.workers.mcq_worker import build_mcq_payload, save_mcq_payload
 from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.files_to_cards_worker import FilesToCardsJob, FilesToCardsWorker
 
@@ -1528,6 +1529,13 @@ class CreateTab(QWidget):
         if run_id:
             payload["run_id"] = run_id
         saved = self.datastore.save_card(payload)
+        try:
+            mcq_answers = payload.get("mcq_answers", [])
+            if mcq_answers:
+                mcq_payload = build_mcq_payload(saved, list(mcq_answers), self._active_text_model_tag())
+                save_mcq_payload(self.datastore, saved, mcq_payload)
+        except Exception as exc:
+            self._add_activity(kind="status", title="MCQ", text=f"Card saved, but MCQ choices were not cached: {exc}")
         item.setText(f"Saved  |  {self._short_label(saved.get('question', ''))}")
         self._add_activity(kind="status", title="Queue", text="Question saved.")
         self._enqueue_embedding(saved)

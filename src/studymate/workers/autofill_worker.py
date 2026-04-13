@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from studymate.constants import CREATE_RESPONSE_SCHEMA, SUBJECT_TAXONOMY
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.utils.markdown import cleanup_plain_text
+from studymate.workers.mcq_worker import normalize_mcq_answers
 from studymate.workers.prompt_context import with_oncard_context
 
 
@@ -40,7 +41,13 @@ def generate_card_payload(
                 "Double-check your final step for accuracy.",
             ],
             "search_terms": _default_search_terms(question),
-            "answer": "AI fallback mode: Ollama was unavailable, so this card was not fully generated.",
+            "answer": "",
+            "mcq_answers": [
+                "Core concept",
+                "Similar concept",
+                "Related detail",
+                "Nearby topic",
+            ],
             "natural_difficulty": 5,
             "response_to_user": response_to_user,
         }
@@ -69,10 +76,20 @@ def generate_card_payload(
     if subtopic_override:
         override_lines.append(f"Subtopic must be exactly: {subtopic_override}")
     override_lines.append(
-        "Return clean values for title, category, subtopic, hints, exactly 5 short search_terms, answer, difficulty and response_to_user."
+        "Return clean values for title, category, subtopic, hints, exactly 5 short search_terms, mcq_answers, difficulty and response_to_user."
     )
     override_lines.append("Title must be strictly 2 to 6 words only.")
     override_lines.append("If the best title is longer, shorten it to a meaningful 2 to 6 word title.")
+    override_lines.append(
+        "mcq_answers must contain exactly 4 strings. mcq_answers[0] is correct. "
+        "mcq_answers[1], [2], and [3] are wrong but VERY tricky near-miss misconceptions. "
+        "All four choices must answer the exact same question in the same grammatical slot and be semantically close. "
+        "They must be similar in topic family, wording style, specificity, and length so a half-prepared student cannot eliminate them by vibe. "
+        "Give every answer choice the same amount of detail; if one uses a qualifier, mechanism, condition, example, or specific detail, all four should use comparable detail. "
+        "You may add extra specifics to wrong choices when that makes them harder, but do not let any option stand out by being much simpler or much more detailed. "
+        "Never use unrelated categories, broad mismatches, historical jokes, literal misreadings, or fake/easy distractors like medieval origin, coding algorithm, or strict formula. "
+        "Aim for 1 to 7 words per MCQ answer. Do not generate a separate long answer."
+    )
     user_prompt = f"{profile_text}Question: {question}\n" + "\n".join(override_lines)
     try:
         payload = ollama.structured_chat(
@@ -90,7 +107,12 @@ def generate_card_payload(
     payload["subject"] = cleanup_plain_text(str(payload.get("subject", subject_override or "Mathematics")))
     payload["category"] = cleanup_plain_text(str(payload.get("category", category_override or "All")))
     payload["subtopic"] = cleanup_plain_text(str(payload.get("subtopic", subtopic_override or "All")))
-    payload["answer"] = cleanup_plain_text(str(payload.get("answer", "")))
+    try:
+        payload["mcq_answers"] = normalize_mcq_answers(payload.get("mcq_answers", []))
+    except ValueError:
+        fallback_payload = fallback()
+        payload["mcq_answers"] = fallback_payload["mcq_answers"]
+    payload["answer"] = ""
     payload["response_to_user"] = cleanup_plain_text(str(payload.get("response_to_user", response_to_user)))
     payload["natural_difficulty"] = int(payload.get("natural_difficulty", 5))
     hints = payload.get("hints", [])
@@ -170,7 +192,7 @@ class AutofillWorker(QThread):
             ("subtopic", payload["subtopic"]),
             ("hints", payload["hints"]),
             ("search_terms", payload["search_terms"]),
-            ("answer", payload["answer"]),
+            ("mcq_answers", payload["mcq_answers"]),
             ("natural_difficulty", payload["natural_difficulty"]),
             ("response_to_user", payload["response_to_user"]),
         ]

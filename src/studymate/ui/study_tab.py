@@ -2495,7 +2495,8 @@ class StudyTab(QWidget):
         entry = self._current_history_entry()
         is_latest = self.current_history_index == len(self.session_history) - 1
         pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
-        editable = bool(entry) and is_latest and not pending_current and self.grade_worker is None
+        has_expected_answer = bool(self.current_card and str(self.current_card.get("answer", "")).strip())
+        editable = bool(entry) and is_latest and not pending_current and self.grade_worker is None and has_expected_answer
         self.prev_card_btn.setEnabled(self.current_history_index > 0)
         self.answer_input.setEnabled(editable)
         self.idk_btn.setEnabled(editable)
@@ -2556,8 +2557,12 @@ class StudyTab(QWidget):
             self.grade_feedback.setMarkdown("### Skipped\nThis card was skipped without grading.")
             self._set_followup_visible(False)
         else:
-            self.grade_summary.setText("AI grader")
-            self.grade_feedback.clear()
+            if not str(card.get("answer", "")).strip():
+                self.grade_summary.setText("MCQ-only card")
+                self.grade_feedback.setMarkdown("### MCQ-only\nUse the MCQ tab for this card.")
+            else:
+                self.grade_summary.setText("AI grader")
+                self.grade_feedback.clear()
             self._set_followup_visible(False)
         self._update_study_controls()
 
@@ -4246,6 +4251,9 @@ class StudyTab(QWidget):
     def _grade(self) -> None:
         if not self.current_card:
             QMessageBox.information(self, "No card", "Start a card first.")
+            return
+        if not str(self.current_card.get("answer", "")).strip():
+            QMessageBox.information(self, "MCQ-only card", "Use the MCQ tab for this card.")
             return
         user_answer = self.answer_input.toPlainText().strip()
         if not user_answer:

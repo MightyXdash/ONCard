@@ -160,7 +160,12 @@ CREATE_RESPONSE_SCHEMA = {
         "subtopic": {"type": "string"},
         "hints": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 5},
         "search_terms": {"type": "array", "items": {"type": "string"}, "minItems": 5, "maxItems": 5},
-        "answer": {"type": "string"},
+        "mcq_answers": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 4,
+            "maxItems": 4,
+        },
         "natural_difficulty": {"type": "integer", "minimum": 1, "maximum": 10},
         "response_to_user": {"type": "string"},
     },
@@ -171,7 +176,7 @@ CREATE_RESPONSE_SCHEMA = {
         "subtopic",
         "hints",
         "search_terms",
-        "answer",
+        "mcq_answers",
         "natural_difficulty",
         "response_to_user",
     ],
@@ -189,6 +194,20 @@ GRADE_RESPONSE_SCHEMA = {
         "what_to_improve": {"type": "string"},
     },
     "required": ["marks_out_of_10", "how_good", "state", "what_went_bad", "what_went_good"],
+}
+
+
+MCQ_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answers": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 4,
+            "maxItems": 4,
+        }
+    },
+    "required": ["answers"],
 }
 
 

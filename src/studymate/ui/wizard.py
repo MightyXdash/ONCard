@@ -5,7 +5,6 @@ import html
 from pathlib import Path
 import re
 import shutil
-import sys
 import webbrowser
 
 from PySide6.QtCore import QEasingCurve, QPoint, QRect, QRegularExpression, QSize, Qt, QTimer, Signal, QVariantAnimation
@@ -539,7 +538,13 @@ class StartupPopupDialog(QDialog):
             self._overlay.deleteLater()
             self._overlay = None
         if self._blur_target is not None:
-            self._blur_target.setGraphicsEffect(self._previous_effect)
+            try:
+                self._blur_target.setGraphicsEffect(self._previous_effect)
+            except RuntimeError:
+                try:
+                    self._blur_target.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
         self._applied_blur = None
         self._previous_effect = None
 
@@ -725,7 +730,13 @@ class GradePickerDialog(QDialog):
             self._overlay.deleteLater()
             self._overlay = None
         if self._blur_target is not None:
-            self._blur_target.setGraphicsEffect(self._previous_effect)
+            try:
+                self._blur_target.setGraphicsEffect(self._previous_effect)
+            except RuntimeError:
+                try:
+                    self._blur_target.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
         self._applied_blur = None
         self._previous_effect = None
 
@@ -1008,7 +1019,13 @@ class GenderPickerDialog(QDialog):
             self._overlay.deleteLater()
             self._overlay = None
         if self._blur_target is not None:
-            self._blur_target.setGraphicsEffect(self._previous_effect)
+            try:
+                self._blur_target.setGraphicsEffect(self._previous_effect)
+            except RuntimeError:
+                try:
+                    self._blur_target.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
         self._applied_blur = None
         self._previous_effect = None
 
@@ -1937,20 +1954,18 @@ class OnboardingWizard(QDialog):
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(34, 30, 34, 34)
         root.setSpacing(0)
 
         shell_surface = QFrame(self)
         shell_surface.setObjectName("OnboardingWindowShell")
         polish_surface(shell_surface)
-        self._shell_shadow_effect = None
-        if not (sys.platform == "win32" and self.testAttribute(Qt.WA_TranslucentBackground)):
-            shell_shadow = QGraphicsDropShadowEffect(shell_surface)
-            shell_shadow.setBlurRadius(34)
-            shell_shadow.setOffset(0, 10)
-            shell_shadow.setColor(QColor(17, 35, 57, 68))
-            shell_surface.setGraphicsEffect(shell_shadow)
-            self._shell_shadow_effect = shell_shadow
+        shell_shadow = QGraphicsDropShadowEffect(shell_surface)
+        shell_shadow.setBlurRadius(84)
+        shell_shadow.setOffset(0, 22)
+        shell_shadow.setColor(QColor(17, 35, 57, 96))
+        shell_surface.setGraphicsEffect(shell_shadow)
+        self._shell_shadow_effect = shell_shadow
         root.addWidget(shell_surface, 1)
 
         shell = QVBoxLayout(shell_surface)
@@ -2208,12 +2223,18 @@ class ProfileMakerDialog(QDialog):
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(34, 30, 34, 34)
         root.setSpacing(0)
 
         shell_surface = QFrame(self)
         shell_surface.setObjectName("OnboardingWindowShell")
         polish_surface(shell_surface)
+        shell_shadow = QGraphicsDropShadowEffect(shell_surface)
+        shell_shadow.setBlurRadius(84)
+        shell_shadow.setOffset(0, 22)
+        shell_shadow.setColor(QColor(17, 35, 57, 96))
+        shell_surface.setGraphicsEffect(shell_shadow)
+        self._shell_shadow_effect = shell_shadow
         root.addWidget(shell_surface, 1)
 
         shell = QVBoxLayout(shell_surface)

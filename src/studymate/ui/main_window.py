@@ -25,6 +25,7 @@ from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
 from studymate.ui.audio import ClickSoundFilter, UiSoundBank
 from studymate.ui.create_tab import CreateTab
 from studymate.ui.icon_helper import IconHelper
+from studymate.ui.mcq_tab import MCQTab
 from studymate.ui.settings_dialog import SettingsDialog
 from studymate.ui.stats_dialog import StatsDialog
 from studymate.ui.study_tab import StudyTab
@@ -732,10 +733,23 @@ class MainWindow(QMainWindow):
         self.cards_btn.set_motion_lift(0.0)
         self.cards_btn.set_motion_press_scale(0.06)
 
+        self.mcq_btn = AnimatedButton("MCQs")
+        self.mcq_btn.setObjectName("TopNavButton")
+        self.mcq_btn.setCheckable(True)
+        self.mcq_btn.setProperty("skipClickSfx", True)
+        self.mcq_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mcq_btn.setMinimumHeight(30)
+        self.mcq_btn.set_motion_scale_range(0.0)
+        self.mcq_btn.set_motion_hover_grow(0, 0)
+        self.mcq_btn.set_motion_lift(0.0)
+        self.mcq_btn.set_motion_press_scale(0.06)
+
         self.create_btn.clicked.connect(lambda: self._play_and_switch(0))
         self.cards_btn.clicked.connect(lambda: self._play_and_switch(1))
+        self.mcq_btn.clicked.connect(lambda: self._play_and_switch(2))
         mode_layout.addWidget(self.create_btn)
         mode_layout.addWidget(self.cards_btn)
+        mode_layout.addWidget(self.mcq_btn)
         title_layout.addWidget(mode_cluster, 0, Qt.AlignmentFlag.AlignRight)
 
         separator = QLabel("|")
@@ -762,10 +776,13 @@ class MainWindow(QMainWindow):
         self.stack = AnimatedStackedWidget()
         self.create_tab = CreateTab(self.datastore, self.ollama, self.icons, self.preflight)
         self.study_tab = StudyTab(self.datastore, self.ollama, self.icons, self.preflight)
+        self.mcq_tab = MCQTab(self.datastore, self.ollama, self.icons, self.preflight)
         self.create_tab.card_saved.connect(self.study_tab.mark_cards_dirty)
+        self.create_tab.card_saved.connect(self.mcq_tab.mark_cards_dirty)
         self.create_tab.ftc_completed.connect(self._notify_ftc_completed)
         self.stack.addWidget(self.create_tab)
         self.stack.addWidget(self.study_tab)
+        self.stack.addWidget(self.mcq_tab)
         layout.addWidget(self.stack, 1)
 
         self.setCentralWidget(shell)
@@ -914,6 +931,13 @@ class MainWindow(QMainWindow):
                 "C",
             )
         )
+        self.mcq_btn.setIcon(
+            self.icons.icon(
+                "common",
+                "check-circle (1)" if self.mcq_btn.isChecked() else "check",
+                "M",
+            )
+        )
 
     def _sync_window_controls(self) -> None:
         maximized = self.isMaximized() or self._pseudo_maximized
@@ -935,9 +959,12 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         self.create_btn.setChecked(index == 0)
         self.cards_btn.setChecked(index == 1)
+        self.mcq_btn.setChecked(index == 2)
         self._sync_nav_icons()
         if index == 1:
             self.study_tab.activate_view()
+        elif index == 2:
+            self.mcq_tab.activate_view()
 
     def _play_and_switch(self, index: int) -> None:
         if self.stack.currentIndex() != index:
@@ -966,6 +993,7 @@ class MainWindow(QMainWindow):
         result = dialog.exec()
         if result:
             self.create_tab.refresh_ftc_defaults()
+            self.mcq_tab.activate_view()
 
     def _open_stats_dialog(self) -> None:
         if self.session_controller is None:

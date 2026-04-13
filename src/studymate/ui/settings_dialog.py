@@ -33,11 +33,13 @@ from PySide6.QtWidgets import (
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
-from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys, text_llm_key_for_model_tag
+from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys, resolve_active_text_llm_spec, resolve_active_text_model_tag, text_llm_key_for_model_tag
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
+from studymate.ui.wizard import GenderPickerDialog, GradePickerDialog
 from studymate.ui.window_effects import polish_windows_window
 from studymate.workers.install_worker import ModelInstallWorker
+from studymate.workers.mcq_worker import MCQBulkWorker
 
 
 FOLLOWUP_CONTEXT_MIN = 9216
@@ -79,6 +81,52 @@ class PopupMenuComboBox(AnimatedComboBox):
             self._popup_handler()
             return
         super().showPopup()
+
+
+class SettingsPickerButton(AnimatedButton):
+    def __init__(self, placeholder: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._placeholder = placeholder
+        self._items: list[str] = []
+        self._current_text = ""
+        self.setObjectName("SettingsPickerButton")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("disablePressMotion", True)
+        self.set_motion_scale_range(0.0)
+        self.set_motion_hover_grow(0, 0)
+        self.set_motion_lift(0.0)
+        self.set_motion_press_scale(0.0)
+        self.setMinimumHeight(38)
+        self._refresh_text()
+
+    def addItem(self, text: str) -> None:
+        clean = str(text or "").strip()
+        if clean and clean not in self._items:
+            self._items.append(clean)
+
+    def addItems(self, items: list[str]) -> None:
+        for item in items:
+            self.addItem(item)
+
+    def findText(self, text: str) -> int:
+        try:
+            return self._items.index(str(text or "").strip())
+        except ValueError:
+            return -1
+
+    def currentText(self) -> str:
+        return self._current_text
+
+    def setCurrentText(self, text: str) -> None:
+        self._current_text = str(text or "").strip()
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        self.setText(self._current_text or self._placeholder)
+        self.setProperty("placeholder", not bool(self._current_text))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
 
 class FTCPopupChoiceDialog(QDialog):
@@ -431,7 +479,9 @@ class SettingsDialog(QDialog):
         self.ollama = ollama
         self.preflight = preflight
         self.session_controller = session_controller
+        self.paths = getattr(parent, "paths", None)
         self._install_worker: ModelInstallWorker | None = None
+        self._mcq_bulk_worker: MCQBulkWorker | None = None
         self._install_target_key = ""
         self._model_rows: dict[str, dict[str, object]] = {}
         self._account_action_buttons: list[QPushButton] = []
@@ -501,6 +551,27 @@ class SettingsDialog(QDialog):
             QToolButton#SettingsHeaderActionButton:focus {
                 border: none;
             }
+            QPushButton#SettingsPickerButton {
+                background-color: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
+                border-radius: 15px;
+                padding: 8px 12px;
+                color: #142130;
+                font-size: 13px;
+                font-weight: 400;
+                text-align: left;
+            }
+            QPushButton#SettingsPickerButton:hover {
+                background-color: rgba(237, 244, 250, 0.98);
+                border: 1px solid rgba(154, 180, 206, 0.92);
+            }
+            QPushButton#SettingsPickerButton:pressed {
+                background-color: rgba(221, 234, 247, 0.98);
+                border: 1px solid rgba(121, 160, 199, 0.92);
+            }
+            QPushButton#SettingsPickerButton[placeholder="true"] {
+                color: #8f9dad;
+            }
             """
         )
         self._apply_initial_geometry()
@@ -529,9 +600,9 @@ class SettingsDialog(QDialog):
         shell_surface.setObjectName("SettingsWindowShell")
         polish_surface(shell_surface)
         shell_shadow = QGraphicsDropShadowEffect(shell_surface)
-        shell_shadow.setBlurRadius(70)
-        shell_shadow.setOffset(0, 18)
-        shell_shadow.setColor(QColor(17, 35, 57, 72))
+        shell_shadow.setBlurRadius(84)
+        shell_shadow.setOffset(0, 22)
+        shell_shadow.setColor(QColor(17, 35, 57, 96))
         shell_surface.setGraphicsEffect(shell_shadow)
         self._shell_surface = shell_surface
         root.addWidget(shell_surface, 1)
@@ -617,11 +688,11 @@ class SettingsDialog(QDialog):
         button.setCheckable(checkable)
         button.setAutoRaise(False)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(34, 34)
+        button.setFixedSize(38 if checkable else 34, 38 if checkable else 34)
         icon_path = self._icon_path(icon_name)
         if icon_path is not None:
-            icon_size = QSize(14, 14)
-            button.setIcon(self._header_padded_icon(icon_path, icon_size))
+            icon_size = QSize(20, 20) if checkable else QSize(15, 15)
+            button.setIcon(QIcon(str(icon_path)) if checkable else self._header_padded_icon(icon_path, icon_size))
             button.setIconSize(icon_size)
         return button
 
@@ -826,16 +897,17 @@ class SettingsDialog(QDialog):
         self.age_spin = QSpinBox()
         self.age_spin.setRange(4, 99)
         self.hobbies_edit = AnimatedLineEdit()
-        self.grade_combo = AnimatedComboBox()
-        self.grade_combo.setEditable(True)
-        self.grade_combo.addItems([f"Grade {value}" for value in range(4, 13)])
-        self.gender_combo = AnimatedComboBox()
+        self.grade_combo = SettingsPickerButton("Choose grade")
+        self.grade_combo.addItems([f"Grade {value}" for value in range(3, 13)])
+        self.grade_combo.setCurrentText("Grade 3")
+        self.grade_combo.clicked.connect(self._open_grade_picker)
+        self.gender_combo = SettingsPickerButton("Choose gender")
         self.gender_combo.addItems(["Male", "Female", "Custom"])
+        self.gender_combo.clicked.connect(self._open_gender_picker)
         self.gender_custom_edit = AnimatedLineEdit()
-        self.gender_custom_edit.setMaxLength(20)
-        self.gender_custom_edit.setPlaceholderText("Custom gender (max 20)")
+        self.gender_custom_edit.setMaxLength(64)
+        self.gender_custom_edit.setPlaceholderText("Gender | Pronoun(s)")
         self.gender_custom_edit.setVisible(False)
-        self.gender_combo.currentIndexChanged.connect(self._on_gender_mode_changed)
         gender_shell = QWidget()
         gender_shell.setObjectName("SettingsGenderShell")
         gender_shell.setStyleSheet("QWidget#SettingsGenderShell { background: transparent; }")
@@ -1016,6 +1088,36 @@ class SettingsDialog(QDialog):
         ftc_layout.addWidget(ftc_hint)
 
         layout.addWidget(ftc_surface)
+
+        mcq_surface = QFrame()
+        mcq_surface.setObjectName("Surface")
+        polish_surface(mcq_surface)
+        mcq_layout = QVBoxLayout(mcq_surface)
+        mcq_layout.setContentsMargins(20, 20, 20, 20)
+        mcq_layout.setSpacing(10)
+
+        mcq_title = QLabel("MCQ")
+        mcq_title.setObjectName("SectionTitle")
+        mcq_note = QLabel("Turn saved cards into multiple choice practice with short, similar answer choices.")
+        mcq_note.setObjectName("SectionText")
+        mcq_note.setWordWrap(True)
+        mcq_layout.addWidget(mcq_title)
+        mcq_layout.addWidget(mcq_note)
+
+        self.mcq_enabled_checkbox = QCheckBox("Enable Cards to MCQ")
+        mcq_layout.addWidget(self.mcq_enabled_checkbox)
+
+        mcq_action_row = QHBoxLayout()
+        self.cards_to_mcq_btn = AnimatedButton("Cards to MCQ")
+        self.cards_to_mcq_btn.clicked.connect(self._run_cards_to_mcq)
+        self.mcq_status_label = QLabel("Generate choices now, or let the MCQ tab make them when needed.")
+        self.mcq_status_label.setObjectName("SmallMeta")
+        self.mcq_status_label.setWordWrap(True)
+        mcq_action_row.addWidget(self.cards_to_mcq_btn, 0)
+        mcq_action_row.addWidget(self.mcq_status_label, 1)
+        mcq_layout.addLayout(mcq_action_row)
+        layout.addWidget(mcq_surface)
+
         self._set_account_actions_enabled(self.session_controller is not None)
         layout.addStretch(1)
         scroll.setWidget(host)
@@ -1044,15 +1146,77 @@ class SettingsDialog(QDialog):
         fallback_value: str,
         vertical_choices: bool = False,
     ) -> None:
+        self._open_combo_choice_picker(
+            title=title,
+            control=control,
+            fallback_value=fallback_value,
+            vertical_choices=vertical_choices,
+        )
+
+    def _run_cards_to_mcq(self) -> None:
+        if self._mcq_bulk_worker is not None:
+            return
+        cards = self.datastore.list_all_cards()
+        if not cards:
+            self.mcq_status_label.setText("No cards are available yet.")
+            return
+        self.mcq_enabled_checkbox.setChecked(True)
+        setup = self.datastore.load_setup()
+        setup["mcq"] = {"enabled": True}
+        self.datastore.save_setup(setup)
+        ai_settings = self.datastore.load_ai_settings()
+        model_spec = resolve_active_text_llm_spec(ai_settings)
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Cards to MCQ"):
+            return
+        worker = MCQBulkWorker(
+            cards=cards,
+            datastore=self.datastore,
+            ollama=self.ollama,
+            model=resolve_active_text_model_tag(ai_settings),
+            profile_context=self.datastore.load_profile(),
+        )
+        self._mcq_bulk_worker = worker
+        self.cards_to_mcq_btn.setEnabled(False)
+        self.mcq_status_label.setText("Generating MCQs...")
+        worker.progress.connect(self._on_cards_to_mcq_progress)
+        worker.finished.connect(self._on_cards_to_mcq_finished)
+        worker.failed.connect(self._on_cards_to_mcq_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_cards_to_mcq_progress(self, current: int, total: int, generated: int, failed: int) -> None:
+        self.mcq_status_label.setText(f"Generating MCQs... {current}/{total} | Generated {generated} | Failed {failed}")
+
+    def _on_cards_to_mcq_finished(self, generated: int, skipped: int, failed: int) -> None:
+        self._mcq_bulk_worker = None
+        self.cards_to_mcq_btn.setEnabled(True)
+        self.mcq_status_label.setText(f"MCQ generation finished. Generated {generated}, skipped {skipped}, failed {failed}.")
+
+    def _on_cards_to_mcq_failed(self, message: str) -> None:
+        self._mcq_bulk_worker = None
+        self.cards_to_mcq_btn.setEnabled(True)
+        self.mcq_status_label.setText(f"MCQ generation failed: {message}")
+
+    def _open_combo_choice_picker(
+        self,
+        *,
+        title: str,
+        control: QComboBox,
+        fallback_value: str,
+        vertical_choices: bool = True,
+    ) -> None:
         options: list[tuple[str, str]] = []
         for index in range(control.count()):
             label = str(control.itemText(index)).strip()
             value = str(control.itemData(index) or "").strip()
             if label and value:
                 options.append((label, value))
+        if not options:
+            return
         current_value = str(control.currentData() or fallback_value).strip() or fallback_value
         parent_widget = self
-        blur_target = self._shell_surface if hasattr(self, "_shell_surface") else parent_widget
+        blur_target = self._settings_popup_blur_target()
         app_window = self.window() if isinstance(self.window(), QWidget) else self
         icon_provider = getattr(app_window, "icons", None) or getattr(self.parentWidget(), "icons", None)
         picker = FTCPopupChoiceDialog(
@@ -1070,6 +1234,52 @@ class SettingsDialog(QDialog):
         selected_index = control.findData(selected)
         if selected_index >= 0:
             control.setCurrentIndex(selected_index)
+
+    def _open_grade_picker(self) -> None:
+        if not self.grade_combo.isEnabled():
+            return
+        options = [f"Grade {value}" for value in range(3, 13)]
+        current_value = self.grade_combo.currentText().strip()
+        selected = GradePickerDialog(
+            parent=self,
+            blur_target=self._settings_popup_blur_target(),
+            anchor=self.grade_combo,
+            options=options,
+            current_value=current_value,
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        if self.grade_combo.findText(selected) < 0:
+            self.grade_combo.addItem(selected)
+        self.grade_combo.setCurrentText(selected)
+        self.grade_combo.setFocus()
+
+    def _open_gender_picker(self) -> None:
+        if not self.gender_combo.isEnabled():
+            return
+        selected = GenderPickerDialog(
+            parent=self,
+            blur_target=self._settings_popup_blur_target(),
+            current_value=self._effective_gender_value(),
+        ).exec_with_backdrop()
+        if not selected:
+            return
+        normalized = selected.strip()
+        lowered = normalized.lower()
+        if lowered == "male":
+            self.gender_combo.setCurrentText("Male")
+            self.gender_custom_edit.clear()
+        elif lowered == "female":
+            self.gender_combo.setCurrentText("Female")
+            self.gender_custom_edit.clear()
+        else:
+            self.gender_combo.setCurrentText("Custom")
+            self.gender_custom_edit.setText(normalized[:64])
+        self._on_gender_mode_changed()
+        self.gender_combo.setFocus()
+
+    def _settings_popup_blur_target(self) -> QWidget:
+        return self.pages if hasattr(self, "pages") and isinstance(self.pages, QWidget) else self
 
     def _build_ai_tab(self) -> QWidget:
         scroll = self._settings_scroll_area()
@@ -1110,8 +1320,15 @@ class SettingsDialog(QDialog):
         self.cloud_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.cloud_api_key_edit.setPlaceholderText("Paste Ollama API key")
         self.cloud_api_key_edit.textChanged.connect(self._on_cloud_api_key_changed)
-        self.cloud_model_combo = AnimatedComboBox()
+        self.cloud_model_combo = PopupMenuComboBox()
         self.cloud_model_combo.setEnabled(False)
+        self.cloud_model_combo.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="Cloud model variant",
+                control=self.cloud_model_combo,
+                fallback_value=str(self.cloud_model_combo.currentData() or ""),
+            )
+        )
 
         cloud_form.addRow("Cloud inference", self.cloud_enabled_checkbox)
         cloud_form.addRow("API key", self.cloud_api_key_edit)
@@ -1217,9 +1434,16 @@ class SettingsDialog(QDialog):
         self.reinforcement_ctx.setRange(REINFORCEMENT_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
         self.reinforcement_ctx.setSingleStep(1024)
         self.reinforcement_ctx.setSuffix(" tokens")
-        self.ask_ai_tone = AnimatedComboBox()
+        self.ask_ai_tone = PopupMenuComboBox()
         for label, value in ASK_AI_TONE_OPTIONS:
             self.ask_ai_tone.addItem(label, value)
+        self.ask_ai_tone.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="Ask AI tone",
+                control=self.ask_ai_tone,
+                fallback_value="warm",
+            )
+        )
         self.ask_ai_emoji_slider = QSlider(Qt.Orientation.Horizontal)
         self.ask_ai_emoji_slider.setObjectName("SettingsAskAiEmojiSlider")
         self.ask_ai_emoji_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1266,7 +1490,14 @@ class SettingsDialog(QDialog):
         self.ask_ai_emoji_slider.valueChanged.connect(self._on_ask_ai_emoji_changed)
         self.ask_ai_emoji_value = QLabel(ASK_AI_EMOJI_LABELS[2])
         self.ask_ai_emoji_value.setObjectName("SectionText")
-        self.selected_text_llm = AnimatedComboBox()
+        self.selected_text_llm = PopupMenuComboBox()
+        self.selected_text_llm.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="AI text model",
+                control=self.selected_text_llm,
+                fallback_value=str(self.selected_text_llm.currentData() or ""),
+            )
+        )
         emoji_shell = QWidget()
         emoji_shell.setObjectName("SettingsAskAiEmojiShell")
         emoji_shell.setStyleSheet("QWidget#SettingsAskAiEmojiShell { background: transparent; }")
@@ -1326,12 +1557,19 @@ class SettingsDialog(QDialog):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(14)
 
-        self.stats_default_range = AnimatedComboBox()
+        self.stats_default_range = PopupMenuComboBox()
         self.stats_default_range.addItem("Hourly", "hourly")
         self.stats_default_range.addItem("Daily 3 days", "daily")
         self.stats_default_range.addItem("Weekly", "weekly")
         self.stats_default_range.addItem("2 Weeks", "2weeks")
         self.stats_default_range.addItem("Monthly", "monthly")
+        self.stats_default_range.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="Default time range",
+                control=self.stats_default_range,
+                fallback_value="daily",
+            )
+        )
         form.addRow("Default time range", self.stats_default_range)
 
         note = QLabel("This only sets the initial selection. You can still switch range in View stats anytime.")
@@ -1363,9 +1601,16 @@ class SettingsDialog(QDialog):
         perf_layout.setHorizontalSpacing(16)
         perf_layout.setVerticalSpacing(14)
 
-        self.performance_mode = AnimatedComboBox()
+        self.performance_mode = PopupMenuComboBox()
         self.performance_mode.addItem("Auto", "auto")
         self.performance_mode.addItem("Manual", "manual")
+        self.performance_mode.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="Performance mode",
+                control=self.performance_mode,
+                fallback_value="auto",
+            )
+        )
         self.performance_mode.currentIndexChanged.connect(self._refresh_performance_mode)
 
         self.startup_workers = QSpinBox()
@@ -1524,6 +1769,8 @@ class SettingsDialog(QDialog):
         self.ftc_difficulty.setCurrentIndex(difficulty_index)
         use_ocr = ftc_setup.get("use_ocr", ai_settings.get("files_to_cards_ocr", True))
         self.ftc_ocr_checkbox.setChecked(bool(use_ocr))
+        mcq_setup = dict(setup.get("mcq", {}))
+        self.mcq_enabled_checkbox.setChecked(bool(mcq_setup.get("enabled", False)))
         performance = dict(setup.get("performance", {}))
         self.performance_mode.setCurrentIndex(0 if str(performance.get("mode", "auto")) == "auto" else 1)
         self.startup_workers.setValue(max(1, min(8, int(performance.get("startup_workers", 8) or 8))))
@@ -1688,7 +1935,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Settings", "Name is required.")
             return
         if self.gender_combo.currentText().strip().lower() == "custom" and not self.gender_custom_edit.text().strip():
-            QMessageBox.warning(self, "Settings", "Enter a custom gender up to 20 characters.")
+            QMessageBox.warning(self, "Settings", "Enter a custom gender and pronouns up to 64 characters.")
             return
         if self.session_controller is not None:
             try:
@@ -1749,6 +1996,9 @@ class SettingsDialog(QDialog):
             "question_count_force": int(self.ftc_questions_force.value()),
             "difficulty": str(self.ftc_difficulty.currentData() or "normal"),
             "use_ocr": bool(self.ftc_ocr_checkbox.isChecked()),
+        }
+        setup["mcq"] = {
+            "enabled": bool(self.mcq_enabled_checkbox.isChecked()),
         }
         setup["performance"] = {
             "mode": str(self.performance_mode.currentData() or "auto"),
@@ -1862,7 +2112,7 @@ class SettingsDialog(QDialog):
             self.gender_custom_edit.clear()
         elif gender:
             self.gender_combo.setCurrentText("Custom")
-            self.gender_custom_edit.setText(gender[:20])
+            self.gender_custom_edit.setText(gender[:64])
         else:
             self.gender_combo.setCurrentText("Male")
             self.gender_custom_edit.clear()
@@ -1871,7 +2121,7 @@ class SettingsDialog(QDialog):
     def _effective_gender_value(self) -> str:
         mode = self.gender_combo.currentText().strip()
         if mode.lower() == "custom":
-            return self.gender_custom_edit.text().strip()[:20]
+            return self.gender_custom_edit.text().strip()[:64]
         return mode
 
     def _update_attention_label(self, value: int) -> None:
