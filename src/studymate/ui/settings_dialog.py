@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import webbrowser
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -36,6 +36,7 @@ from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys, text_llm_key_for_model_tag
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
+from studymate.ui.window_effects import polish_windows_window
 from studymate.workers.install_worker import ModelInstallWorker
 
 
@@ -428,13 +429,65 @@ class SettingsDialog(QDialog):
         self._model_worker_action = "install"
         self._cloud_model_tags: list[str] = []
         self._loading_cloud_models = False
+        self._backdrop_overlay: QWidget | None = None
+        self._backdrop_target: QWidget | None = None
+        self._backdrop_previous_effect = None
+        self._settings_nav_buttons: list[QToolButton] = []
+        self._deferred_status_loaded = False
 
         self.setWindowTitle("Settings")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("SettingsDialog")
+        self.setModal(True)
+        self.setStyleSheet(
+            """
+            QDialog#SettingsDialog {
+                background: transparent;
+            }
+            QFrame#SettingsWindowShell {
+                background: #fbfcfe;
+                border: 1px solid rgba(198, 210, 223, 0.88);
+                border-radius: 20px;
+            }
+            QStackedWidget#SettingsPages,
+            QScrollArea#SettingsScrollArea,
+            QScrollArea#SettingsScrollArea > QWidget,
+            QScrollArea#SettingsScrollArea > QWidget > QWidget,
+            QWidget#SettingsTabCanvas {
+                background: #fbfcfe;
+                border: none;
+            }
+            QToolButton#SettingsHeaderIconButton,
+            QToolButton#SettingsHeaderActionButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 13px;
+                padding: 0px;
+                outline: none;
+            }
+            QToolButton#SettingsHeaderIconButton:hover,
+            QToolButton#SettingsHeaderActionButton:hover {
+                background-color: rgba(15, 37, 57, 0.08);
+                border-color: rgba(15, 37, 57, 0.08);
+            }
+            QToolButton#SettingsHeaderIconButton:checked {
+                background-color: #0f2539;
+                border-color: #0f2539;
+            }
+            QToolButton#SettingsHeaderActionButton:pressed {
+                background-color: rgba(15, 37, 57, 0.14);
+                border-color: rgba(15, 37, 57, 0.14);
+            }
+            """
+        )
         self._apply_initial_geometry()
         self._build_ui()
         self._load()
         self._sfx_ready = True
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
 
     def _apply_initial_geometry(self) -> None:
         screen = QGuiApplication.primaryScreen()
@@ -448,46 +501,229 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(18)
+        root.setContentsMargins(34, 30, 34, 34)
+        root.setSpacing(0)
 
+        shell_surface = QFrame(self)
+        shell_surface.setObjectName("SettingsWindowShell")
+        polish_surface(shell_surface)
+        shell_shadow = QGraphicsDropShadowEffect(shell_surface)
+        shell_shadow.setBlurRadius(70)
+        shell_shadow.setOffset(0, 18)
+        shell_shadow.setColor(QColor(17, 35, 57, 72))
+        shell_surface.setGraphicsEffect(shell_shadow)
+        self._shell_surface = shell_surface
+        root.addWidget(shell_surface, 1)
+        self._bottom_fade = QWidget(shell_surface)
+        self._bottom_fade.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._bottom_fade.setStyleSheet(
+            """
+            background: qlineargradient(
+                x1: 0, y1: 0, x2: 0, y2: 1,
+                stop: 0 rgba(251, 252, 254, 0),
+                stop: 0.38 rgba(251, 252, 254, 235),
+                stop: 1 #fbfcfe
+            );
+            border-bottom-left-radius: 20px;
+            border-bottom-right-radius: 20px;
+            """
+        )
+        self._top_fade = QWidget(shell_surface)
+        self._top_fade.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._top_fade.setStyleSheet(
+            """
+            background: qlineargradient(
+                x1: 0, y1: 0, x2: 0, y2: 1,
+                stop: 0 rgba(251, 252, 254, 150),
+                stop: 0.48 rgba(251, 252, 254, 72),
+                stop: 1 rgba(251, 252, 254, 0)
+            );
+            """
+        )
+
+        shell = QVBoxLayout(shell_surface)
+        shell.setContentsMargins(24, 16, 24, 22)
+        shell.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(12)
         title = QLabel("Settings")
         title.setObjectName("PageTitle")
-        root.addWidget(title)
+        header.addWidget(title)
+        header.addSpacing(6)
 
-        self.tabs = QTabWidget()
-        self.tabs.setObjectName("SettingsTabs")
-        self.tabs.addTab(self._build_general_tab(), "General")
-        self.tabs.addTab(self._build_stats_tab(), "Stats")
-        self.tabs.addTab(self._build_ai_tab(), "AI")
-        self.tabs.addTab(self._build_performance_tab(), "Performance")
-        root.addWidget(self.tabs, 1)
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("SettingsPages")
+        page_specs = [
+            ("General", "general", self._build_general_tab()),
+            ("AI", "ai", self._build_ai_tab()),
+            ("Stats", "stats", self._build_stats_tab()),
+            ("Performance", "performance", self._build_performance_tab()),
+        ]
+        for index, (label, icon_name, page) in enumerate(page_specs):
+            self.pages.addWidget(page)
+            button = self._header_icon_button(icon_name, label, checkable=True)
+            button.clicked.connect(lambda _checked=False, selected=index: self._set_settings_page(selected))
+            self._settings_nav_buttons.append(button)
+            header.addWidget(button)
 
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, 8, 4, 0)
-        actions.setSpacing(16)
-        actions.addStretch(1)
-        self.cancel_btn = AnimatedButton("Cancel")
-        self.save_btn = AnimatedButton("Save")
-        self.save_btn.setObjectName("PrimaryButton")
+        header.addStretch(1)
+        self.cancel_btn = self._header_icon_button("cross_two", "Cancel")
+        self.save_btn = self._header_icon_button("check", "Save")
         self.cancel_btn.clicked.connect(self.reject)
         self.save_btn.clicked.connect(self._save)
-        actions.addWidget(self.cancel_btn)
-        actions.addWidget(self.save_btn)
-        root.addLayout(actions)
+        header.addWidget(self.cancel_btn)
+        header.addWidget(self.save_btn)
+        shell.addLayout(header)
+        shell.addWidget(self.pages, 1)
+        self._set_settings_page(0)
+
+    def _icon_path(self, icon_name: str) -> Path | None:
+        parent = self.parentWidget()
+        icons_root = getattr(getattr(parent, "paths", None), "icons", None)
+        if isinstance(icons_root, Path):
+            return icons_root / "common" / f"{icon_name}.png"
+        fallback = Path(__file__).resolve().parents[3] / "assets" / "icons" / "common" / f"{icon_name}.png"
+        return fallback if fallback.exists() else None
+
+    def _header_icon_button(self, icon_name: str, tooltip: str, *, checkable: bool = False) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("SettingsHeaderIconButton" if checkable else "SettingsHeaderActionButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setToolTip(tooltip)
+        button.setCheckable(checkable)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFixedSize(34, 34)
+        icon_path = self._icon_path(icon_name)
+        if icon_path is not None:
+            button.setIcon(self._settings_icon(icon_path, icon_name))
+            button.setIconSize(QSize(12, 12))
+        return button
+
+    def _settings_icon(self, icon_path: Path, _icon_name: str) -> QIcon:
+        return QIcon(str(icon_path))
+
+    def _set_settings_page(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        for button_index, button in enumerate(self._settings_nav_buttons):
+            button.setChecked(button_index == index)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        polish_windows_window(self, rounded=False, small_corners=False, remove_border=True)
+        self._position_scroll_fades()
+        if not self._deferred_status_loaded:
+            self._deferred_status_loaded = True
+            QTimer.singleShot(250, self._refresh_model_status)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_scroll_fades()
+
+    def _position_scroll_fades(self) -> None:
+        if not hasattr(self, "_bottom_fade") or not hasattr(self, "_top_fade") or not hasattr(self, "_shell_surface"):
+            return
+        bottom_fade_height = 78
+        top_fade_height = 34
+        inset = 1
+        if hasattr(self, "pages"):
+            top_left = self.pages.mapTo(self._shell_surface, QPoint(0, 0))
+            fade_width = self.pages.width()
+            fade_x = top_left.x()
+            top_y = top_left.y()
+            bottom_y = top_left.y() + self.pages.height() - bottom_fade_height
+        else:
+            fade_width = max(0, self._shell_surface.width() - (inset * 2))
+            fade_x = inset
+            top_y = inset
+            bottom_y = self._shell_surface.height() - bottom_fade_height - inset
+        self._top_fade.setGeometry(fade_x, max(inset, top_y), max(0, fade_width), top_fade_height)
+        self._bottom_fade.setGeometry(
+            fade_x,
+            max(inset, bottom_y),
+            max(0, fade_width),
+            bottom_fade_height,
+        )
+        self._top_fade.raise_()
+        self._bottom_fade.raise_()
+
+    def exec(self) -> int:
+        self._apply_backdrop()
+        try:
+            self._center_on_parent()
+            return super().exec()
+        finally:
+            self._clear_backdrop()
+
+    def _center_on_parent(self) -> None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return
+        parent_rect = parent_widget.frameGeometry()
+        self.move(
+            int(parent_rect.center().x() - (self.width() / 2)),
+            int(parent_rect.center().y() - (self.height() / 2)),
+        )
+
+    def _resolve_backdrop_target(self) -> QWidget | None:
+        parent_widget = self.parentWidget()
+        if parent_widget is None:
+            return None
+        app_shell = getattr(parent_widget, "_app_shell", None)
+        if isinstance(app_shell, QWidget):
+            return app_shell
+        return parent_widget
+
+    def _apply_backdrop(self) -> None:
+        target = self._resolve_backdrop_target()
+        parent_widget = self.parentWidget()
+        if target is None or parent_widget is None:
+            return
+        self._backdrop_target = target
+        self._backdrop_previous_effect = target.graphicsEffect()
+        blur = QGraphicsBlurEffect(target)
+        blur.setBlurRadius(22.0)
+        target.setGraphicsEffect(blur)
+
+        overlay = QWidget(parent_widget)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.20);")
+        top_left = target.mapTo(parent_widget, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._backdrop_overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._backdrop_overlay is not None:
+            self._backdrop_overlay.hide()
+            self._backdrop_overlay.deleteLater()
+            self._backdrop_overlay = None
+        if self._backdrop_target is not None:
+            try:
+                self._backdrop_target.setGraphicsEffect(self._backdrop_previous_effect)
+            except RuntimeError:
+                pass
+        self._backdrop_target = None
+        self._backdrop_previous_effect = None
 
     def _settings_scroll_area(self) -> QScrollArea:
         scroll = QScrollArea()
+        scroll.setObjectName("SettingsScrollArea")
         scroll.setWidgetResizable(True)
         scroll.setViewportMargins(0, 10, 18, 0)
+        scroll.viewport().setStyleSheet("background: #fbfcfe;")
         return scroll
 
     def _build_general_tab(self) -> QWidget:
         scroll = self._settings_scroll_area()
 
         host = QWidget()
+        host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setContentsMargins(0, 0, 4, 82)
         layout.setSpacing(18)
 
         intro = QLabel("Update the basic student profile ONCard uses when generating and grading responses.")
@@ -750,8 +986,9 @@ class SettingsDialog(QDialog):
         scroll = self._settings_scroll_area()
 
         host = QWidget()
+        host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setContentsMargins(0, 0, 4, 82)
         layout.setSpacing(18)
 
         cloud_surface = QFrame()
@@ -974,6 +1211,7 @@ class SettingsDialog(QDialog):
 
     def _build_stats_tab(self) -> QWidget:
         host = QWidget()
+        host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -1010,6 +1248,7 @@ class SettingsDialog(QDialog):
 
     def _build_performance_tab(self) -> QWidget:
         host = QWidget()
+        host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -1165,7 +1404,11 @@ class SettingsDialog(QDialog):
         self.cloud_api_key_edit.blockSignals(False)
         self._cloud_model_tags = []
         self.cloud_model_combo.clear()
-        self._refresh_cloud_controls(force_reload_models=cloud_enabled, preferred_tag=cloud_tag)
+        if cloud_enabled and cloud_tag:
+            self.cloud_model_combo.addItem(self._cloud_label_for_tag(cloud_tag), cloud_tag)
+            self.cloud_model_combo.setCurrentIndex(0)
+            self._cloud_model_tags = [cloud_tag]
+        self._refresh_cloud_controls(force_reload_models=False, preferred_tag=cloud_tag)
         setup = self.datastore.load_setup()
         ftc_setup = dict(setup.get("ftc", {}))
         default_mode = str(ftc_setup.get("default_mode", "standard"))
@@ -1199,7 +1442,9 @@ class SettingsDialog(QDialog):
             stats_index = 1
         self.stats_default_range.setCurrentIndex(stats_index)
         self._refresh_performance_mode()
-        self._refresh_model_status()
+        self.ollama_status.setText("Model status will load after settings opens.")
+        self.ollama_hint.setText("You can keep using these settings while ONCard checks Ollama.")
+        self._refresh_text_model_choices_from_saved(ai_settings)
 
     def _cloud_mode_enabled(self) -> bool:
         return bool(self.cloud_enabled_checkbox.isChecked())
@@ -1444,6 +1689,27 @@ class SettingsDialog(QDialog):
             self._play_click_sound(volume_scale=1.1)
         self._last_ask_ai_emoji_value = value
         self._update_ask_ai_emoji_label(value)
+
+    def _refresh_text_model_choices_from_saved(self, ai_settings: dict) -> None:
+        setup = self.datastore.load_setup()
+        installed_models = dict(setup.get("installed_models", {}))
+        saved_key = str(ai_settings.get("selected_text_llm_key", "")).strip()
+        installed_keys = [key for key in non_embedding_llm_keys() if bool(installed_models.get(key, False))]
+        self.selected_text_llm.blockSignals(True)
+        self.selected_text_llm.clear()
+        for key in installed_keys:
+            spec = MODELS.get(key)
+            if spec is not None:
+                self.selected_text_llm.addItem(spec.display_name, key)
+        selected_index = self.selected_text_llm.findData(saved_key)
+        if selected_index < 0 and self.selected_text_llm.count() > 0:
+            selected_index = 0
+        if selected_index >= 0:
+            self.selected_text_llm.setCurrentIndex(selected_index)
+        cloud_enabled = self._cloud_mode_enabled()
+        self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0 and not cloud_enabled)
+        self.selected_text_llm.setToolTip("Cloud mode is enabled. Use the Cloud model selector above." if cloud_enabled else "")
+        self.selected_text_llm.blockSignals(False)
 
     def _refresh_text_model_choices(self, snap=None) -> None:
         snapshot = snap or self.preflight.snapshot(force=False)
