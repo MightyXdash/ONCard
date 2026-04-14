@@ -3,7 +3,9 @@ Elevate your learning experience with a fully offline AI-powered study app.
 
 <img width="1280" height="720" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
 
-## Table of Contents
+[Ask ChatGPT about ONCard](https://chatgpt.com/?hints=search&q=Search%20the%20web%20and%20use%20the%20following%20sources%3A%0A%0AONCard%20Wiki%20%3D%20https%3A//github.com/MightyXdash/ONCard/wiki%20%20%0AONCard%20repo%20%3D%20https%3A//github.com/MightyXdash/ONCard%20%20%0A%0ABreak%20down%20the%20features%20about%20the%20app%20%22ONCard%22.%0AList%20all%20the%20features%20a%20student%20will%20benefit%20from%20using.%0ALet%20the%20user%20ask%20more%20questions%20about%20the%20program.)
+
+# Table of Contents
 - [About ONCard](#about-oncard)
 - [Features](#features)
 - [Installation](#installation)
