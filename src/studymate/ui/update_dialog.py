@@ -105,10 +105,8 @@ class WhatsNewSummaryDialog(QDialog):
         title.setWordWrap(True)
         surface_layout.addWidget(title)
 
-        subtitle = QLabel(
-            "ONCard 1.3.7 helps you understand your study habits with the new stats tool. "
-            "Press the profile icon in the top left, then choose \"View stats\" to see how you are doing."
-        )
+        subtitle_text = content.subtitle.strip() or content.text1
+        subtitle = QLabel(subtitle_text)
         subtitle.setObjectName("UpdateSubtitle")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setWordWrap(True)
@@ -125,10 +123,8 @@ class WhatsNewSummaryDialog(QDialog):
         )
         surface_layout.addWidget(banner, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        description = QLabel(
-            "There is more in this update too: Ask AI can browse cards, respond with vision, use tones, "
-            "follow emoji preferences, and work with expanded model support including Ollama Cloud."
-        )
+        description_text = content.summary_text.strip() or content.text2.strip() or content.text1
+        description = QLabel(description_text)
         description.setObjectName("SectionText")
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         description.setWordWrap(True)
@@ -185,12 +181,14 @@ class WhatsNewDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = QWidget()
         body = QVBoxLayout(host)
         body.setContentsMargins(4, 2, 4, 8)
         body.setSpacing(18)
 
-        title = QLabel(content.update_name or f"Welcome to ONCard {version}")
+        title = QLabel(content.learn_more_title or content.update_name or f"Welcome to ONCard {version}")
         title.setObjectName("PageTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setWordWrap(True)

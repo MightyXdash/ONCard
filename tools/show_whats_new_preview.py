@@ -16,7 +16,7 @@ from studymate.ui.update_dialog import WhatsNewDialog, WhatsNewSummaryDialog  # 
 
 
 def main() -> int:
-    version = sys.argv[1] if len(sys.argv) > 1 else "1.3.7"
+    version = sys.argv[1] if len(sys.argv) > 1 else "1.4.7"
     app = QApplication(sys.argv)
     fonts_dir = ROOT / "assets" / "fonts" / "NunitoSans"
     if fonts_dir.exists():
