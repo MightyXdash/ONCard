@@ -510,67 +510,100 @@ class SettingsDialog(QDialog):
                 background: transparent;
             }
             QFrame#SettingsWindowShell {
-                background: #fbfcfe;
-                border: 1px solid rgba(198, 210, 223, 0.88);
-                border-radius: 20px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #f8fafc);
+                border: 1px solid rgba(203, 213, 225, 0.6);
+                border-radius: 24px;
             }
             QStackedWidget#SettingsPages,
             QScrollArea#SettingsScrollArea,
             QScrollArea#SettingsScrollArea > QWidget,
             QScrollArea#SettingsScrollArea > QWidget > QWidget,
             QWidget#SettingsTabCanvas {
-                background: #fbfcfe;
+                background: transparent;
                 border: none;
+            }
+            QFrame#SettingsCard {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #fafbfc);
+                border: 1px solid rgba(203, 213, 225, 0.5);
+                border-radius: 18px;
+            }
+            QFrame#SettingsCard:hover {
+                border: 1px solid rgba(148, 163, 184, 0.6);
+            }
+            QFrame#SettingsSectionCard {
+                background: rgba(248, 250, 252, 0.7);
+                border: 1px solid rgba(226, 232, 240, 0.6);
+                border-radius: 16px;
             }
             QToolButton#SettingsHeaderIconButton,
             QToolButton#SettingsHeaderActionButton {
                 background-color: transparent;
-                border: none;
-                border-radius: 13px;
-                padding: 0px;
+                border: 2px solid transparent;
+                border-radius: 12px;
+                padding: 4px;
                 outline: none;
             }
             QToolButton#SettingsHeaderIconButton:hover,
             QToolButton#SettingsHeaderActionButton:hover {
-                background-color: #e8edf2;
-                border: none;
+                background-color: rgba(241, 245, 249, 0.8);
+                border: 2px solid transparent;
             }
             QToolButton#SettingsHeaderIconButton:checked {
                 background-color: #0f2539;
-                border: none;
+                border: 2px solid transparent;
             }
             QToolButton#SettingsHeaderIconButton:checked:hover {
-                background-color: #0f2539;
-                border: none;
+                background-color: #13314b;
+                border: 2px solid transparent;
+            }
+            QToolButton#SettingsHeaderIconButton:checked:focus {
+                border: 2px solid rgba(15, 37, 57, 0.4);
             }
             QToolButton#SettingsHeaderActionButton:pressed {
-                background-color: #dbe4ed;
-                border: none;
+                background-color: #e2e8f0;
+                border: 2px solid transparent;
             }
             QToolButton#SettingsHeaderIconButton:focus,
             QToolButton#SettingsHeaderActionButton:focus {
-                border: none;
+                border: 2px solid rgba(15, 37, 57, 0.3);
+            }
+            QToolButton#SettingsNavTab {
+                background-color: transparent;
+                border: 2px solid transparent;
+                border-radius: 12px;
+                padding: 8px 16px;
+                color: #64748b;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QToolButton#SettingsNavTab:hover {
+                background-color: rgba(241, 245, 249, 0.8);
+                color: #334155;
+            }
+            QToolButton#SettingsNavTab:checked {
+                background-color: #0f2539;
+                color: #ffffff;
             }
             QPushButton#SettingsPickerButton {
-                background-color: rgba(246, 250, 253, 0.98);
-                border: 1px solid rgba(205, 218, 230, 0.92);
-                border-radius: 15px;
-                padding: 8px 12px;
-                color: #142130;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #f8fafc);
+                border: 1.5px solid rgba(203, 213, 225, 0.6);
+                border-radius: 12px;
+                padding: 10px 14px;
+                color: #1e293b;
                 font-size: 13px;
-                font-weight: 400;
+                font-weight: 500;
                 text-align: left;
             }
             QPushButton#SettingsPickerButton:hover {
-                background-color: rgba(237, 244, 250, 0.98);
-                border: 1px solid rgba(154, 180, 206, 0.92);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f8fafc, stop:1 #f1f5f9);
+                border: 1.5px solid rgba(148, 163, 184, 0.7);
             }
             QPushButton#SettingsPickerButton:pressed {
-                background-color: rgba(221, 234, 247, 0.98);
-                border: 1px solid rgba(121, 160, 199, 0.92);
+                background: #e2e8f0;
+                border: 1.5px solid rgba(100, 116, 139, 0.8);
             }
             QPushButton#SettingsPickerButton[placeholder="true"] {
-                color: #8f9dad;
+                color: #94a3b8;
             }
             """
         )
@@ -588,22 +621,17 @@ class SettingsDialog(QDialog):
             return
         available = screen.availableGeometry()
         width = min(860, max(720, available.width() - 120))
-        height = min(720, max(560, available.height() - 120))
+        height = min(780, max(620, available.height() - 80))
         self.resize(width, height)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(34, 30, 34, 34)
+        root.setContentsMargins(28, 24, 28, 80)
         root.setSpacing(0)
 
         shell_surface = QFrame(self)
         shell_surface.setObjectName("SettingsWindowShell")
         polish_surface(shell_surface)
-        shell_shadow = QGraphicsDropShadowEffect(shell_surface)
-        shell_shadow.setBlurRadius(84)
-        shell_shadow.setOffset(0, 22)
-        shell_shadow.setColor(QColor(17, 35, 57, 96))
-        shell_surface.setGraphicsEffect(shell_shadow)
         self._shell_surface = shell_surface
         root.addWidget(shell_surface, 1)
         self._bottom_fade = QWidget(shell_surface)
@@ -612,12 +640,12 @@ class SettingsDialog(QDialog):
             """
             background: qlineargradient(
                 x1: 0, y1: 0, x2: 0, y2: 1,
-                stop: 0 rgba(251, 252, 254, 0),
-                stop: 0.38 rgba(251, 252, 254, 235),
-                stop: 1 #fbfcfe
+                stop: 0 rgba(248, 250, 252, 0),
+                stop: 0.35 rgba(248, 250, 252, 240),
+                stop: 1 #f8fafc
             );
-            border-bottom-left-radius: 20px;
-            border-bottom-right-radius: 20px;
+            border-bottom-left-radius: 24px;
+            border-bottom-right-radius: 24px;
             """
         )
         self._top_fade = QWidget(shell_surface)
@@ -626,24 +654,35 @@ class SettingsDialog(QDialog):
             """
             background: qlineargradient(
                 x1: 0, y1: 0, x2: 0, y2: 1,
-                stop: 0 rgba(251, 252, 254, 150),
-                stop: 0.48 rgba(251, 252, 254, 72),
-                stop: 1 rgba(251, 252, 254, 0)
+                stop: 0 rgba(248, 250, 252, 160),
+                stop: 0.45 rgba(248, 250, 252, 80),
+                stop: 1 rgba(248, 250, 252, 0)
             );
             """
         )
 
         shell = QVBoxLayout(shell_surface)
-        shell.setContentsMargins(24, 16, 24, 22)
-        shell.setSpacing(14)
+        shell.setContentsMargins(20, 18, 20, 18)
+        shell.setSpacing(16)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(12)
+        header.setSpacing(8)
         title = QLabel("Settings")
         title.setObjectName("PageTitle")
+        title.setStyleSheet(
+            """
+            QLabel#PageTitle {
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 26px;
+                font-weight: 800;
+                color: #0f172a;
+                background: transparent;
+            }
+            """
+        )
         header.addWidget(title)
-        header.addSpacing(6)
+        header.addSpacing(12)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("SettingsPages")
@@ -665,6 +704,37 @@ class SettingsDialog(QDialog):
         self.save_btn = self._header_icon_button("check", "Save")
         self.cancel_btn.clicked.connect(self.reject)
         self.save_btn.clicked.connect(self._save)
+        self.save_btn.setStyleSheet(
+            """
+            QToolButton#SettingsHeaderActionButton {
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+            }
+            QToolButton#SettingsHeaderActionButton:hover {
+                background: rgba(15, 37, 57, 0.06);
+            }
+            QToolButton#SettingsHeaderActionButton:pressed {
+                background: rgba(15, 37, 57, 0.12);
+            }
+            """
+        )
+        self.cancel_btn.setStyleSheet(
+            """
+            QToolButton#SettingsHeaderActionButton {
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+                color: #64748b;
+            }
+            QToolButton#SettingsHeaderActionButton:hover {
+                background: rgba(15, 37, 57, 0.06);
+            }
+            QToolButton#SettingsHeaderActionButton:pressed {
+                background: rgba(15, 37, 57, 0.12);
+            }
+            """
+        )
         header.addWidget(self.cancel_btn)
         header.addWidget(self.save_btn)
         shell.addLayout(header)
@@ -681,19 +751,31 @@ class SettingsDialog(QDialog):
 
     def _header_icon_button(self, icon_name: str, tooltip: str, *, checkable: bool = False) -> QToolButton:
         button = QToolButton()
-        button.setObjectName("SettingsHeaderIconButton" if checkable else "SettingsHeaderActionButton")
+        button.setObjectName("SettingsNavTab" if checkable else "SettingsHeaderActionButton")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly if checkable else Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(tooltip)
         button.setCheckable(checkable)
         button.setAutoRaise(False)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(38 if checkable else 34, 38 if checkable else 34)
+        if checkable:
+            button.setText(tooltip)
+            button.setFixedSize(120, 40)
+        else:
+            button.setFixedSize(36, 36)
         icon_path = self._icon_path(icon_name)
         if icon_path is not None:
-            icon_size = QSize(20, 20) if checkable else QSize(15, 15)
-            button.setIcon(QIcon(str(icon_path)) if checkable else self._header_padded_icon(icon_path, icon_size))
-            button.setIconSize(icon_size)
+            if checkable:
+                icon_size = QSize(18, 18)
+                icon = QIcon(str(icon_path))
+                button.setIcon(icon)
+                button.setIconSize(icon_size)
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            else:
+                icon_size = QSize(16, 16)
+                padded = self._header_padded_icon(icon_path, icon_size)
+                button.setIcon(padded if not padded.isNull() else QIcon(str(icon_path)))
+                button.setIconSize(icon_size)
         return button
 
     def _header_padded_icon(self, icon_path: Path, target_size: QSize) -> QIcon:
@@ -864,9 +946,59 @@ class SettingsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setObjectName("SettingsScrollArea")
         scroll.setWidgetResizable(True)
-        scroll.setViewportMargins(0, 10, 18, 0)
-        scroll.viewport().setStyleSheet("background: #fbfcfe;")
+        scroll.setViewportMargins(0, 8, 16, 0)
+        scroll.viewport().setStyleSheet("background: transparent;")
         return scroll
+
+    def _settings_card(self, layout_type: QVBoxLayout | QFormLayout | None = None, *, padding: int = 22) -> tuple[QFrame, QVBoxLayout | QFormLayout]:
+        surface = QFrame()
+        surface.setObjectName("SettingsCard")
+        surface.setStyleSheet(
+            """
+            QFrame#SettingsCard {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #fafbfc);
+                border: 1px solid rgba(203, 213, 225, 0.5);
+                border-radius: 18px;
+            }
+            """
+        )
+        if layout_type is QFormLayout:
+            layout = QFormLayout(surface)
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setHorizontalSpacing(18)
+            layout.setVerticalSpacing(16)
+            layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            layout.setFormAlignment(Qt.AlignTop)
+        else:
+            layout = QVBoxLayout(surface)
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setSpacing(12)
+        return surface, layout
+
+    def _settings_section_card(self, layout_type: QVBoxLayout | QFormLayout | None = None, *, padding: int = 20) -> tuple[QFrame, QVBoxLayout | QFormLayout]:
+        surface = QFrame()
+        surface.setObjectName("SettingsSectionCard")
+        surface.setStyleSheet(
+            """
+            QFrame#SettingsSectionCard {
+                background: rgba(248, 250, 252, 0.7);
+                border: 1px solid rgba(226, 232, 240, 0.6);
+                border-radius: 16px;
+            }
+            """
+        )
+        if layout_type is QFormLayout:
+            layout = QFormLayout(surface)
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setHorizontalSpacing(16)
+            layout.setVerticalSpacing(14)
+            layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            layout.setFormAlignment(Qt.AlignTop)
+        else:
+            layout = QVBoxLayout(surface)
+            layout.setContentsMargins(padding, padding, padding, padding)
+            layout.setSpacing(10)
+        return surface, layout
 
     def _build_general_tab(self) -> QWidget:
         scroll = self._settings_scroll_area()
@@ -875,22 +1007,42 @@ class SettingsDialog(QDialog):
         host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 4, 82)
-        layout.setSpacing(18)
+        layout.setSpacing(20)
 
         intro = QLabel("Update the basic student profile ONCard uses when generating and grading responses.")
         intro.setObjectName("SectionText")
         intro.setWordWrap(True)
+        intro.setStyleSheet(
+            """
+            QLabel#SectionText {
+                font-size: 14px;
+                line-height: 1.6;
+                color: #475569;
+            }
+            """
+        )
         layout.addWidget(intro)
 
-        surface = QFrame()
-        surface.setObjectName("Surface")
-        polish_surface(surface)
-        form = QFormLayout(surface)
-        form.setContentsMargins(20, 20, 20, 20)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(14)
-        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignTop)
+        # Profile card
+        surface, form = self._settings_card(layout_type=QFormLayout)
+        form_title = QLabel("Profile")
+        form_title.setObjectName("SectionTitle")
+        form_title.setStyleSheet(
+            """
+            QLabel#SectionTitle {
+                font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+                font-size: 18px;
+                font-weight: 700;
+                color: #0f172a;
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+        form_title.setStyleSheet(
+            "QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 12px 0px; }"
+        )
+        form.addRow(form_title)
 
         self.name_edit = AnimatedLineEdit()
         self.profile_name_edit = AnimatedLineEdit()
@@ -943,18 +1095,17 @@ class SettingsDialog(QDialog):
                 border-radius: 4px;
             }
             QSlider#SettingsAttentionSlider::handle:horizontal {
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
                 background: #0f2539;
             }
+            QSlider#SettingsAttentionSlider::handle:horizontal:hover {
+                background: #13314b;
+            }
             QSlider#SettingsAttentionSlider::handle:horizontal:pressed {
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-                background: #0f2539;
+                background: #1a4466;
             }
             """
         )
@@ -980,23 +1131,21 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(surface)
 
-        account_surface = QFrame()
-        account_surface.setObjectName("Surface")
-        polish_surface(account_surface)
-        account_layout = QVBoxLayout(account_surface)
-        account_layout.setContentsMargins(20, 20, 20, 20)
-        account_layout.setSpacing(8)
+        # Account actions card
+        account_surface, account_layout = self._settings_section_card()
         account_title = QLabel("Profile account actions")
         account_title.setObjectName("SectionTitle")
+        account_title.setStyleSheet("QLabel#SectionTitle { font-size: 16px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         account_note = QLabel("Manage your account directly from profile settings.")
         account_note.setObjectName("SectionText")
         account_note.setWordWrap(True)
+        account_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         account_layout.addWidget(account_title)
         account_layout.addWidget(account_note)
 
         actions_row = QHBoxLayout()
-        actions_row.setContentsMargins(0, 2, 0, 0)
-        actions_row.setSpacing(10)
+        actions_row.setContentsMargins(0, 4, 0, 0)
+        actions_row.setSpacing(12)
         for text, handler in (
             ("export account", self._export_account_flow),
             ("delete account", self._delete_account_flow),
@@ -1013,13 +1162,19 @@ class SettingsDialog(QDialog):
                 QPushButton#SettingsTinyLink {
                     border: none;
                     background: transparent;
-                    color: #8C96A1;
-                    font-size: 11px;
-                    padding: 0px;
+                    color: #64748b;
+                    font-size: 12px;
+                    padding: 4px 8px;
                     text-align: left;
+                    font-weight: 500;
+                    border-radius: 6px;
                 }
                 QPushButton#SettingsTinyLink:hover {
-                    color: #2E7DFF;
+                    color: #0f2539;
+                    background: rgba(15, 37, 57, 0.05);
+                }
+                QPushButton#SettingsTinyLink:pressed {
+                    background: rgba(15, 37, 57, 0.10);
                 }
                 """
             )
@@ -1029,24 +1184,21 @@ class SettingsDialog(QDialog):
         account_layout.addLayout(actions_row)
         layout.addWidget(account_surface)
 
-        ftc_surface = QFrame()
-        ftc_surface.setObjectName("Surface")
-        polish_surface(ftc_surface)
-        ftc_layout = QVBoxLayout(ftc_surface)
-        ftc_layout.setContentsMargins(20, 20, 20, 20)
-        ftc_layout.setSpacing(10)
-
+        # FTC card
+        ftc_surface, ftc_layout = self._settings_card()
         ftc_title = QLabel("FTC")
         ftc_title.setObjectName("SectionTitle")
+        ftc_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         ftc_note = QLabel("Default Files To Cards settings. Question counts are capped by available units per run.")
         ftc_note.setObjectName("SectionText")
         ftc_note.setWordWrap(True)
+        ftc_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         ftc_layout.addWidget(ftc_title)
         ftc_layout.addWidget(ftc_note)
 
         ftc_form = QFormLayout()
-        ftc_form.setHorizontalSpacing(16)
-        ftc_form.setVerticalSpacing(14)
+        ftc_form.setHorizontalSpacing(18)
+        ftc_form.setVerticalSpacing(16)
         ftc_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         ftc_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         ftc_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -1085,34 +1237,104 @@ class SettingsDialog(QDialog):
         )
         ftc_hint.setObjectName("SmallMeta")
         ftc_hint.setWordWrap(True)
+        ftc_hint.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 8px; }")
         ftc_layout.addWidget(ftc_hint)
 
         layout.addWidget(ftc_surface)
 
-        mcq_surface = QFrame()
-        mcq_surface.setObjectName("Surface")
-        polish_surface(mcq_surface)
-        mcq_layout = QVBoxLayout(mcq_surface)
-        mcq_layout.setContentsMargins(20, 20, 20, 20)
-        mcq_layout.setSpacing(10)
-
+        # MCQ card
+        mcq_surface, mcq_layout = self._settings_card()
         mcq_title = QLabel("MCQ")
         mcq_title.setObjectName("SectionTitle")
+        mcq_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         mcq_note = QLabel("Turn saved cards into multiple choice practice with short, similar answer choices.")
         mcq_note.setObjectName("SectionText")
         mcq_note.setWordWrap(True)
+        mcq_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         mcq_layout.addWidget(mcq_title)
         mcq_layout.addWidget(mcq_note)
 
         self.mcq_enabled_checkbox = QCheckBox("Enable Cards to MCQ")
+        self.mcq_enabled_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                font-size: 14px;
+                color: #334155;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #0f2539;
+                border: 2px solid #0f2539;
+            }
+            """
+        )
         mcq_layout.addWidget(self.mcq_enabled_checkbox)
+
+        mcq_difficulty_form = QFormLayout()
+        mcq_difficulty_form.setHorizontalSpacing(18)
+        mcq_difficulty_form.setVerticalSpacing(12)
+        mcq_difficulty_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.mcq_difficulty = PopupMenuComboBox()
+        mcq_difficulty_options = [
+            ("Easier", "easier"),
+            ("Standard", "standard"),
+            ("Slightly harder", "slightly_harder"),
+            ("Harder", "harder"),
+            ("Much harder", "much_harder"),
+        ]
+        for label, value in mcq_difficulty_options:
+            self.mcq_difficulty.addItem(label, value)
+        self.mcq_difficulty.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="MCQ difficulty",
+                control=self.mcq_difficulty,
+                fallback_value="slightly_harder",
+            )
+        )
+        mcq_difficulty_form.addRow("MCQ difficulty", self.mcq_difficulty)
+        mcq_layout.addLayout(mcq_difficulty_form)
 
         mcq_action_row = QHBoxLayout()
         self.cards_to_mcq_btn = AnimatedButton("Cards to MCQ")
+        self.cards_to_mcq_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #0f2539;
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+                padding: 8px 16px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #13314b;
+            }
+            QPushButton:pressed {
+                background: #1a4466;
+            }
+            QPushButton:disabled {
+                background: #cbd5e1;
+                color: #94a3b8;
+            }
+            """
+        )
         self.cards_to_mcq_btn.clicked.connect(self._run_cards_to_mcq)
         self.mcq_status_label = QLabel("Generate choices now, or let the MCQ tab make them when needed.")
         self.mcq_status_label.setObjectName("SmallMeta")
         self.mcq_status_label.setWordWrap(True)
+        self.mcq_status_label.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
         mcq_action_row.addWidget(self.cards_to_mcq_btn, 0)
         mcq_action_row.addWidget(self.mcq_status_label, 1)
         mcq_layout.addLayout(mcq_action_row)
@@ -1162,18 +1384,23 @@ class SettingsDialog(QDialog):
             return
         self.mcq_enabled_checkbox.setChecked(True)
         setup = self.datastore.load_setup()
-        setup["mcq"] = {"enabled": True}
+        setup["mcq"] = {
+            "enabled": True,
+            "difficulty": str(self.mcq_difficulty.currentData() or "slightly_harder"),
+        }
         self.datastore.save_setup(setup)
         ai_settings = self.datastore.load_ai_settings()
         model_spec = resolve_active_text_llm_spec(ai_settings)
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Cards to MCQ"):
             return
+        mcq_difficulty = str(self.mcq_difficulty.currentData() or "slightly_harder")
         worker = MCQBulkWorker(
             cards=cards,
             datastore=self.datastore,
             ollama=self.ollama,
             model=resolve_active_text_model_tag(ai_settings),
             profile_context=self.datastore.load_profile(),
+            difficulty=mcq_difficulty,
         )
         self._mcq_bulk_worker = worker
         self.cards_to_mcq_btn.setEnabled(False)
@@ -1288,17 +1515,13 @@ class SettingsDialog(QDialog):
         host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 4, 82)
-        layout.setSpacing(18)
+        layout.setSpacing(20)
 
-        cloud_surface = QFrame()
-        cloud_surface.setObjectName("Surface")
-        polish_surface(cloud_surface)
-        cloud_layout = QVBoxLayout(cloud_surface)
-        cloud_layout.setContentsMargins(20, 20, 20, 20)
-        cloud_layout.setSpacing(10)
-
+        # Cloud service card
+        cloud_surface, cloud_layout = self._settings_card()
         cloud_title = QLabel("Ollama cloud")
         cloud_title.setObjectName("SectionTitle")
+        cloud_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         cloud_note = QLabel(
             "Use Ollama Cloud inference with your API key. Cloud mode is off by default. "
             "When enabled, cloud inference overrides local AI text-model selection until turned off. "
@@ -1306,15 +1529,39 @@ class SettingsDialog(QDialog):
         )
         cloud_note.setObjectName("SectionText")
         cloud_note.setWordWrap(True)
+        cloud_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         cloud_layout.addWidget(cloud_title)
         cloud_layout.addWidget(cloud_note)
 
         cloud_form = QFormLayout()
-        cloud_form.setHorizontalSpacing(16)
-        cloud_form.setVerticalSpacing(12)
+        cloud_form.setHorizontalSpacing(18)
+        cloud_form.setVerticalSpacing(14)
         cloud_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.cloud_enabled_checkbox = QCheckBox("Enable cloud service")
+        self.cloud_enabled_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                font-size: 14px;
+                color: #334155;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #0f2539;
+                border: 2px solid #0f2539;
+            }
+            """
+        )
         self.cloud_enabled_checkbox.toggled.connect(self._on_cloud_mode_toggled)
         self.cloud_api_key_edit = AnimatedLineEdit()
         self.cloud_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1336,11 +1583,49 @@ class SettingsDialog(QDialog):
         cloud_layout.addLayout(cloud_form)
 
         cloud_actions = QHBoxLayout()
-        cloud_actions.setContentsMargins(0, 0, 0, 0)
-        cloud_actions.setSpacing(8)
+        cloud_actions.setContentsMargins(0, 6, 0, 0)
+        cloud_actions.setSpacing(10)
         self.open_cloud_keys_btn = AnimatedButton("Open API key page")
+        self.open_cloud_keys_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                color: #0f2539;
+                border: 1.5px solid #0f2539;
+                border-radius: 10px;
+                padding: 7px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: rgba(15, 37, 57, 0.08);
+            }
+            QPushButton:pressed {
+                background: rgba(15, 37, 57, 0.15);
+            }
+            """
+        )
         self.open_cloud_keys_btn.clicked.connect(self._open_ollama_cloud_keys)
         self.refresh_cloud_models_btn = AnimatedButton("Load cloud models")
+        self.refresh_cloud_models_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                color: #0f2539;
+                border: 1.5px solid #0f2539;
+                border-radius: 10px;
+                padding: 7px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: rgba(15, 37, 57, 0.08);
+            }
+            QPushButton:pressed {
+                background: rgba(15, 37, 57, 0.15);
+            }
+            """
+        )
         self.refresh_cloud_models_btn.clicked.connect(lambda: self._refresh_cloud_models(force=True))
         cloud_actions.addWidget(self.open_cloud_keys_btn)
         cloud_actions.addWidget(self.refresh_cloud_models_btn)
@@ -1350,25 +1635,42 @@ class SettingsDialog(QDialog):
         self.cloud_status = QLabel("")
         self.cloud_status.setObjectName("SmallMeta")
         self.cloud_status.setWordWrap(True)
+        self.cloud_status.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 8px; }")
         cloud_layout.addWidget(self.cloud_status)
         layout.addWidget(cloud_surface)
 
-        runtime_surface = QFrame()
-        runtime_surface.setObjectName("Surface")
-        polish_surface(runtime_surface)
-        runtime_layout = QVBoxLayout(runtime_surface)
-        runtime_layout.setContentsMargins(20, 20, 20, 20)
-        runtime_layout.setSpacing(8)
-
+        runtime_surface, runtime_layout = self._settings_section_card()
         runtime_title = QLabel("Ollama runtime")
         runtime_title.setObjectName("SectionTitle")
+        runtime_title.setStyleSheet("QLabel#SectionTitle { font-size: 16px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 6px 0px; }")
         self.ollama_status = QLabel("")
         self.ollama_status.setObjectName("SectionText")
         self.ollama_status.setWordWrap(True)
+        self.ollama_status.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         self.ollama_hint = QLabel("")
         self.ollama_hint.setObjectName("SmallMeta")
         self.ollama_hint.setWordWrap(True)
+        self.ollama_hint.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
         self.refresh_models_btn = AnimatedButton("Refresh model status")
+        self.refresh_models_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                color: #0f2539;
+                border: 1.5px solid #0f2539;
+                border-radius: 10px;
+                padding: 7px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: rgba(15, 37, 57, 0.08);
+            }
+            QPushButton:pressed {
+                background: rgba(15, 37, 57, 0.15);
+            }
+            """
+        )
         self.refresh_models_btn.clicked.connect(self._refresh_model_status)
         runtime_layout.addWidget(runtime_title)
         runtime_layout.addWidget(self.ollama_status)
@@ -1376,18 +1678,14 @@ class SettingsDialog(QDialog):
         runtime_layout.addWidget(self.refresh_models_btn, 0, Qt.AlignLeft)
         layout.addWidget(runtime_surface)
 
-        models_surface = QFrame()
-        models_surface.setObjectName("Surface")
-        polish_surface(models_surface)
-        models_layout = QVBoxLayout(models_surface)
-        models_layout.setContentsMargins(20, 20, 20, 20)
-        models_layout.setSpacing(12)
-
+        models_surface, models_layout = self._settings_card()
         models_title = QLabel("Installed Ollama models")
         models_title.setObjectName("SectionTitle")
+        models_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 6px 0px; }")
         models_note = QLabel("These are the Ollama models ONCard currently uses.")
         models_note.setObjectName("SectionText")
         models_note.setWordWrap(True)
+        models_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         models_layout.addWidget(models_title)
         models_layout.addWidget(models_note)
 
@@ -1401,29 +1699,38 @@ class SettingsDialog(QDialog):
         self.install_log.setPlaceholderText("Model install activity will appear here.")
         self.install_log.setMinimumHeight(120)
         self.install_log.setMaximumHeight(160)
+        self.install_log.setStyleSheet(
+            """
+            QTextEdit {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 12px;
+                color: #475569;
+                font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+                font-size: 12px;
+            }
+            """
+        )
         models_layout.addWidget(self.install_log)
         layout.addWidget(models_surface)
 
-        ai_surface = QFrame()
-        ai_surface.setObjectName("Surface")
-        polish_surface(ai_surface)
-        ai_layout = QVBoxLayout(ai_surface)
-        ai_layout.setContentsMargins(20, 20, 20, 20)
-        ai_layout.setSpacing(12)
-
+        ai_surface, ai_layout = self._settings_card()
         ai_title = QLabel("AI features")
         ai_title.setObjectName("SectionTitle")
+        ai_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         ai_note = QLabel(
             "Context lengths can only be increased above the shipped defaults. Higher values can use more memory and may slow requests on weaker devices."
         )
         ai_note.setObjectName("SectionText")
         ai_note.setWordWrap(True)
+        ai_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
         ai_layout.addWidget(ai_title)
         ai_layout.addWidget(ai_note)
 
         form = QFormLayout()
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(14)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(16)
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.followup_ctx = QSpinBox()
@@ -1461,7 +1768,7 @@ class SettingsDialog(QDialog):
             QSlider#SettingsAskAiEmojiSlider::groove:horizontal {
                 height: 6px;
                 border-radius: 3px;
-                background: rgba(15, 37, 57, 0.10);
+                background: #d4deea;
             }
             QSlider#SettingsAskAiEmojiSlider::sub-page:horizontal {
                 border-radius: 3px;
@@ -1469,27 +1776,27 @@ class SettingsDialog(QDialog):
             }
             QSlider#SettingsAskAiEmojiSlider::add-page:horizontal {
                 border-radius: 3px;
-                background: rgba(15, 37, 57, 0.18);
+                background: #d4deea;
             }
             QSlider#SettingsAskAiEmojiSlider::handle:horizontal {
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
                 background: #0f2539;
             }
+            QSlider#SettingsAskAiEmojiSlider::handle:horizontal:hover {
+                background: #13314b;
+            }
             QSlider#SettingsAskAiEmojiSlider::handle:horizontal:pressed {
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-                background: #0f2539;
+                background: #1a4466;
             }
             """
         )
         self.ask_ai_emoji_slider.valueChanged.connect(self._on_ask_ai_emoji_changed)
         self.ask_ai_emoji_value = QLabel(ASK_AI_EMOJI_LABELS[2])
         self.ask_ai_emoji_value.setObjectName("SectionText")
+        self.ask_ai_emoji_value.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #475569; }")
         self.selected_text_llm = PopupMenuComboBox()
         self.selected_text_llm.set_popup_handler(
             lambda: self._open_combo_choice_picker(
@@ -1518,18 +1825,21 @@ class SettingsDialog(QDialog):
         )
         minimum_note.setObjectName("SmallMeta")
         minimum_note.setWordWrap(True)
+        minimum_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 8px; }")
         ai_layout.addWidget(minimum_note)
         tone_note = QLabel(
             "Ask AI can use a saved tone preset and emoji intensity. The model still adapts to the situation, but this sets the default style."
         )
         tone_note.setObjectName("SmallMeta")
         tone_note.setWordWrap(True)
+        tone_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
         ai_layout.addWidget(tone_note)
         model_note = QLabel(
             "Default setup installs only Gemma3:4b and Nomic Embed. Ministral models are optional and can be installed later here. The dropdown below uses installed text models only."
         )
         model_note.setObjectName("SmallMeta")
         model_note.setWordWrap(True)
+        model_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
         ai_layout.addWidget(model_note)
         layout.addWidget(ai_surface)
 
@@ -1541,21 +1851,20 @@ class SettingsDialog(QDialog):
         host = QWidget()
         host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 4, 82)
+        layout.setSpacing(20)
 
         intro = QLabel("Choose which time range is selected by default when opening View stats.")
         intro.setObjectName("SectionText")
         intro.setWordWrap(True)
+        intro.setStyleSheet("QLabel#SectionText { font-size: 14px; line-height: 1.6; color: #475569; }")
         layout.addWidget(intro)
 
-        surface = QFrame()
-        surface.setObjectName("Surface")
-        polish_surface(surface)
-        form = QFormLayout(surface)
-        form.setContentsMargins(20, 20, 20, 20)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(14)
+        surface, form = self._settings_card(layout_type=QFormLayout)
+        form_title = QLabel("Stats defaults")
+        form_title.setObjectName("SectionTitle")
+        form_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 12px 0px; }")
+        form.addRow(form_title)
 
         self.stats_default_range = PopupMenuComboBox()
         self.stats_default_range.addItem("Hourly", "hourly")
@@ -1575,6 +1884,7 @@ class SettingsDialog(QDialog):
         note = QLabel("This only sets the initial selection. You can still switch range in View stats anytime.")
         note.setObjectName("SmallMeta")
         note.setWordWrap(True)
+        note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
 
         layout.addWidget(surface)
         layout.addWidget(note)
@@ -1585,21 +1895,20 @@ class SettingsDialog(QDialog):
         host = QWidget()
         host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 4, 82)
+        layout.setSpacing(20)
 
         intro = QLabel("Control how aggressively ONCard warms caches, uses background workers, and handles motion.")
         intro.setObjectName("SectionText")
         intro.setWordWrap(True)
+        intro.setStyleSheet("QLabel#SectionText { font-size: 14px; line-height: 1.6; color: #475569; }")
         layout.addWidget(intro)
 
-        perf_surface = QFrame()
-        perf_surface.setObjectName("Surface")
-        polish_surface(perf_surface)
-        perf_layout = QFormLayout(perf_surface)
-        perf_layout.setContentsMargins(20, 20, 20, 20)
-        perf_layout.setHorizontalSpacing(16)
-        perf_layout.setVerticalSpacing(14)
+        perf_surface, perf_layout = self._settings_card(layout_type=QFormLayout)
+        form_title = QLabel("Performance")
+        form_title.setObjectName("SectionTitle")
+        form_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 12px 0px; }")
+        perf_layout.addRow(form_title)
 
         self.performance_mode = PopupMenuComboBox()
         self.performance_mode.addItem("Auto", "auto")
@@ -1618,7 +1927,53 @@ class SettingsDialog(QDialog):
         self.background_workers = QSpinBox()
         self.background_workers.setRange(1, 8)
         self.warm_cache_checkbox = QCheckBox("Warm SQL, card, and vector caches during startup")
+        self.warm_cache_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                font-size: 14px;
+                color: #334155;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #0f2539;
+                border: 2px solid #0f2539;
+            }
+            """
+        )
         self.reduced_motion_checkbox = QCheckBox("Reduce motion and transition animations")
+        self.reduced_motion_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                font-size: 14px;
+                color: #334155;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #0f2539;
+                border: 2px solid #0f2539;
+            }
+            """
+        )
 
         perf_layout.addRow("Mode", self.performance_mode)
         perf_layout.addRow("Startup workers", self.startup_workers)
@@ -1631,6 +1986,7 @@ class SettingsDialog(QDialog):
         )
         note.setObjectName("SmallMeta")
         note.setWordWrap(True)
+        note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
         layout.addWidget(perf_surface)
         layout.addWidget(note)
         layout.addStretch(1)
@@ -1638,11 +1994,19 @@ class SettingsDialog(QDialog):
 
     def _build_model_row(self, spec: ModelSpec) -> dict[str, object]:
         container = QFrame()
-        container.setObjectName("QueueRow")
-        polish_surface(container)
+        container.setObjectName("SettingsCard")
+        container.setStyleSheet(
+            """
+            QFrame#SettingsCard {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #fafbfc);
+                border: 1px solid rgba(203, 213, 225, 0.5);
+                border-radius: 16px;
+            }
+            """
+        )
         layout = QHBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(16)
 
         copy_col = QVBoxLayout()
         copy_col.setContentsMargins(0, 0, 0, 0)
@@ -1771,6 +2135,10 @@ class SettingsDialog(QDialog):
         self.ftc_ocr_checkbox.setChecked(bool(use_ocr))
         mcq_setup = dict(setup.get("mcq", {}))
         self.mcq_enabled_checkbox.setChecked(bool(mcq_setup.get("enabled", False)))
+        mcq_difficulty = str(mcq_setup.get("difficulty", "slightly_harder")).strip() or "slightly_harder"
+        difficulty_index = self.mcq_difficulty.findData(mcq_difficulty)
+        if difficulty_index >= 0:
+            self.mcq_difficulty.setCurrentIndex(difficulty_index)
         performance = dict(setup.get("performance", {}))
         self.performance_mode.setCurrentIndex(0 if str(performance.get("mode", "auto")) == "auto" else 1)
         self.startup_workers.setValue(max(1, min(8, int(performance.get("startup_workers", 8) or 8))))
@@ -1999,6 +2367,7 @@ class SettingsDialog(QDialog):
         }
         setup["mcq"] = {
             "enabled": bool(self.mcq_enabled_checkbox.isChecked()),
+            "difficulty": str(self.mcq_difficulty.currentData() or "slightly_harder"),
         }
         setup["performance"] = {
             "mode": str(self.performance_mode.currentData() or "auto"),

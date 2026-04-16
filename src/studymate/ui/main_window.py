@@ -619,6 +619,7 @@ class MainWindow(QMainWindow):
         self._update_shutdown_requested = False
         self._start_maximized = True
         self._pseudo_maximized = False
+        self._mcq_startup_generation_scheduled = False
         self._sizing_pseudo = False
         self._normal_geometry: QRect | None = None
         self._maximized_geometry: QRect | None = None
@@ -934,7 +935,7 @@ class MainWindow(QMainWindow):
         self.mcq_btn.setIcon(
             self.icons.icon(
                 "common",
-                "check-circle (1)" if self.mcq_btn.isChecked() else "check",
+                "mcq_white" if self.mcq_btn.isChecked() else "mcq",
                 "M",
             )
         )
@@ -1121,6 +1122,41 @@ class MainWindow(QMainWindow):
             self._start_maximized = False
             QTimer.singleShot(0, self._apply_pseudo_maximize)
         self._apply_native_window_chrome()
+        if not self._mcq_startup_generation_scheduled:
+            self._mcq_startup_generation_scheduled = True
+            QTimer.singleShot(3500, self._start_background_mcq_generation)
+
+    def _model_work_busy(self) -> bool:
+        if self.create_tab.has_pending_work():
+            return True
+        study_workers = [
+            self.study_tab.grade_worker,
+            self.study_tab.queued_grade_worker,
+            self.study_tab.followup_worker,
+            self.study_tab.reinforcement_worker,
+            self.study_tab.session_prep_worker,
+            self.study_tab.topic_cluster_worker,
+            self.study_tab.ai_query_planner_worker,
+            self.study_tab.ai_query_answer_worker,
+        ]
+        mcq_workers = [
+            self.mcq_tab.mcq_worker,
+            self.mcq_tab.followup_worker,
+        ]
+        for worker in study_workers + mcq_workers:
+            if worker is not None and worker.isRunning():
+                return True
+        return False
+
+    def _start_background_mcq_generation(self) -> None:
+        if self._model_work_busy():
+            QTimer.singleShot(5000, self._start_background_mcq_generation)
+            return
+        self.mcq_tab.reload_cards(force=True)
+        if self._model_work_busy():
+            QTimer.singleShot(5000, self._start_background_mcq_generation)
+            return
+        QTimer.singleShot(250, self.mcq_tab._fill_missing_mcqs_in_background)
 
     def _animate_window_geometry(self, target: QRect) -> None:
         if self._window_anim is None:

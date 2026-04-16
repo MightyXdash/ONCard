@@ -75,6 +75,7 @@ from studymate.workers.followup_worker import FollowUpWorker
 from studymate.workers.grade_worker import GradeWorker
 from studymate.workers.reinforcement_worker import ReinforcementWorker
 from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker
+from studymate.workers.mcq_worker import cached_mcq_payload, normalize_mcq_answers
 
 
 class PromptTextEdit(QTextEdit):
@@ -1953,6 +1954,26 @@ class StudyTab(QWidget):
     CARDS_TOOLBAR_SHELL_HEIGHT = 50
     AI_TRIGGER_TOKENS = {"/ai", "#ai"}
 
+    @staticmethod
+    def _card_expected_answer(card: dict, datastore=None, model_tag: str = "") -> str:
+        answer = str(card.get("answer", "")).strip()
+        if answer:
+            return answer
+        try:
+            mcq_answers = normalize_mcq_answers(card.get("mcq_answers", []))
+        except ValueError:
+            mcq_answers = []
+        if mcq_answers:
+            return mcq_answers[0]
+        if datastore is not None and model_tag:
+            try:
+                cached = cached_mcq_payload(datastore, card, model_tag)
+            except Exception:
+                cached = None
+            if isinstance(cached, dict):
+                return str(cached.get("correct_answer", "")).strip()
+        return ""
+
     def __init__(
         self,
         datastore: DataStore,
@@ -2064,6 +2085,33 @@ class StudyTab(QWidget):
 
     def _active_text_model_tag(self) -> str:
         return resolve_active_text_model_tag(self.datastore.load_ai_settings())
+
+    def _apply_mcq_payload_to_card_answer(self, entry: dict, payload: dict) -> str:
+        card = entry.get("card")
+        if not isinstance(card, dict):
+            return ""
+        correct_answer = str(payload.get("correct_answer", "")).strip()
+        if not correct_answer:
+            return ""
+        if str(card.get("answer", "")).strip() == correct_answer:
+            return correct_answer
+
+        updated = dict(card)
+        updated["answer"] = correct_answer
+        if payload.get("answers"):
+            updated["mcq_answers"] = list(payload.get("answers", []))
+        saved = self.datastore.save_card(updated)
+        entry["card"] = saved
+        self.current_card = saved
+        session_entry = entry.get("session_entry")
+        if isinstance(session_entry, SessionCardEntry):
+            session_entry.card = saved
+        if self.study_state:
+            card_id = str(saved.get("id", ""))
+            self.study_state.card_lookup[card_id] = saved
+            self.study_state.cards = [saved if str(item.get("id", "")) == card_id else item for item in self.study_state.cards]
+        self.cards = [saved if str(item.get("id", "")) == str(saved.get("id", "")) else item for item in self.cards]
+        return correct_answer
 
     def _surface(self, sidebar: bool = False) -> QFrame:
         frame = QFrame()
@@ -2495,8 +2543,7 @@ class StudyTab(QWidget):
         entry = self._current_history_entry()
         is_latest = self.current_history_index == len(self.session_history) - 1
         pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
-        has_expected_answer = bool(self.current_card and str(self.current_card.get("answer", "")).strip())
-        editable = bool(entry) and is_latest and not pending_current and self.grade_worker is None and has_expected_answer
+        editable = bool(entry) and is_latest and not pending_current and self.grade_worker is None
         self.prev_card_btn.setEnabled(self.current_history_index > 0)
         self.answer_input.setEnabled(editable)
         self.idk_btn.setEnabled(editable)
@@ -2557,12 +2604,8 @@ class StudyTab(QWidget):
             self.grade_feedback.setMarkdown("### Skipped\nThis card was skipped without grading.")
             self._set_followup_visible(False)
         else:
-            if not str(card.get("answer", "")).strip():
-                self.grade_summary.setText("MCQ-only card")
-                self.grade_feedback.setMarkdown("### MCQ-only\nUse the MCQ tab for this card.")
-            else:
-                self.grade_summary.setText("AI grader")
-                self.grade_feedback.clear()
+            self.grade_summary.setText("AI grader")
+            self.grade_feedback.clear()
             self._set_followup_visible(False)
         self._update_study_controls()
 
@@ -4169,7 +4212,7 @@ class StudyTab(QWidget):
             model_spec = self._active_text_llm_spec()
             worker = GradeWorker(
                 question=card.get("question", ""),
-                expected_answer=card.get("answer", ""),
+                expected_answer=self._card_expected_answer(card, self.datastore, self._active_text_model_tag()),
                 user_answer=str(entry.get("answer_text", "")).strip(),
                 difficulty=int(card.get("natural_difficulty", 5)),
                 ollama=self.ollama,
@@ -4230,7 +4273,7 @@ class StudyTab(QWidget):
 
         worker = GradeWorker(
             question=self.current_card.get("question", ""),
-            expected_answer=self.current_card.get("answer", ""),
+            expected_answer=self._card_expected_answer(self.current_card, self.datastore, self._active_text_model_tag()),
             user_answer=user_answer,
             difficulty=int(self.current_card.get("natural_difficulty", 5)),
             ollama=self.ollama,
@@ -4251,9 +4294,6 @@ class StudyTab(QWidget):
     def _grade(self) -> None:
         if not self.current_card:
             QMessageBox.information(self, "No card", "Start a card first.")
-            return
-        if not str(self.current_card.get("answer", "")).strip():
-            QMessageBox.information(self, "MCQ-only card", "Use the MCQ tab for this card.")
             return
         user_answer = self.answer_input.toPlainText().strip()
         if not user_answer:

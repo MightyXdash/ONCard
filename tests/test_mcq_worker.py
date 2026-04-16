@@ -35,6 +35,21 @@ class FakeOllama:
         }
 
 
+class FakePlaceholderAutofillOllama:
+    def structured_chat(self, **_kwargs):
+        return {
+            "title": "Generic Placeholder",
+            "subject": "Science",
+            "category": "Biology",
+            "subtopic": "Plants",
+            "hints": ["Think about the term.", "Check the context.", "Compare close ideas."],
+            "search_terms": ["generic", "placeholder", "science", "biology", "plants"],
+            "mcq_answers": ["Core concept", "Similar concept", "Related detail", "Nearby topic"],
+            "natural_difficulty": 4,
+            "response_to_user": "Done!",
+        }
+
+
 class FakeRetryMcqOllama:
     def __init__(self) -> None:
         self.calls = 0
@@ -74,10 +89,11 @@ class MCQWorkerUtilityTests(unittest.TestCase):
             ["Only one"],
             ["A", "A", "B", "C"],
             ["", "A", "B", "C"],
-            ["this answer has far too many words for the expanded backend mcq validation limit now", "A", "B", "C"],
+            ["this answer is way over forty words " * 5, "A", "B", "C"],
             ["All of the above", "A", "B", "C"],
+            ["Core concept", "Similar concept", "Related detail", "Nearby topic"],
             ["A quick mental shortcut", "A rule from medieval times", "A coding algorithm for AI", "A strict mathematical formula"],
-            ["Photosynthesis", "Cellular respiration", "Fermentation", "A wildly unrelated invented sentence"],
+            ["Short", "Medium", "Also medium", "This is a wildly disproportionate answer that goes on and on and on and on and on and on"],
         ]
         for payload in bad_payloads:
             with self.subTest(payload=payload):
@@ -117,14 +133,23 @@ class MCQWorkerUtilityTests(unittest.TestCase):
             self.assertEqual(payload["correct_answer"], cached["correct_answer"])
             store.close()
 
-    def test_autofill_generates_mcq_first_card_without_long_answer(self) -> None:
+    def test_autofill_uses_correct_mcq_choice_as_short_flashcard_answer(self) -> None:
         payload = generate_card_payload(
             question="What process lets plants make food?",
             ollama=FakeOllama(),
             model="gemma3:4b",
         )
-        self.assertEqual("", payload["answer"])
+        self.assertEqual("Photosynthesis", payload["answer"])
         self.assertEqual(["Photosynthesis", "Respiration", "Transpiration", "Fermentation"], payload["mcq_answers"])
+
+    def test_autofill_does_not_cache_placeholder_mcq_answers(self) -> None:
+        payload = generate_card_payload(
+            question="What process lets plants make food?",
+            ollama=FakePlaceholderAutofillOllama(),
+            model="gemma3:4b",
+        )
+        self.assertEqual("", payload["answer"])
+        self.assertEqual([], payload["mcq_answers"])
 
     def test_mcq_attempts_share_normal_attempt_pool_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

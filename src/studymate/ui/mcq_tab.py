@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import textwrap
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPropertyAnimation, Qt, QEasingCurve
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QTextBrowser, QVBoxLayout, QWidget
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
@@ -25,6 +26,7 @@ class MCQTab(StudyTab):
     ) -> None:
         self.mcq_worker: MCQWorker | None = None
         self.mcq_background_worker: MCQBulkWorker | None = None
+        self._shadow_animations: list[QPropertyAnimation] = []
         super().__init__(datastore, ollama, icons, preflight)
 
     def _build_study_view(self) -> QWidget:
@@ -41,9 +43,9 @@ class MCQTab(StudyTab):
                 border: 1px solid rgba(166, 182, 198, 0.58);
                 border-radius: 8px;
                 padding: 18px;
-                color: #132232;
+                color: #3d4f5f;
                 font-size: 16px;
-                font-weight: 800;
+                font-weight: 500;
                 text-align: left;
             }
             QPushButton#MCQChoiceButton:hover {
@@ -68,12 +70,12 @@ class MCQTab(StudyTab):
                 background: transparent;
             }
             QPushButton#MCQChoiceButton[result="skeleton"] {
-                background-color: #f2f5f8;
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8ecf1, stop:0.5 #f5f7fa, stop:1 #e8ecf1);
                 border-color: #dfe6ee;
                 color: transparent;
             }
             QPushButton#MCQChoiceButton[result="skeleton"]:hover {
-                background-color: #f2f5f8;
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8ecf1, stop:0.5 #f5f7fa, stop:1 #e8ecf1);
                 border-color: #dfe6ee;
             }
             """
@@ -106,20 +108,31 @@ class MCQTab(StudyTab):
         self.choice_host.setObjectName("MCQChoiceHost")
         self.choice_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.choice_grid = QGridLayout(self.choice_host)
-        self.choice_grid.setContentsMargins(0, 0, 0, 0)
-        self.choice_grid.setHorizontalSpacing(14)
-        self.choice_grid.setVerticalSpacing(14)
+        self.choice_grid.setContentsMargins(16, 16, 16, 16)
+        self.choice_grid.setHorizontalSpacing(18)
+        self.choice_grid.setVerticalSpacing(18)
         self.choice_buttons: list[AnimatedButton] = []
+        self._choice_shadows: list[QGraphicsDropShadowEffect] = []
         for index in range(4):
             button = AnimatedButton("")
             button.setObjectName("MCQChoiceButton")
             button.setMinimumHeight(96)
             button.setProperty("result", "")
-            button.setProperty("skipClickSfx", True)
-            button.setProperty("disablePressMotion", True)
-            button.set_motion_scale_range(0.0)
+            button.setProperty("disablePressMotion", False)
+            button.set_motion_scale_range(0.015)
+            button.set_motion_hover_grow(0, 0)
             button.set_motion_lift(0.0)
-            button.set_motion_press_scale(0.0)
+            button.set_motion_press_scale(0.04)
+
+            shadow = QGraphicsDropShadowEffect(button)
+            shadow.setBlurRadius(0)
+            shadow.setXOffset(0)
+            shadow.setYOffset(0)
+            shadow.setColor(QColor(0, 0, 0, 0))
+            button.setGraphicsEffect(shadow)
+            self._choice_shadows.append(shadow)
+
+            button.installEventFilter(self)
             button.clicked.connect(lambda _checked=False, idx=index: self._select_choice(idx))
             self.choice_buttons.append(button)
             self.choice_grid.addWidget(button, index // 2, index % 2)
@@ -196,16 +209,12 @@ class MCQTab(StudyTab):
         super()._switch_mode(index)
         if index == 1:
             self._layout_choice_buttons()
-            self._fill_missing_mcqs_in_background()
 
     def activate_view(self) -> None:
         super().activate_view()
-        self._fill_missing_mcqs_in_background()
 
     def _run_post_reload_tasks(self, generation: int) -> None:
         super()._run_post_reload_tasks(generation)
-        if generation == self._post_reload_generation and not self.cards_dirty:
-            self._fill_missing_mcqs_in_background()
 
     def _fill_missing_mcqs_in_background(self) -> None:
         if self.mcq_background_worker is not None and self.mcq_background_worker.isRunning():
@@ -222,12 +231,14 @@ class MCQTab(StudyTab):
                 missing.append(card)
         if not missing:
             return
+        mcq_difficulty = self._mcq_difficulty()
         worker = MCQBulkWorker(
             cards=missing,
             datastore=self.datastore,
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            difficulty=mcq_difficulty,
         )
         self.mcq_background_worker = worker
         worker.finished.connect(lambda *_args, current=worker: self._on_background_mcqs_finished(current))
@@ -236,9 +247,77 @@ class MCQTab(StudyTab):
         worker.failed.connect(worker.deleteLater)
         worker.start()
 
+    def _mcq_difficulty(self) -> str:
+        setup = self.datastore.load_setup()
+        mcq_setup = dict(setup.get("mcq", {}))
+        return str(mcq_setup.get("difficulty", "slightly_harder")).strip() or "slightly_harder"
+
     def _on_background_mcqs_finished(self, worker: MCQBulkWorker) -> None:
         if self.mcq_background_worker is worker:
             self.mcq_background_worker = None
+
+    def eventFilter(self, obj, event) -> bool:
+        if hasattr(self, "choice_buttons") and obj in self.choice_buttons:
+            if event.type() == QEvent.Type.Enter:
+                self._animate_choice_shadow(obj, True)
+            elif event.type() == QEvent.Type.Leave:
+                self._animate_choice_shadow(obj, False)
+        return super().eventFilter(obj, event)
+
+    def _animate_choice_shadow(self, button, hovered: bool) -> None:
+        if not button or not button.graphicsEffect():
+            return
+        shadow = button.graphicsEffect()
+        if not isinstance(shadow, QGraphicsDropShadowEffect):
+            return
+        
+        target_blur = 28 if hovered else 0
+        target_opacity = 0.35 if hovered else 0.0
+        target_x = 0
+        target_y = 8 if hovered else 0
+        
+        blur_animation = QPropertyAnimation(shadow, b"blurRadius")
+        blur_animation.setDuration(220)
+        blur_animation.setStartValue(shadow.blurRadius())
+        blur_animation.setEndValue(target_blur)
+        blur_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        blur_animation.start()
+        self._shadow_animations = getattr(self, '_shadow_animations', [])
+        self._shadow_animations.append(blur_animation)
+        blur_animation.finished.connect(lambda: self._cleanup_shadow_animation(blur_animation))
+        
+        opacity_animation = QPropertyAnimation(shadow, b"color")
+        opacity_animation.setDuration(220)
+        start_color = shadow.color()
+        end_color = QColor(0, 0, 0, int(255 * target_opacity))
+        opacity_animation.setStartValue(start_color)
+        opacity_animation.setEndValue(end_color)
+        opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        opacity_animation.start()
+        self._shadow_animations.append(opacity_animation)
+        opacity_animation.finished.connect(lambda: self._cleanup_shadow_animation(opacity_animation))
+        
+        x_animation = QPropertyAnimation(shadow, b"xOffset")
+        x_animation.setDuration(220)
+        x_animation.setStartValue(shadow.xOffset())
+        x_animation.setEndValue(target_x)
+        x_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        x_animation.start()
+        self._shadow_animations.append(x_animation)
+        x_animation.finished.connect(lambda: self._cleanup_shadow_animation(x_animation))
+        
+        y_animation = QPropertyAnimation(shadow, b"yOffset")
+        y_animation.setDuration(220)
+        y_animation.setStartValue(shadow.yOffset())
+        y_animation.setEndValue(target_y)
+        y_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        y_animation.start()
+        self._shadow_animations.append(y_animation)
+        y_animation.finished.connect(lambda: self._cleanup_shadow_animation(y_animation))
+
+    def _cleanup_shadow_animation(self, animation):
+        if hasattr(self, '_shadow_animations') and animation in self._shadow_animations:
+            self._shadow_animations.remove(animation)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -370,6 +449,7 @@ class MCQTab(StudyTab):
                 cached = None
         if cached is not None:
             entry["mcq_payload"] = cached
+            self._apply_mcq_payload_to_card_answer(entry, cached)
             self._render_mcq_entry(entry)
             return
         model_spec = self._active_text_llm_spec()
@@ -381,6 +461,7 @@ class MCQTab(StudyTab):
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            difficulty=self._mcq_difficulty(),
         )
         self.mcq_worker = worker
         worker.status.connect(self.mcq_result.setText)
@@ -391,16 +472,19 @@ class MCQTab(StudyTab):
         worker.start()
 
     def _on_mcq_ready(self, entry_index: int, payload: dict) -> None:
+        self._stop_skeleton_animation()
         self.mcq_worker = None
         entry = self._history_entry(entry_index)
         if entry is None:
             return
         entry["mcq_payload"] = payload
         save_mcq_payload(self.datastore, entry["card"], payload)
+        self._apply_mcq_payload_to_card_answer(entry, payload)
         if entry_index == self.current_history_index:
             self._render_mcq_entry(entry)
 
     def _on_mcq_failed(self, message: str) -> None:
+        self._stop_skeleton_animation()
         self.mcq_worker = None
         self.mcq_result.setText(f"MCQ generation failed: {message}")
         for button in self.choice_buttons:
@@ -415,6 +499,27 @@ class MCQTab(StudyTab):
             button.setText("")
             button.setEnabled(False)
             self._set_choice_result(button, "skeleton")
+        self._start_skeleton_animation()
+
+    def _start_skeleton_animation(self) -> None:
+        self._stop_skeleton_animation()
+        from PySide6.QtCore import QTimer
+        self._skeleton_timer = QTimer(self)
+        self._skeleton_timer.setInterval(600)
+        self._skeleton_timer.timeout.connect(self._on_skeleton_timer_tick)
+        self._skeleton_timer.start()
+
+    def _stop_skeleton_animation(self) -> None:
+        if hasattr(self, '_skeleton_timer') and self._skeleton_timer is not None:
+            self._skeleton_timer.stop()
+            self._skeleton_timer = None
+
+    def _on_skeleton_timer_tick(self) -> None:
+        for button in self.choice_buttons:
+            if button.property("result") == "skeleton":
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
 
     def _render_mcq_entry(self, entry: dict) -> None:
         payload = entry.get("mcq_payload") or {}
@@ -422,9 +527,10 @@ class MCQTab(StudyTab):
         selected_index = int(entry.get("selected_index", -1))
         self.mcq_result.setText("")
         self._apply_choice_heights(list(choices))
+        can_answer = not entry.get("attempt_logged") and self.mcq_worker is None
         for index, button in enumerate(self.choice_buttons):
             button.setText(self._wrapped_choice_text(str(choices[index])) if index < len(choices) else "")
-            button.setEnabled(selected_index < 0 and index < len(choices) and self.mcq_worker is None)
+            button.setEnabled(can_answer and index < len(choices))
             result = ""
             if selected_index >= 0:
                 correct_index = int(payload.get("correct_index", -1))
@@ -453,6 +559,9 @@ class MCQTab(StudyTab):
         entry = self._current_history_entry()
         if entry is None or entry.get("attempt_logged") or not entry.get("mcq_payload"):
             return
+        is_latest = self.current_history_index == len(self.session_history) - 1
+        if not is_latest:
+            return
         payload = entry["mcq_payload"]
         choices = list(payload.get("choices", []))
         correct_index = int(payload.get("correct_index", -1))
@@ -480,10 +589,10 @@ class MCQTab(StudyTab):
         entry = self._current_history_entry()
         is_latest = self.current_history_index == len(self.session_history) - 1
         pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
-        can_choose = bool(entry) and is_latest and not pending_current and not entry.get("attempt_logged") and self.mcq_worker is None
+        can_choose = bool(entry) and not pending_current and not entry.get("attempt_logged") and self.mcq_worker is None
         self.prev_card_btn.setEnabled(self.current_history_index > 0)
         self.next_btn.setEnabled(bool(entry and entry.get("attempt_logged")) and self.mcq_worker is None)
-        self.skip_btn.setEnabled(can_choose)
+        self.skip_btn.setEnabled(can_choose and is_latest)
         self._set_hint_button_state(allow_editing=bool(entry) and self.mcq_worker is None)
         payload = entry.get("mcq_payload") if entry else None
         for button in self.choice_buttons:

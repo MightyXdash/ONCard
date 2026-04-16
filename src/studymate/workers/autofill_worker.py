@@ -42,12 +42,7 @@ def generate_card_payload(
             ],
             "search_terms": _default_search_terms(question),
             "answer": "",
-            "mcq_answers": [
-                "Core concept",
-                "Similar concept",
-                "Related detail",
-                "Nearby topic",
-            ],
+            "mcq_answers": [],
             "natural_difficulty": 5,
             "response_to_user": response_to_user,
         }
@@ -82,12 +77,12 @@ def generate_card_payload(
     override_lines.append("If the best title is longer, shorten it to a meaningful 2 to 6 word title.")
     override_lines.append(
         "mcq_answers must contain exactly 4 strings. mcq_answers[0] is correct. "
-        "mcq_answers[1], [2], and [3] are wrong but VERY tricky near-miss misconceptions. "
-        "All four choices must answer the exact same question in the same grammatical slot and be semantically close. "
-        "They must be similar in topic family, wording style, specificity, and length so a half-prepared student cannot eliminate them by vibe. "
-        "Give every answer choice the same amount of detail; if one uses a qualifier, mechanism, condition, example, or specific detail, all four should use comparable detail. "
+        "mcq_answers[1], [2], and [3] are wrong but tricky near-miss misconceptions. "
+        "All four choices should answer the same question in a similar grammatical slot and be semantically close. "
+        "They should be similar in topic family, wording style, specificity, and length so a half-prepared student cannot eliminate them by vibe. "
+        "Give every answer choice a comparable amount of detail; if one uses a qualifier, mechanism, condition, example, or specific detail, all four should use comparable detail. "
         "You may add extra specifics to wrong choices when that makes them harder, but do not let any option stand out by being much simpler or much more detailed. "
-        "Never use unrelated categories, broad mismatches, historical jokes, literal misreadings, or fake/easy distractors like medieval origin, coding algorithm, or strict formula. "
+        "Avoid unrelated categories, broad mismatches, historical jokes, literal misreadings, or fake/easy distractors like medieval origin, coding algorithm, or strict formula. "
         "Aim for 1 to 7 words per MCQ answer. Do not generate a separate long answer."
     )
     user_prompt = f"{profile_text}Question: {question}\n" + "\n".join(override_lines)
@@ -110,9 +105,8 @@ def generate_card_payload(
     try:
         payload["mcq_answers"] = normalize_mcq_answers(payload.get("mcq_answers", []))
     except ValueError:
-        fallback_payload = fallback()
-        payload["mcq_answers"] = fallback_payload["mcq_answers"]
-    payload["answer"] = ""
+        payload["mcq_answers"] = []
+    payload["answer"] = payload["mcq_answers"][0] if payload["mcq_answers"] else ""
     payload["response_to_user"] = cleanup_plain_text(str(payload.get("response_to_user", response_to_user)))
     payload["natural_difficulty"] = int(payload.get("natural_difficulty", 5))
     hints = payload.get("hints", [])

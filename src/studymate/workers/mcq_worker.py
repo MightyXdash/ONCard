@@ -26,11 +26,20 @@ OBVIOUS_EASY_DISTRACTORS = {
     "a coding algorithm for ai",
     "a rule from medieval times",
     "a strict mathematical formula",
+    "core concept",
+    "exam clue",
+    "key idea",
+    "nearby topic",
+    "related detail",
     "random guess",
+    "similar concept",
+    "study review",
+    "topic meaning",
     "unrelated concept",
 }
 
 MCQ_GENERATION_ATTEMPTS = 3
+MCQ_GENERATION_TIMEOUT_SECONDS = 45
 
 
 def question_hash(question: str) -> str:
@@ -58,8 +67,8 @@ def normalize_mcq_answers(raw_answers: object) -> list[str]:
         if lowered in THROWAWAY_ANSWERS or lowered in OBVIOUS_EASY_DISTRACTORS:
             raise ValueError("MCQ answers cannot use throwaway or obviously easy choices.")
         words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", answer)
-        if not (1 <= len(words) <= 15):
-            raise ValueError("MCQ answers must be 1-15 words.")
+        if not (1 <= len(words) <= 40):
+            raise ValueError("MCQ answers must be 1-40 words.")
         if normalized in seen:
             raise ValueError("MCQ answers must be unique.")
         seen.add(normalized)
@@ -67,29 +76,80 @@ def normalize_mcq_answers(raw_answers: object) -> list[str]:
     if len(answers) != 4:
         raise ValueError("MCQ responses must include exactly 4 answers.")
     lengths = [len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", answer)) for answer in answers]
-    if max(lengths) - min(lengths) > 8:
+    if max(lengths) - min(lengths) > 20:
         raise ValueError("MCQ answers should have similar length.")
     char_lengths = [len(answer) for answer in answers]
-    if min(char_lengths) > 0 and max(char_lengths) / min(char_lengths) > 2.35:
+    if min(char_lengths) > 0 and max(char_lengths) / min(char_lengths) > 5.0:
         raise ValueError("MCQ answers should look similar in length and specificity.")
     return answers
 
 
-def _mcq_system_prompt(profile_context: dict | None) -> str:
-    return with_oncard_context(
-        (
-            "Return only strict JSON matching schema. "
-            "Create a very tricky multiple-choice answer set for a study card. "
+def _mcq_system_prompt(profile_context: dict | None, difficulty: str = "slightly_harder") -> str:
+    difficulty_instructions = {
+        "easier": (
+            "Create a straightforward multiple-choice answer set for a study card. "
             "The first answer must be the correct answer. The second, third, and fourth answers must be wrong. "
-            "The wrong answers must be near-miss misconceptions that answer the exact same question in the same grammatical slot. "
-            "All four choices must be semantically close, from the same topic family, and similar in wording, specificity, and length. "
-            "Give every answer choice the same amount of detail. "
-            "If one choice uses a qualifier, condition, mechanism, example, or specific detail, the other three choices must include comparable details too. "
-            "Wrong choices may include extra specifics when that makes them more confusable, but never make only one option visibly more detailed. "
-            "A student who only half understands the card should find all four choices believable. "
-            "Never use broad category mismatches, historical jokes, literal misreadings, unrelated fields, obviously fake distractors, or options that can be eliminated by style or length. "
-            "Aim for 1 to 7 words per answer."
+            "The wrong answers should be clearly incorrect but related to the topic. "
+            "Keep all four choices from the same topic family, but distractors can be obviously wrong. "
+            "Make distractors shorter and simpler, with less detail than the correct answer. "
+            "A student who only half understands the card should easily identify the correct answer. "
+            "Avoid tricky wording or near-miss misconceptions. "
+            "Aim for 1 to 5 words per answer."
         ),
+        "standard": (
+            "Return only strict JSON matching schema. "
+            "Create a standard multiple-choice answer set for a study card. "
+            "The first answer must be the correct answer. The second, third, and fourth answers must be wrong. "
+            "The wrong answers should be plausible misconceptions that answer the same question in a similar grammatical slot. "
+            "Keep all four choices semantically close, from the same topic family, and reasonably similar in wording, specificity, and length. "
+            "Give every answer choice a comparable amount of detail. "
+            "A student who only half understands the card should find all four choices believable. "
+            "Avoid broad category mismatches, historical jokes, literal misreadings, unrelated fields, or obviously fake distractors. "
+            "Aim for 1 to 6 words per answer."
+        ),
+        "slightly_harder": (
+            "Return only strict JSON matching schema. "
+            "Create a tricky multiple-choice answer set for a study card. "
+            "The first answer must be the correct answer. The second, third, and fourth answers must be wrong. "
+            "The wrong answers should be near-miss misconceptions that answer the same question in a similar grammatical slot. "
+            "Keep all four choices semantically close, from the same topic family, and reasonably similar in wording, specificity, and length. "
+            "Give every answer choice a comparable amount of detail. "
+            "If one choice uses a qualifier, condition, mechanism, example, or specific detail, the other three should include comparable details too. "
+            "Wrong choices may include extra specifics when that makes them more confusable, but avoid making only one option visibly more detailed. "
+            "A student who only half understands the card should find all four choices believable. "
+            "Avoid broad category mismatches, historical jokes, literal misreadings, unrelated fields, obviously fake distractors, or options that can be eliminated by style or length. "
+            "Aim for 1 to 8 words per answer."
+        ),
+        "harder": (
+            "Return only strict JSON matching schema. "
+            "Create a challenging multiple-choice answer set for a study card. "
+            "The first answer must be the correct answer. The second, third, and fourth answers must be wrong. "
+            "The wrong answers should be sophisticated near-miss misconceptions with subtle distinctions from the correct answer. "
+            "Keep all four choices highly semantically close, from the same topic family, and nearly identical in wording, specificity, and length. "
+            "Use advanced terminology and nuanced distinctions that require deep understanding to differentiate. "
+            "Give every answer choice a comparable amount of technical detail and precision. "
+            "Wrong choices should represent common expert-level misconceptions or subtle misapplications of concepts. "
+            "A student with superficial understanding should find all four choices nearly indistinguishable. "
+            "Avoid obvious eliminations, broad mismatches, or options that differ only in minor wording. "
+            "Aim for 2 to 10 words per answer."
+        ),
+        "much_harder": (
+            "Return only strict JSON matching schema. "
+            "Create an expert-level multiple-choice answer set for a study card. "
+            "The first answer must be the correct answer. The second, third, and fourth answers must be wrong. "
+            "The wrong answers should represent expert-level misconceptions, edge cases, or boundary conditions that even advanced students struggle with. "
+            "Keep all four choices extremely semantically close, from the same topic family, and virtually identical in wording, specificity, and technical depth. "
+            "Use precise terminology, edge-case scenarios, and subtle logical distinctions that require mastery to differentiate. "
+            "Every answer choice must demonstrate comparable technical sophistication and nuanced reasoning. "
+            "Wrong choices should represent misconceptions that arise from partial mastery of advanced material or overgeneralization of principles. "
+            "A student without deep understanding should find all four choices essentially equivalent. "
+            "Avoid any option that can be eliminated through surface-level analysis, style differences, or length cues. "
+            "Aim for 3 to 12 words per answer."
+        ),
+    }
+    instruction = difficulty_instructions.get(difficulty, difficulty_instructions["slightly_harder"])
+    return with_oncard_context(
+        f"Return only strict JSON matching schema. {instruction}",
         feature="MCQ generation",
         profile_context=profile_context or {},
     )
@@ -107,14 +167,14 @@ def _mcq_user_prompt(card: dict, profile_context: dict | None) -> str:
         f"Question:\n{card.get('question', '')}\n\n"
         "Return JSON only with an answers array of exactly 4 strings. "
         "answers[0] must be the correct answer. "
-        "answers[1], answers[2], and answers[3] must be wrong but VERY close to answers[0]. "
-        "Make the distractors confusable alternatives, not different meanings or unrelated categories. "
-        "If the correct answer is a definition, all choices must be competing definitions of the same term. "
-        "If the correct answer is a term, all choices must be same-type terms from the same lesson. "
+        "answers[1], answers[2], and answers[3] must be wrong but close to answers[0]. "
+        "Make the distractors confusable alternatives, not totally different meanings or unrelated categories. "
+        "If the correct answer is a definition, prefer competing definitions of the same term. "
+        "If the correct answer is a term, prefer same-type terms from the same lesson. "
         "Use the same level of detail in all four answers. "
-        "You may add specific qualifiers or extra details to the wrong choices when it makes them harder, but add comparable detail to every choice so none stands out. "
-        "Keep answers concise and aim for 1 to 7 words each. "
-        "Do not include easy eliminations such as medieval origin, coding algorithm, strict formula, joke options, or broad unrelated labels unless they are truly the same-type near miss."
+        "You may add specific qualifiers or extra details to the wrong choices when it makes them harder, but keep the detail level comparable so none stands out. "
+        "Keep answers concise and aim for 1 to 8 words each. "
+        "Avoid easy eliminations such as medieval origin, coding algorithm, strict formula, joke options, or broad unrelated labels unless they are truly a same-type near miss."
     )
 
 
@@ -173,12 +233,14 @@ class MCQWorker(QThread):
         ollama: OllamaService,
         model: str,
         profile_context: dict | None = None,
+        difficulty: str = "slightly_harder",
     ) -> None:
         super().__init__()
         self.card = dict(card)
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.difficulty = difficulty
 
     def run(self) -> None:
         question = str(self.card.get("question", "")).strip()
@@ -191,6 +253,7 @@ class MCQWorker(QThread):
                 ollama=self.ollama,
                 model=self.model,
                 profile_context=self.profile_context,
+                difficulty=self.difficulty,
                 status_callback=self.status.emit,
             )
         except (OllamaError, ValueError) as exc:
@@ -213,6 +276,7 @@ class MCQBulkWorker(QThread):
         ollama: OllamaService,
         model: str,
         profile_context: dict | None = None,
+        difficulty: str = "slightly_harder",
     ) -> None:
         super().__init__()
         self.cards = list(cards)
@@ -220,6 +284,17 @@ class MCQBulkWorker(QThread):
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.difficulty = difficulty
+
+    def _save_generated_card_answer(self, card: dict, payload: dict) -> None:
+        correct_answer = cleanup_plain_text(str(payload.get("correct_answer", ""))).strip()
+        if not correct_answer:
+            return
+        updated = dict(card)
+        updated["answer"] = correct_answer
+        if payload.get("answers"):
+            updated["mcq_answers"] = list(payload.get("answers", []))
+        self.datastore.save_card(updated)
 
     def run(self) -> None:
         generated = 0
@@ -238,6 +313,7 @@ class MCQBulkWorker(QThread):
                 if card.get("mcq_answers"):
                     payload = build_mcq_payload(card, list(card.get("mcq_answers", [])), self.model)
                     save_mcq_payload(self.datastore, card, payload)
+                    self._save_generated_card_answer(card, payload)
                     generated += 1
                     self.generated.emit(str(card.get("id", "")), payload)
                     self.progress.emit(index, total, generated, failed)
@@ -247,8 +323,10 @@ class MCQBulkWorker(QThread):
                     ollama=self.ollama,
                     model=self.model,
                     profile_context=self.profile_context,
+                    difficulty=self.difficulty,
                 )
                 save_mcq_payload(self.datastore, card, payload)
+                self._save_generated_card_answer(card, payload)
                 generated += 1
                 self.generated.emit(str(card.get("id", "")), payload)
             except Exception:
@@ -263,6 +341,7 @@ def generate_mcq_payload(
     ollama: OllamaService,
     model: str,
     profile_context: dict | None = None,
+    difficulty: str = "slightly_harder",
 ) -> dict:
     question = str(card.get("question", "")).strip()
     if not question:
@@ -273,6 +352,7 @@ def generate_mcq_payload(
         ollama=ollama,
         model=model,
         profile_context=profile_context,
+        difficulty=difficulty,
     )
 
 
@@ -282,10 +362,11 @@ def _generate_mcq_payload_with_retries(
     ollama: OllamaService,
     model: str,
     profile_context: dict | None = None,
+    difficulty: str = "slightly_harder",
     status_callback=None,
 ) -> dict:
     profile_context = profile_context or {}
-    system_prompt = _mcq_system_prompt(profile_context)
+    system_prompt = _mcq_system_prompt(profile_context, difficulty)
     base_user_prompt = _mcq_user_prompt(card, profile_context)
     last_error: Exception | None = None
     for attempt in range(1, MCQ_GENERATION_ATTEMPTS + 1):
@@ -299,7 +380,7 @@ def _generate_mcq_payload_with_retries(
             retry_note = (
                 "\n\nThe previous answer set was rejected because: "
                 f"{last_error}. "
-                "Return a stricter set where every wrong option is a close same-topic misconception and every option has the same level of detail."
+                "Return a cleaner set where every wrong option is a plausible same-topic misconception and every option has a comparable level of detail."
             )
         try:
             response = ollama.structured_chat(
@@ -308,6 +389,7 @@ def _generate_mcq_payload_with_retries(
                 user_prompt=base_user_prompt + retry_note,
                 schema=MCQ_RESPONSE_SCHEMA,
                 temperature=min(0.45, 0.2 + (0.1 * attempt)),
+                timeout=MCQ_GENERATION_TIMEOUT_SECONDS,
             )
             return build_mcq_payload(card, normalize_mcq_answers(response.get("answers", [])), model)
         except (OllamaError, ValueError) as exc:

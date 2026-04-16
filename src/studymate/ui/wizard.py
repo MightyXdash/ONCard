@@ -1055,22 +1055,22 @@ class ProfilePage(OnboardingPage):
         self._allow_import_removal = True
         self._show_inline_import_control = True
         self._profile_name_auto_sync = True
-        self._banner.banner_height = 300
+        self._banner.banner_height = 240
         self._banner.banner_width = int(self._banner.banner_height * (16 / 9))
-        self._banner.radius = 30
+        self._banner.radius = 28
         self._banner.setFixedSize(self._banner.banner_width, self._banner.banner_height)
         self._banner.update()
         root_layout = self.layout()
         if root_layout is not None:
             root_layout.setSpacing(8)
-        self.body_layout().setContentsMargins(0, 22, 0, 0)
+        self.body_layout().setContentsMargins(0, 12, 0, 0)
 
         surface = QFrame()
         surface.setObjectName("Surface")
         polish_surface(surface)
         surface_layout = QVBoxLayout(surface)
-        surface_layout.setContentsMargins(18, 28, 18, 6)
-        surface_layout.setSpacing(0)
+        surface_layout.setContentsMargins(18, 18, 18, 12)
+        surface_layout.setSpacing(8)
 
         grid_host = QWidget()
         grid_host.setStyleSheet("background: transparent;")
@@ -1152,8 +1152,8 @@ class ProfilePage(OnboardingPage):
             self.gender_combo,
             self.hobbies_edit,
         ):
-            control.setFixedHeight(56)
-        self.gender_custom_edit.setFixedHeight(56)
+            control.setFixedHeight(48)
+        self.gender_custom_edit.setFixedHeight(48)
 
         grid.addWidget(FieldBlock("", self.name_edit), 0, 0)
         grid.addWidget(FieldBlock("", self.profile_name_edit), 0, 1)
@@ -1165,19 +1165,18 @@ class ProfilePage(OnboardingPage):
         attention_shell = QWidget()
         attention_shell.setStyleSheet("background: transparent;")
         attention_layout = QVBoxLayout(attention_shell)
-        attention_layout.setContentsMargins(0, 12, 0, 10)
-        attention_layout.setSpacing(6)
+        attention_layout.setContentsMargins(0, 6, 0, 2)
+        attention_layout.setSpacing(4)
         attention_layout.addWidget(self.attention_value, 0, Qt.AlignTop)
         attention_layout.addWidget(self.attention_slider, 0, Qt.AlignTop)
-        attention_layout.addStretch(1)
-        attention_shell.setFixedHeight(90)
+        attention_shell.setFixedHeight(64)
         attention_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         grid.addWidget(attention_shell, 3, 0, 1, 2)
 
         surface_layout.addWidget(grid_host, 0, Qt.AlignTop)
 
         controls = QHBoxLayout()
-        controls.setContentsMargins(0, 2, 0, 0)
+        controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(8)
         self.import_handshake_btn = FadingIconButton(
             icon_path=(banners_root.parent / "icons" / "common" / "handshake.png"),
@@ -1199,7 +1198,7 @@ class ProfilePage(OnboardingPage):
         self._refresh_grade_visual_state()
         self._refresh_gender_visual_state()
 
-        self.body_layout().addWidget(surface, 1)
+        self.body_layout().addWidget(surface, 0)
 
     def _on_attention_changed(self, value: int) -> None:
         if value != self._last_attention_value and self.sounds is not None:
@@ -1554,16 +1553,16 @@ class ModelInstallerPage(OnboardingPage):
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(260)
-        self.log.setMaximumHeight(360)
-        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.log.setFixedHeight(210)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.log.setPlaceholderText("")
 
         layout.addWidget(self.size_label)
         layout.addWidget(self.ollama_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.install_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.log, 1)
+        layout.addWidget(self.log, 0)
 
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
@@ -1752,14 +1751,14 @@ class PerformancePage(OnboardingPage):
         )
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(260)
-        self.log.setMaximumHeight(360)
-        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.log.setFixedHeight(210)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.log.setPlaceholderText("")
 
         layout.addWidget(self.run_button, 0, Qt.AlignHCenter)
         layout.addWidget(self.progress)
-        layout.addWidget(self.log, 1)
+        layout.addWidget(self.log, 0)
         self.body_layout().addWidget(surface)
         self.body_layout().addStretch(1)
 
@@ -1938,7 +1937,7 @@ class OnboardingWizard(QDialog):
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, False)
         self.setWindowFlag(Qt.MSWindowsFixedSizeDialogHint, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(1040, 760)
+        self.setFixedSize(1040, 820)
         self.setStyleSheet(
             """
             QFrame#OnboardingWindowShell {
@@ -1954,18 +1953,12 @@ class OnboardingWizard(QDialog):
         )
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(34, 30, 34, 34)
+        root.setContentsMargins(34, 30, 34, 92)
         root.setSpacing(0)
 
         shell_surface = QFrame(self)
         shell_surface.setObjectName("OnboardingWindowShell")
         polish_surface(shell_surface)
-        shell_shadow = QGraphicsDropShadowEffect(shell_surface)
-        shell_shadow.setBlurRadius(84)
-        shell_shadow.setOffset(0, 22)
-        shell_shadow.setColor(QColor(17, 35, 57, 96))
-        shell_surface.setGraphicsEffect(shell_shadow)
-        self._shell_shadow_effect = shell_shadow
         root.addWidget(shell_surface, 1)
 
         shell = QVBoxLayout(shell_surface)

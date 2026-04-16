@@ -38,6 +38,12 @@ class GradeWorker(QThread):
         self.profile_context = profile_context or {}
         self.stream_preview = stream_preview
 
+    def _expected_answer_block(self) -> str:
+        expected = self.expected_answer.strip()
+        if expected:
+            return f"Expected answer:\n{expected}\n\n"
+        return "Expected answer: not stored. Grade from the question, subject knowledge, and the student's answer.\n\n"
+
     @staticmethod
     def _is_inappropriate_or_garbage(text: str) -> bool:
         lowered = " ".join(text.lower().split())
@@ -117,7 +123,7 @@ class GradeWorker(QThread):
                 f"Student age: {self.profile_context.get('age', '')}\n"
                 f"Student grade: {self.profile_context.get('grade', '')}\n\n"
                 f"Question:\n{self.question}\n\n"
-                f"Expected answer:\n{self.expected_answer}\n\n"
+                f"{self._expected_answer_block()}"
                 f"Student answer:\n{self.user_answer}\n\n"
                 "Give quick feedback with sections: What is right, What is wrong, Next step. "
                 "Do not include any numeric score in this streaming feedback."
@@ -141,7 +147,7 @@ class GradeWorker(QThread):
             (
                 "Return only strict JSON matching schema. "
                 "You are a strict but fair teacher speaking directly to the student. "
-                "Score the answer based on the expected answer, age, and grade level. "
+                "Score the answer based on the expected answer when it is provided; otherwise infer the expected answer from the question and grade using subject knowledge, age, and grade level. "
                 "Small grammar mistakes are okay, but factual mistakes, off-topic content, spam, gibberish, abusive language, slurs, or non-answers must be graded harshly. "
                 "If the answer is inappropriate, hateful, abusive, random garbage, or does not attempt the question, marks_out_of_10 must be between 0 and 2 and state must be wrong. "
                 "If the core meaning is clearly correct for the student's level, award 10/10 even if wording is simple. "
@@ -162,7 +168,7 @@ class GradeWorker(QThread):
             f"Student age: {self.profile_context.get('age', '')}\n"
             f"Student grade: {self.profile_context.get('grade', '')}\n\n"
             f"Question:\n{self.question}\n\n"
-            f"Expected answer:\n{self.expected_answer}\n\n"
+            f"{self._expected_answer_block()}"
             f"Student answer:\n{self.user_answer}\n\n"
             f"Question difficulty: {self.difficulty}\n"
             "When difficulty is below 5, set what_to_improve to an empty string."
