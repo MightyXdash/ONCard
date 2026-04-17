@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from PySide6.QtCore import QEvent, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRect, QSize, Qt, QEasingCurve, QUrl, QTimer, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QMouseEvent, QPainter, QPainterPath, QPixmap, QShowEvent
 from PySide6.QtWidgets import (
@@ -586,6 +588,29 @@ class NotificationsMenu(QWidget):
 
 
 class MainWindow(QMainWindow):
+    AUDIO_TEST_MESSAGES = (
+        "I got rick rolled.",
+        "So... you are testing me...",
+        "I LOVE BEING TESTING.",
+        "To the glory...",
+        "This toast has achieved lift-off.",
+        "Your ears have entered the chat.",
+        "Beep responsibly.",
+        "I am definitely not a microwave.",
+        "Professional toast reporting for duty.",
+        "This is only a drill, probably.",
+        "Tiny sound, enormous confidence.",
+        "The button has been perceived.",
+        "One ping to rule them all.",
+        "Certified ding moment.",
+        "I came. I saw. I toasted.",
+        "Sound check: emotionally available.",
+        "This notification believes in you.",
+        "The toast council approves.",
+        "Do not feed after midnight.",
+        "Another test? Bold. I respect it.",
+    )
+
     def __init__(
         self,
         paths,
@@ -603,6 +628,7 @@ class MainWindow(QMainWindow):
         self.preflight = preflight
         self.session_controller = session_controller
         self.sounds = UiSoundBank(self.paths.assets / "sfx")
+        self.sounds.configure(self.datastore.load_setup())
         self._click_sfx_filter = ClickSoundFilter(self.sounds, self)
         self._app_menu = AppIconMenu(self)
         self._profile_menu = UserProfileMenu(self)
@@ -993,6 +1019,7 @@ class MainWindow(QMainWindow):
         )
         result = dialog.exec()
         if result:
+            self.sounds.configure(self.datastore.load_setup())
             self.create_tab.refresh_ftc_defaults()
             self.mcq_tab.activate_view()
 
@@ -1056,11 +1083,13 @@ class MainWindow(QMainWindow):
         self._tray_icon.show()
 
     def _notify_ftc_completed(self, subject: str) -> None:
-        enabled = bool(self.datastore.load_setup().get("notifications", {}).get("enabled", False))
+        setup = self.datastore.load_setup()
+        enabled = bool(setup.get("notifications", {}).get("enabled", False))
         if not enabled:
             return
         message_subject = str(subject).strip() or "study"
         message_text = f"We have completed making your {message_subject} slides"
+        notification_sound = str(setup.get("audio", {}).get("notification_sound", "windows")).strip().lower()
         if self._tray_icon is not None and self._tray_icon.isVisible():
             self._tray_icon.showMessage(
                 "ONCard - FTC",
@@ -1068,7 +1097,23 @@ class MainWindow(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Information,
                 6000,
             )
+        if notification_sound and notification_sound != "windows":
+            for index in range(4):
+                QTimer.singleShot(index * 650, lambda sound=notification_sound: self.sounds.play_notification(sound))
         self.show_update_notice(message_text, 6000)
+
+    def show_audio_test_notification(self, sound: str) -> None:
+        clean_sound = str(sound or "windows").strip().lower()
+        message = random.choice(self.AUDIO_TEST_MESSAGES)
+        if self._tray_icon is not None and self._tray_icon.isVisible():
+            self._tray_icon.showMessage(
+                "ONCard Dummy Notification",
+                message,
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+        if clean_sound != "windows":
+            self.sounds.play_notification(clean_sound)
 
     def begin_update_shutdown(self) -> None:
         self._update_shutdown_requested = True

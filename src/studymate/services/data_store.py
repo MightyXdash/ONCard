@@ -101,6 +101,14 @@ class DataStore:
             "stats": {
                 "default_range": "daily",
             },
+            "audio": {
+                "enabled": True,
+                "click_enabled": True,
+                "click_sound": "click3",
+                "transition_enabled": True,
+                "transition_sound": "woosh",
+                "notification_sound": "windows",
+            },
             "notifications": {
                 "enabled": True,
             },

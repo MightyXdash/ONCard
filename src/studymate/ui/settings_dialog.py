@@ -66,6 +66,7 @@ MODEL_ROLE_COPY = {
     "nomic_embed_text_v2_moe": "Semantic search, recommendations, topic clustering, and adaptive study features.",
 }
 OLLAMA_CLOUD_KEYS_URL = "https://ollama.com/settings/keys"
+CHECK_ICON_URL = (Path(__file__).resolve().parents[3] / "assets" / "icons" / "common" / "check_white_small.svg").as_posix()
 
 
 class PopupMenuComboBox(AnimatedComboBox):
@@ -320,7 +321,7 @@ class ExportAccountDialog(QDialog):
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._download_requested = False
-        self._blur_target = blur_target or parent
+        self._blur_target = blur_target
         self._overlay_target = parent
         self._overlay: QWidget | None = None
         self._previous_effect = None
@@ -568,20 +569,22 @@ class SettingsDialog(QDialog):
                 border: 2px solid rgba(15, 37, 57, 0.3);
             }
             QToolButton#SettingsNavTab {
-                background-color: transparent;
-                border: 2px solid transparent;
+                background-color: rgba(241, 245, 249, 0.58);
+                border: 1px solid rgba(226, 232, 240, 0.72);
                 border-radius: 12px;
-                padding: 8px 16px;
+                padding: 8px 12px;
                 color: #64748b;
                 font-size: 13px;
                 font-weight: 600;
             }
             QToolButton#SettingsNavTab:hover {
-                background-color: rgba(241, 245, 249, 0.8);
+                background-color: rgba(241, 245, 249, 0.9);
+                border-color: rgba(203, 213, 225, 0.92);
                 color: #334155;
             }
             QToolButton#SettingsNavTab:checked {
                 background-color: #0f2539;
+                border: 1px solid #0f2539;
                 color: #ffffff;
             }
             QPushButton#SettingsPickerButton {
@@ -689,7 +692,7 @@ class SettingsDialog(QDialog):
         page_specs = [
             ("General", "general", self._build_general_tab()),
             ("AI", "ai", self._build_ai_tab()),
-            ("Stats", "stats", self._build_stats_tab()),
+            ("Audio", "stats", self._build_audio_tab()),
             ("Performance", "performance", self._build_performance_tab()),
         ]
         for index, (label, icon_name, page) in enumerate(page_specs):
@@ -760,7 +763,7 @@ class SettingsDialog(QDialog):
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         if checkable:
             button.setText(tooltip)
-            button.setFixedSize(120, 40)
+            button.setFixedSize(136, 40)
         else:
             button.setFixedSize(36, 36)
         icon_path = self._icon_path(icon_name)
@@ -922,7 +925,7 @@ class SettingsDialog(QDialog):
 
         overlay = QWidget(parent_widget)
         overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        overlay.setStyleSheet("background: rgba(255, 255, 255, 0.20);")
+        overlay.setStyleSheet("background: rgba(15, 23, 42, 0.18);")
         top_left = target.mapTo(parent_widget, QPoint(0, 0))
         overlay.setGeometry(QRect(top_left, target.size()))
         overlay.show()
@@ -1275,8 +1278,9 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {
                 background: #0f2539;
                 border: 2px solid #0f2539;
+                image: url("__CHECK_ICON__");
             }
-            """
+            """.replace("__CHECK_ICON__", CHECK_ICON_URL)
         )
         mcq_layout.addWidget(self.mcq_enabled_checkbox)
 
@@ -1339,6 +1343,34 @@ class SettingsDialog(QDialog):
         mcq_action_row.addWidget(self.mcq_status_label, 1)
         mcq_layout.addLayout(mcq_action_row)
         layout.addWidget(mcq_surface)
+
+        stats_surface, stats_form = self._settings_card(layout_type=QFormLayout)
+        stats_title = QLabel("Stats defaults")
+        stats_title.setObjectName("SectionTitle")
+        stats_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 12px 0px; }")
+        stats_form.addRow(stats_title)
+
+        self.stats_default_range = PopupMenuComboBox()
+        self.stats_default_range.addItem("Hourly", "hourly")
+        self.stats_default_range.addItem("Daily 3 days", "daily")
+        self.stats_default_range.addItem("Weekly", "weekly")
+        self.stats_default_range.addItem("2 Weeks", "2weeks")
+        self.stats_default_range.addItem("Monthly", "monthly")
+        self.stats_default_range.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="Default time range",
+                control=self.stats_default_range,
+                fallback_value="daily",
+            )
+        )
+        stats_form.addRow("Default time range", self.stats_default_range)
+        layout.addWidget(stats_surface)
+
+        stats_note = QLabel("This only sets the initial selection. You can still switch range in View stats anytime.")
+        stats_note.setObjectName("SmallMeta")
+        stats_note.setWordWrap(True)
+        stats_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
+        layout.addWidget(stats_note)
 
         self._set_account_actions_enabled(self.session_controller is not None)
         layout.addStretch(1)
@@ -1559,8 +1591,9 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {
                 background: #0f2539;
                 border: 2px solid #0f2539;
+                image: url("__CHECK_ICON__");
             }
-            """
+            """.replace("__CHECK_ICON__", CHECK_ICON_URL)
         )
         self.cloud_enabled_checkbox.toggled.connect(self._on_cloud_mode_toggled)
         self.cloud_api_key_edit = AnimatedLineEdit()
@@ -1847,41 +1880,63 @@ class SettingsDialog(QDialog):
         scroll.setWidget(host)
         return scroll
 
-    def _build_stats_tab(self) -> QWidget:
+    def _build_audio_tab(self) -> QWidget:
         host = QWidget()
         host.setObjectName("SettingsTabCanvas")
         layout = QVBoxLayout(host)
         layout.setContentsMargins(0, 0, 4, 82)
         layout.setSpacing(20)
 
-        intro = QLabel("Choose which time range is selected by default when opening View stats.")
+        intro = QLabel("Choose which sounds ONCard uses for clicks, transitions, and notifications.")
         intro.setObjectName("SectionText")
         intro.setWordWrap(True)
         intro.setStyleSheet("QLabel#SectionText { font-size: 14px; line-height: 1.6; color: #475569; }")
         layout.addWidget(intro)
 
         surface, form = self._settings_card(layout_type=QFormLayout)
-        form_title = QLabel("Stats defaults")
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_title = QLabel("Audio")
         form_title.setObjectName("SectionTitle")
         form_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 12px 0px; }")
         form.addRow(form_title)
 
-        self.stats_default_range = PopupMenuComboBox()
-        self.stats_default_range.addItem("Hourly", "hourly")
-        self.stats_default_range.addItem("Daily 3 days", "daily")
-        self.stats_default_range.addItem("Weekly", "weekly")
-        self.stats_default_range.addItem("2 Weeks", "2weeks")
-        self.stats_default_range.addItem("Monthly", "monthly")
-        self.stats_default_range.set_popup_handler(
-            lambda: self._open_combo_choice_picker(
-                title="Default time range",
-                control=self.stats_default_range,
-                fallback_value="daily",
-            )
-        )
-        form.addRow("Default time range", self.stats_default_range)
+        self.audio_enabled_checkbox = QCheckBox("Audio")
+        self.audio_enabled_checkbox.setChecked(True)
+        form.addRow("Master audio", self.audio_enabled_checkbox)
 
-        note = QLabel("This only sets the initial selection. You can still switch range in View stats anytime.")
+        self.click_enabled_checkbox = QCheckBox("Mouse Click")
+        self.click_sound_combo = QComboBox()
+        for label, value in (
+            ("Soft tap", "click3"),
+            ("Classic tap", "click"),
+            ("Crisp tap", "click4"),
+            ("Deep tap", "click5"),
+        ):
+            self.click_sound_combo.addItem(label, value)
+        click_row = self._audio_choice_row(self.click_enabled_checkbox, self.click_sound_combo, lambda: self._test_click_sound())
+        form.addRow("Mouse Click", click_row)
+
+        self.transition_enabled_checkbox = QCheckBox("Transition")
+        self.transition_sound_combo = QComboBox()
+        self.transition_sound_combo.addItem("Simple woosh", "woosh")
+        transition_row = self._audio_choice_row(
+            self.transition_enabled_checkbox,
+            self.transition_sound_combo,
+            lambda: self._test_transition_sound(),
+        )
+        form.addRow("Transition", transition_row)
+
+        self.notification_sound_combo = QComboBox()
+        self.notification_sound_combo.addItem("Default Windows", "windows")
+        self.notification_sound_combo.addItem("Notify 1", "notify1")
+        self.notification_sound_combo.addItem("Notify 2", "notify2")
+        notification_row = self._audio_choice_row(None, self.notification_sound_combo, lambda: self._test_notification_sound())
+        form.addRow("Notification", notification_row)
+
+        note = QLabel(
+            "Mouse click sounds also apply to sliders. Custom notification sounds play with ONCard toast notifications; FTC finish notifications repeat custom sounds four times."
+        )
         note.setObjectName("SmallMeta")
         note.setWordWrap(True)
         note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; }")
@@ -1890,6 +1945,25 @@ class SettingsDialog(QDialog):
         layout.addWidget(note)
         layout.addStretch(1)
         return host
+
+    def _audio_choice_row(self, toggle: QCheckBox | None, combo: QComboBox, test_handler) -> QWidget:
+        row = QWidget()
+        row.setObjectName("SettingsAudioChoiceRow")
+        row.setStyleSheet("QWidget#SettingsAudioChoiceRow { background: transparent; }")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        if toggle is not None:
+            toggle.setMinimumWidth(124)
+            layout.addWidget(toggle, 0)
+        combo.setMinimumWidth(180)
+        layout.addWidget(combo, 1)
+        test_btn = AnimatedButton("Test")
+        test_btn.setProperty("skipClickSfx", True)
+        test_btn.setFixedWidth(72)
+        test_btn.clicked.connect(test_handler)
+        layout.addWidget(test_btn, 0)
+        return row
 
     def _build_performance_tab(self) -> QWidget:
         host = QWidget()
@@ -1947,8 +2021,9 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {
                 background: #0f2539;
                 border: 2px solid #0f2539;
+                image: url("__CHECK_ICON__");
             }
-            """
+            """.replace("__CHECK_ICON__", CHECK_ICON_URL)
         )
         self.reduced_motion_checkbox = QCheckBox("Reduce motion and transition animations")
         self.reduced_motion_checkbox.setStyleSheet(
@@ -1971,8 +2046,9 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {
                 background: #0f2539;
                 border: 2px solid #0f2539;
+                image: url("__CHECK_ICON__");
             }
-            """
+            """.replace("__CHECK_ICON__", CHECK_ICON_URL)
         )
 
         perf_layout.addRow("Mode", self.performance_mode)
@@ -2153,10 +2229,26 @@ class SettingsDialog(QDialog):
         if stats_index < 0:
             stats_index = 1
         self.stats_default_range.setCurrentIndex(stats_index)
+        audio_setup = dict(setup.get("audio", {}))
+        self.audio_enabled_checkbox.setChecked(bool(audio_setup.get("enabled", True)))
+        self.click_enabled_checkbox.setChecked(bool(audio_setup.get("click_enabled", True)))
+        self._set_combo_data(self.click_sound_combo, str(audio_setup.get("click_sound", "click3")), "click3")
+        self.transition_enabled_checkbox.setChecked(bool(audio_setup.get("transition_enabled", True)))
+        self._set_combo_data(self.transition_sound_combo, str(audio_setup.get("transition_sound", "woosh")), "woosh")
+        self._set_combo_data(self.notification_sound_combo, str(audio_setup.get("notification_sound", "windows")), "windows")
         self._refresh_performance_mode()
         self.ollama_status.setText("Model status will load after settings opens.")
         self.ollama_hint.setText("You can keep using these settings while ONCard checks Ollama.")
         self._refresh_text_model_choices_from_saved(ai_settings)
+
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str, fallback: str) -> None:
+        index = combo.findData(str(value or "").strip())
+        if index < 0:
+            index = combo.findData(fallback)
+        if index < 0:
+            index = 0
+        combo.setCurrentIndex(index)
 
     def _cloud_mode_enabled(self) -> bool:
         return bool(self.cloud_enabled_checkbox.isChecked())
@@ -2379,20 +2471,74 @@ class SettingsDialog(QDialog):
         setup["stats"] = {
             "default_range": str(self.stats_default_range.currentData() or "daily"),
         }
+        setup["audio"] = self._current_audio_setup()
         self.datastore.save_setup(setup)
         self.accept()
+
+    def _current_audio_setup(self) -> dict:
+        return {
+            "enabled": bool(self.audio_enabled_checkbox.isChecked()),
+            "click_enabled": bool(self.click_enabled_checkbox.isChecked()),
+            "click_sound": str(self.click_sound_combo.currentData() or "click3"),
+            "transition_enabled": bool(self.transition_enabled_checkbox.isChecked()),
+            "transition_sound": str(self.transition_sound_combo.currentData() or "woosh"),
+            "notification_sound": str(self.notification_sound_combo.currentData() or "windows"),
+        }
+
+    def _apply_audio_preview_config(self) -> None:
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None and hasattr(sounds, "configure"):
+            sounds.configure({"audio": self._current_audio_setup()})
+
+    def _test_click_sound(self) -> None:
+        self._apply_audio_preview_config()
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play("click")
+
+    def _test_transition_sound(self) -> None:
+        self._apply_audio_preview_config()
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play("woosh")
+
+    def _test_notification_sound(self) -> None:
+        self._apply_audio_preview_config()
+        parent = self.parentWidget()
+        sound = str(self.notification_sound_combo.currentData() or "windows")
+        if parent is not None and hasattr(parent, "show_audio_test_notification"):
+            parent.show_audio_test_notification(sound)
+            return
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None:
+            sounds.play_notification(sound)
 
     def _play_click_sound(self, *, volume_scale: float = 1.0) -> None:
         if not self._sfx_ready:
             return
+        self._apply_audio_preview_config()
         parent = self.parentWidget()
         sounds = getattr(parent, "sounds", None)
         if sounds is not None:
             sounds.play("click", volume_scale=volume_scale)
 
+    def _play_slider_sound(self, *, volume_scale: float = 1.0) -> None:
+        if not self._sfx_ready:
+            return
+        self._apply_audio_preview_config()
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None and hasattr(sounds, "play_slider_click"):
+            sounds.play_slider_click(volume_scale=volume_scale)
+        elif sounds is not None:
+            sounds.play("click", volume_scale=volume_scale)
+
     def _on_attention_changed(self, value: int) -> None:
         if value != self._last_attention_value:
-            self._play_click_sound(volume_scale=1.25)
+            self._play_slider_sound(volume_scale=1.25)
         self._last_attention_value = value
         self._update_attention_label(value)
 
@@ -2402,7 +2548,7 @@ class SettingsDialog(QDialog):
 
     def _on_ask_ai_emoji_changed(self, value: int) -> None:
         if value != self._last_ask_ai_emoji_value:
-            self._play_click_sound(volume_scale=1.1)
+            self._play_slider_sound(volume_scale=1.1)
         self._last_ask_ai_emoji_value = value
         self._update_ask_ai_emoji_label(value)
 
@@ -2511,10 +2657,8 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Export account", str(exc))
             return False
-        app_window = self.window() if isinstance(self.window(), QWidget) else self
-        blur_target = getattr(app_window, "_popup_blur_target", self)
         icons_root = getattr(getattr(self.parentWidget(), "paths", None), "icons", None)
-        dialog = ExportAccountDialog(parent=self, blur_target=blur_target, icons_root=icons_root)
+        dialog = ExportAccountDialog(parent=self, blur_target=None, icons_root=icons_root)
         if dialog.exec_with_backdrop() != QDialog.DialogCode.Accepted or not dialog.download_requested():
             self._cleanup_temp_export(temp_zip)
             return False
@@ -2867,6 +3011,10 @@ class SettingsDialog(QDialog):
         if self._install_worker and self._install_worker.isRunning():
             QMessageBox.information(self, "Install in progress", "Wait for the current model installation to finish first.")
             return
+        parent = self.parentWidget()
+        sounds = getattr(parent, "sounds", None)
+        if sounds is not None and hasattr(sounds, "configure"):
+            sounds.configure(self.datastore.load_setup())
         super().reject()
 
     @staticmethod

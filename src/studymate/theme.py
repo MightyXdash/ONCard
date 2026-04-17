@@ -1,7 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _asset_url(relative_path: str) -> str:
+    candidates = [
+        Path(__file__).resolve().parents[2] / relative_path,
+        Path.cwd() / relative_path,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.as_posix()
+    return relative_path.replace("\\", "/")
+
 
 def app_stylesheet() -> str:
+    check_icon = _asset_url("assets/icons/common/check_white_small.svg")
     return """
     * {
         font-family: "Nunito Sans", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", sans-serif;
@@ -239,9 +253,9 @@ def app_stylesheet() -> str:
         border-color: rgba(130, 166, 197, 0.75);
     }
     QPushButton#TopNavButton {
-        min-width: 92px;
-        padding: 6px 14px;
-        border-radius: 15px;
+        min-width: 78px;
+        padding: 6px 10px;
+        border-radius: 10px;
         background-color: rgba(255, 255, 255, 0.86);
         color: #193043;
         border-color: rgba(166, 180, 194, 0.38);
@@ -564,6 +578,7 @@ def app_stylesheet() -> str:
     QCheckBox::indicator:checked {
         background: #0f2539;
         border: 1px solid #0f2539;
+        image: url("__CHECK_ICON__");
     }
     QComboBox::drop-down {
         width: 32px;
@@ -1147,5 +1162,5 @@ def app_stylesheet() -> str:
         color: #a8b3bf;
         border-color: #dfe5eb;
     }
-    """
+    """.replace("__CHECK_ICON__", check_icon)
 
