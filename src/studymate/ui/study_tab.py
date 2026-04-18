@@ -40,7 +40,7 @@ from studymate.constants import SUBJECT_TAXONOMY
 from studymate.constants import SEMANTIC_SEARCH_MIN_SCORE, SEMANTIC_SEARCH_SCORE_MARGIN
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
-from studymate.services.model_registry import resolve_active_text_llm_spec, resolve_active_text_model_tag
+from studymate.services.model_registry import MODELS, non_embedding_llm_keys, resolve_active_text_llm_spec, resolve_active_text_model_tag
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.services.recommendation_service import (
@@ -74,7 +74,7 @@ from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.followup_worker import FollowUpWorker
 from studymate.workers.grade_worker import GradeWorker
 from studymate.workers.reinforcement_worker import ReinforcementWorker
-from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker
+from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker, ImageSearchTermsWorker
 from studymate.workers.mcq_worker import cached_mcq_payload, normalize_mcq_answers
 
 
@@ -90,7 +90,7 @@ class PromptTextEdit(QTextEdit):
 
 
 class AiTagChip(QWidget):
-    def __init__(self, text: str = "Ask AI", parent=None) -> None:
+    def __init__(self, text: str = "I am Luca, how can I help you?", parent=None) -> None:
         super().__init__(parent)
         self._text = text
         self._reveal = 1.0
@@ -98,7 +98,7 @@ class AiTagChip(QWidget):
 
     def sizeHint(self) -> QSize:
         metrics = self.fontMetrics()
-        return QSize(max(56, metrics.horizontalAdvance(self._text) + 22), 24)
+        return QSize(max(214, metrics.horizontalAdvance(self._text) + 18), 24)
 
     def getReveal(self) -> float:
         return self._reveal
@@ -126,15 +126,12 @@ class AiTagChip(QWidget):
         clip_width = rect.width() * self._reveal
         painter.save()
         painter.setClipRect(QRectF(rect.left(), rect.top(), clip_width, rect.height()))
-        painter.setPen(QPen(QColor(81, 133, 236, 178), 1))
-        painter.setBrush(QColor("#4A7EE8"))
-        painter.drawRoundedRect(QRectF(rect), 8.0, 8.0)
-
         font = QFont(self.font())
+        font.setItalic(True)
         font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(font)
-        painter.setPen(QColor("#F8FBFF"))
-        painter.drawText(rect.adjusted(10, 0, -10, 0), Qt.AlignCenter, self._text)
+        painter.setPen(QColor("#64748B"))
+        painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignVCenter | Qt.AlignLeft, self._text)
         painter.restore()
 
 
@@ -148,48 +145,32 @@ class AiQueryLineEdit(AnimatedLineEdit):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._ai_mode = False
-        self._tag_gap = 10
+        self._image_attached = False
         self._base_left_margin = self.textMargins().left()
-        self._tag_chip = AiTagChip("Ask AI", self)
-        self._tag_reveal = QPropertyAnimation(self._tag_chip, b"reveal", self)
-        self._tag_reveal.setDuration(180)
-        self._tag_reveal.setEasingCurve(QEasingCurve.Type.Linear)
-        self._tag_chip.hide()
+        self._placeholder_before_ai_mode = ""
+        self._ai_placeholder_text = "I am Luca, how can I help you?"
         self.setAcceptDrops(True)
         self._update_text_margins()
 
     def ai_mode_active(self) -> bool:
         return self._ai_mode
 
+    def set_image_attached(self, attached: bool) -> None:
+        self._image_attached = bool(attached)
+
     def set_ai_mode(self, active: bool) -> None:
         if self._ai_mode == active:
             return
         self._ai_mode = active
         self.setProperty("aiMode", active)
-        self._tag_reveal.stop()
         if active:
-            self._tag_chip.show()
-            self._tag_chip.setReveal(0.0)
-            self._tag_reveal.setStartValue(0.0)
-            self._tag_reveal.setEndValue(1.0)
-            self._tag_reveal.start()
+            self._placeholder_before_ai_mode = self.placeholderText()
+            self.setPlaceholderText("")
         else:
-            self._tag_chip.setReveal(1.0)
-            self._tag_chip.show()
-            self._tag_reveal.setStartValue(1.0)
-            self._tag_reveal.setEndValue(0.0)
-
-            def _hide_chip() -> None:
-                if not self._ai_mode:
-                    self._tag_chip.hide()
-                try:
-                    self._tag_reveal.finished.disconnect(_hide_chip)
-                except (RuntimeError, TypeError):
-                    pass
-
-            self._tag_reveal.finished.connect(_hide_chip)
-            self._tag_reveal.start()
+            if self._placeholder_before_ai_mode:
+                self.setPlaceholderText(self._placeholder_before_ai_mode)
         self._update_text_margins()
+        self.update()
         self.aiModeChanged.emit(active)
 
     def keyPressEvent(self, event) -> None:
@@ -222,6 +203,20 @@ class AiQueryLineEdit(AnimatedLineEdit):
         super().resizeEvent(event)
         self._update_text_margins()
 
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self._ai_mode or self.text():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = QFont(self.font())
+        font.setItalic(True)
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor("#64748B"))
+        rect = self.contentsRect().adjusted(self._base_left_margin, 0, 0, 0)
+        painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, self._ai_placeholder_text)
+
     @staticmethod
     def _first_image_path(event) -> str:
         mime = event.mimeData()
@@ -237,24 +232,23 @@ class AiQueryLineEdit(AnimatedLineEdit):
         return ""
 
     def dragEnterEvent(self, event) -> None:
-        if self._ai_mode and self._first_image_path(event):
+        if not self._image_attached and self._first_image_path(event):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
-        if self._ai_mode and self._first_image_path(event):
+        if not self._image_attached and self._first_image_path(event):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:
-        if self._ai_mode:
-            path = self._first_image_path(event)
-            if path:
-                self.imageDropped.emit(path)
-                event.acceptProposedAction()
-                return
+        path = self._first_image_path(event)
+        if path and not self._image_attached:
+            self.imageDropped.emit(path)
+            event.acceptProposedAction()
+            return
         super().dropEvent(event)
 
     def _tag_rect(self):
@@ -265,12 +259,7 @@ class AiQueryLineEdit(AnimatedLineEdit):
         return QRect(contents.left() + 2, y, chip_width, tag_height)
 
     def _update_text_margins(self) -> None:
-        tag_rect = self._tag_rect()
-        self._tag_chip.setGeometry(tag_rect)
-        left_margin = self._base_left_margin
-        if self._ai_mode:
-            left_margin += tag_rect.width() + self._tag_gap
-        self.setTextMargins(left_margin, 0, 0, 0)
+        self.setTextMargins(self._base_left_margin, 0, 0, 0)
 
 
 class AiResponseSkeleton(QWidget):
@@ -487,6 +476,60 @@ class AiAttachmentChip(QFrame):
         self.preview.clear()
         self.preview.setToolTip("")
         self.hide()
+
+
+class ImageSearchStatus(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._phase = 0.0
+        self._text = "I am finding cards which best match the image..."
+        self._timer = QTimer(self)
+        self._timer.setInterval(24)
+        self._timer.timeout.connect(self._advance)
+        self.setMinimumHeight(34)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.hide()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def _advance(self) -> None:
+        self._phase = (self._phase + 0.025) % 1.0
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(2.0, 3.0, -2.0, -3.0)
+        if rect.width() <= 1 or rect.height() <= 1:
+            return
+
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor("#64748B"))
+        text_rect = rect.adjusted(8.0, 0.0, -8.0, 0.0)
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self._text)
+
+        shimmer_width = max(120.0, text_rect.width() * 0.36)
+        track = max(1.0, text_rect.width() + shimmer_width)
+        x = text_rect.left() - shimmer_width + (track * self._phase)
+        highlight = QRectF(x, text_rect.top(), shimmer_width, text_rect.height())
+        gradient = QLinearGradient(highlight.left(), 0, highlight.right(), 0)
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+        gradient.setColorAt(0.18, QColor(238, 246, 255, 36))
+        gradient.setColorAt(0.5, QColor(255, 255, 255, 180))
+        gradient.setColorAt(0.82, QColor(238, 246, 255, 36))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        painter.fillRect(highlight, gradient)
 
 
 class AiRevealOverlay(QWidget):
@@ -1945,6 +1988,67 @@ class CardSearchWorker(QThread):
         self.finished.emit(self.request_id, query, scored)
 
 
+class ImageCardSearchWorker(QThread):
+    finished = Signal(int, str, object)
+
+    def __init__(
+        self,
+        *,
+        request_id: int,
+        queries: list[str],
+        cards: list[dict],
+        embedding_service: EmbeddingService,
+        limit: int,
+        allow_semantic: bool,
+    ) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.queries = [" ".join(str(query or "").strip().split()) for query in queries if str(query or "").strip()]
+        self.cards = list(cards)
+        self.embedding_service = embedding_service
+        self.limit = limit
+        self.allow_semantic = allow_semantic
+
+    def run(self) -> None:
+        if not self.queries:
+            self.finished.emit(self.request_id, "", [])
+            return
+        merged: dict[str, dict] = {}
+        rank = 0
+        for query in self.queries:
+            scored = StudyTab._build_card_search_results(
+                query,
+                self.cards,
+                self.embedding_service,
+                limit=self.limit,
+                allow_semantic=self.allow_semantic,
+            )
+            for item in scored:
+                if not isinstance(item, dict) or not isinstance(item.get("card"), dict):
+                    continue
+                card = item["card"]
+                card_id = str(card.get("id", "")).strip() or str(id(card))
+                score = float(item.get("score", 0.0) or 0.0)
+                source = str(item.get("source", "")).strip()
+                current = merged.get(card_id)
+                if current is None or score > float(current.get("score", 0.0) or 0.0):
+                    merged[card_id] = {"card": card, "score": score, "source": source or "image", "_rank": rank}
+                rank += 1
+
+        keyword_query = " ".join(self.queries)
+        for card in StudyTab._fallback_text_search(keyword_query, self.cards)[: self.limit]:
+            card_id = str(card.get("id", "")).strip() or str(id(card))
+            if card_id not in merged:
+                merged[card_id] = {"card": card, "score": 0.0, "source": "image-keyword", "_rank": rank}
+                rank += 1
+
+        results = list(merged.values())
+        results.sort(key=lambda item: (float(item.get("score", 0.0) or 0.0), -int(item.get("_rank", 0))), reverse=True)
+        for item in results:
+            item.pop("_rank", None)
+        self.finished.emit(self.request_id, keyword_query, results[: self.limit])
+
+
 class StudyTab(QWidget):
     CARD_RENDER_BATCH_SIZE = 24
     CARD_INITIAL_STREAM_BATCH = 8
@@ -2013,9 +2117,11 @@ class StudyTab(QWidget):
         self.session_prep_worker: SessionPrepWorker | None = None
         self.topic_cluster_worker: TopicClusterWorker | None = None
         self.card_search_worker: CardSearchWorker | None = None
+        self.image_card_search_worker: ImageCardSearchWorker | None = None
         self.ai_query_planner_worker: AiSearchPlannerWorker | None = None
         self.ai_query_answer_worker: AiSearchAnswerWorker | None = None
         self.ai_query_tool_worker: CardSearchWorker | None = None
+        self.image_search_terms_worker: ImageSearchTermsWorker | None = None
         self._ai_query_workers: set[QThread] = set()
         self._pending_ai_query_plans: dict[int, dict] = {}
         self.ai_query_image_path = ""
@@ -2085,6 +2191,37 @@ class StudyTab(QWidget):
 
     def _active_text_model_tag(self) -> str:
         return resolve_active_text_model_tag(self.datastore.load_ai_settings())
+
+    def _neural_acceleration_enabled(self) -> bool:
+        return bool(self.datastore.load_ai_settings().get("neural_acceleration", True))
+
+    def _model_tag_for_key(self, model_key: str) -> str:
+        ai_settings = self.datastore.load_ai_settings()
+        if bool(ai_settings.get("ollama_cloud_enabled", False)):
+            cloud_tag = str(ai_settings.get("ollama_cloud_selected_model_tag", "")).strip()
+            if cloud_tag:
+                return cloud_tag
+        spec = MODELS.get(model_key)
+        return spec.primary_tag if spec is not None else self._active_text_model_tag()
+
+    def _smallest_available_image_model_key(self) -> str:
+        ai_settings = self.datastore.load_ai_settings()
+        if bool(ai_settings.get("ollama_cloud_enabled", False)):
+            return self._active_text_llm_spec().key
+        setup = self.datastore.load_setup()
+        installed_models = dict(setup.get("installed_models", {}))
+        candidates = []
+        for key in non_embedding_llm_keys():
+            spec = MODELS.get(key)
+            if spec is None:
+                continue
+            if bool(installed_models.get(key, False)) or self.preflight.has_model(key):
+                candidates.append(spec)
+        if not candidates and self.preflight.has_model(self._active_text_llm_spec().key):
+            return self._active_text_llm_spec().key
+        if not candidates:
+            return ""
+        return min(candidates, key=lambda spec: spec.size_gb).key
 
     def _apply_mcq_payload_to_card_answer(self, entry: dict, payload: dict) -> str:
         card = entry.get("card")
@@ -2156,23 +2293,6 @@ class StudyTab(QWidget):
         content = QVBoxLayout()
         content.setSpacing(14)
 
-        subnav = QHBoxLayout()
-        self.cards_sub_btn = AnimatedButton("Cards")
-        self.cards_sub_btn.setObjectName("TopNavButton")
-        self.cards_sub_btn.setCheckable(True)
-        self.cards_sub_btn.setChecked(True)
-        self.cards_sub_btn.setProperty("skipClickSfx", True)
-        self.study_sub_btn = AnimatedButton("Study")
-        self.study_sub_btn.setObjectName("TopNavButton")
-        self.study_sub_btn.setCheckable(True)
-        self.study_sub_btn.setProperty("skipClickSfx", True)
-        self.cards_sub_btn.clicked.connect(lambda: self._switch_mode(0))
-        self.study_sub_btn.clicked.connect(lambda: self._switch_mode(1))
-        subnav.addWidget(self.cards_sub_btn)
-        subnav.addWidget(self.study_sub_btn)
-        subnav.addStretch(1)
-        content.addLayout(subnav)
-
         self.mode_stack = AnimatedStackedWidget()
         self.cards_view = self._build_cards_view()
         self.study_view = self._build_study_view()
@@ -2217,6 +2337,7 @@ class StudyTab(QWidget):
         self.card_search_input.installEventFilter(self)
         self.card_ai_attachment_chip = AiAttachmentChip(self.icons, self.card_search_shell)
         self.card_ai_attachment_chip.removed.connect(self._clear_ai_image)
+        self.card_image_search_status = ImageSearchStatus(self.card_search_shell)
         self.card_ai_attach_btn = AnimatedToolButton()
         self.card_ai_attach_btn.setObjectName("SearchInputButton")
         self.card_ai_attach_btn.setIcon(self.icons.icon("common", "cam", "C"))
@@ -2226,7 +2347,6 @@ class StudyTab(QWidget):
         self.card_ai_attach_btn.setFixedSize(30, 30)
         self.card_ai_attach_btn.setToolTip("Attach image")
         self.card_ai_attach_btn.clicked.connect(self._pick_ai_image)
-        self.card_ai_attach_btn.hide()
         self.card_search_btn = AnimatedToolButton()
         self.card_search_btn.setObjectName("SearchInputButton")
         self.card_search_btn.setIcon(self._build_search_icon())
@@ -2236,11 +2356,12 @@ class StudyTab(QWidget):
         self.card_search_btn.setFixedSize(30, 30)
         self.card_search_btn.setToolTip("Search")
         self.card_search_btn.setProperty("skipClickSfx", True)
-        self.card_search_btn.clicked.connect(self._execute_card_search)
+        self.card_search_btn.clicked.connect(self._on_card_search_button_clicked)
+        search_shell_layout.addWidget(self.card_search_btn, 0, Qt.AlignVCenter)
         search_shell_layout.addWidget(self.card_search_input, 1)
         search_shell_layout.addWidget(self.card_ai_attachment_chip, 0, Qt.AlignVCenter)
+        search_shell_layout.addWidget(self.card_image_search_status, 1, Qt.AlignVCenter)
         search_shell_layout.addWidget(self.card_ai_attach_btn, 0, Qt.AlignVCenter)
-        search_shell_layout.addWidget(self.card_search_btn, 0, Qt.AlignVCenter)
         search_layout.addWidget(self.card_search_shell, 1)
 
         actions_shell = QFrame()
@@ -2377,6 +2498,20 @@ class StudyTab(QWidget):
         painter.end()
         return QIcon(pixmap)
 
+    def _build_close_icon(self) -> QIcon:
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor("#111111"))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(7, 7, 17, 17)
+        painter.drawLine(17, 7, 7, 17)
+        painter.end()
+        return QIcon(pixmap)
+
     def _build_study_view(self) -> QWidget:
         container = QWidget()
         root = QHBoxLayout(container)
@@ -2391,7 +2526,7 @@ class StudyTab(QWidget):
         actions = QHBoxLayout()
         self.start_btn = AnimatedButton("Start")
         self.start_btn.setProperty("skipClickSfx", True)
-        self.start_btn.clicked.connect(self._open_start_dialog)
+        self.start_btn.clicked.connect(self._handle_study_primary_action)
         self.refresh_study_btn = AnimatedButton("Refresh")
         self.refresh_study_btn.clicked.connect(lambda: self.reload_cards(force=True))
         actions.addStretch(1)
@@ -2403,7 +2538,7 @@ class StudyTab(QWidget):
         self.session_title.setObjectName("PageTitle")
         self.session_meta = QLabel("")
         self.session_meta.setObjectName("SmallMeta")
-        self.session_question = QLabel("Use the Cards subtab or press Start for the current section.")
+        self.session_question = QLabel("Press Start for the current section.")
         self.session_question.setObjectName("SectionText")
         self.session_question.setWordWrap(True)
         self.session_question.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -2485,8 +2620,21 @@ class StudyTab(QWidget):
         if self.mode_stack.currentIndex() != index:
             self._play_sound("woosh")
         self.mode_stack.setCurrentIndex(index)
-        self.cards_sub_btn.setChecked(index == 0)
-        self.study_sub_btn.setChecked(index == 1)
+        self._update_study_primary_action()
+
+    def _has_active_session(self) -> bool:
+        return self.current_card is not None or bool(self.session_history)
+
+    def _update_study_primary_action(self) -> None:
+        if not hasattr(self, "start_btn"):
+            return
+        self.start_btn.setText("Cards" if self._has_active_session() else "Start")
+
+    def _handle_study_primary_action(self) -> None:
+        if self._has_active_session():
+            self._switch_mode(0)
+            return
+        self._open_start_dialog()
 
     def _current_history_entry(self) -> dict | None:
         if 0 <= self.current_history_index < len(self.session_history):
@@ -2550,6 +2698,7 @@ class StudyTab(QWidget):
         self.next_btn.setEnabled(self.current_card is not None and self.grade_worker is None)
         self.grade_btn.setEnabled(editable and not self._has_pending_background_grading())
         self._set_hint_button_state(allow_editing=editable)
+        self._update_study_primary_action()
 
     def _show_history_entry(self, index: int) -> None:
         entry = self._history_entry(index)
@@ -2854,13 +3003,17 @@ class StudyTab(QWidget):
             with QSignalBlocker(self.card_search_input):
                 self.card_search_input.clear()
             self.card_search_input.set_ai_mode(True)
+            self._sync_card_search_action_button()
             return
         if self.card_search_input.ai_mode_active():
             self.card_search_timer.stop()
             self._set_card_search_dropdown_visible(False)
+            self._sync_card_search_action_button()
             return
         self.card_search_request_id += 1
-        self.card_search_has_executed = False if not text.strip() else self.card_search_has_executed
+        if not normalized or normalized != self.card_search_query:
+            self.card_search_has_executed = False
+        self._sync_card_search_action_button()
         self._set_card_search_dropdown_visible(False)
         self.card_search_suggestions = []
         if not text.strip():
@@ -2955,14 +3108,14 @@ class StudyTab(QWidget):
     def _on_card_search_ai_mode_changed(self, active: bool) -> None:
         self.card_search_timer.stop()
         self._set_card_search_dropdown_visible(False)
-        self.card_ai_attach_btn.setVisible(active)
-        if not active:
-            self._clear_ai_image()
+        self._sync_image_search_bar_state()
         if active:
             self.ai_query_history_index = len(self.ai_query_history)
             self.card_search_input.setFocus()
 
     def _pick_ai_image(self) -> None:
+        if self.ai_query_image_path.strip():
+            return
         self._play_sound("click")
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -2974,20 +3127,67 @@ class StudyTab(QWidget):
             self._attach_ai_image(path)
 
     def _attach_ai_image(self, path: str) -> None:
-        if not self.card_search_input.ai_mode_active():
+        if self.ai_query_image_path.strip():
+            QMessageBox.information(self, "Image search", "Remove the current image before adding another one.")
             return
         normalized = str(path or "").strip()
         if not normalized:
             return
         if not self.card_ai_attachment_chip.set_image(normalized):
-            QMessageBox.warning(self, "Ask AI", "That image could not be loaded.")
+            QMessageBox.warning(self, "Image search", "That image could not be loaded.")
             return
         self.ai_query_image_path = normalized
+        self._sync_image_search_bar_state()
         self.card_search_input.setFocus()
+        if not self.card_search_input.ai_mode_active():
+            self._execute_card_search()
 
     def _clear_ai_image(self) -> None:
         self.ai_query_image_path = ""
         self.card_ai_attachment_chip.clear_image()
+        self._sync_image_search_bar_state()
+
+    def _sync_image_search_bar_state(self) -> None:
+        attached = bool(self.ai_query_image_path.strip())
+        image_search_mode = attached and not self.card_search_input.ai_mode_active()
+        self.card_search_input.set_image_attached(attached)
+        self.card_search_btn.setVisible(True)
+        self.card_search_input.setVisible(not image_search_mode)
+        self.card_ai_attach_btn.setVisible(not attached)
+        self.card_image_search_status.setVisible(image_search_mode)
+        self._sync_card_search_action_button()
+
+    def _sync_card_search_action_button(self) -> None:
+        show_close = bool(self.ai_query_image_path.strip()) or (
+            self.card_search_has_executed and not self.card_search_input.ai_mode_active()
+        )
+        self.card_search_btn.setIcon(self._build_close_icon() if show_close else self._build_search_icon())
+        self.card_search_btn.setToolTip("Back" if show_close else "Search")
+
+    def _on_card_search_button_clicked(self) -> None:
+        if self.ai_query_image_path.strip() or (self.card_search_has_executed and not self.card_search_input.ai_mode_active()):
+            self._clear_card_search()
+            return
+        self._execute_card_search()
+
+    def _clear_card_search(self) -> None:
+        self._play_sound("click")
+        self.card_search_timer.stop()
+        self._set_card_search_dropdown_visible(False)
+        self.card_search_request_id += 1
+        self.card_search_query = ""
+        self.card_search_has_executed = False
+        self.card_search_full_results = []
+        self.card_search_last_scores = []
+        self.card_search_no_close_match = False
+        self.card_search_more_btn.hide()
+        self._reset_card_render_limit()
+        self._clear_ai_image()
+        with QSignalBlocker(self.card_search_input):
+            self.card_search_input.clear()
+        self.card_search_input.set_ai_mode(False)
+        self._sync_card_search_action_button()
+        self._render_cards()
 
     def _restore_previous_ai_query(self) -> None:
         if not self.card_search_input.ai_mode_active() or not self.ai_query_history:
@@ -3016,10 +3216,14 @@ class StudyTab(QWidget):
     def _execute_card_search(self) -> None:
         self._play_sound("click")
         query = self.card_search_input.text().strip()
+        image_path = self.ai_query_image_path.strip()
         self.card_search_timer.stop()
         self._set_card_search_dropdown_visible(False)
         if self.card_search_input.ai_mode_active():
             self._submit_ai_query(query)
+            return
+        if image_path:
+            self._execute_image_card_search(image_path, fallback_text=query)
             return
         if not query:
             self.card_search_query = ""
@@ -3028,16 +3232,18 @@ class StudyTab(QWidget):
             self.card_search_last_scores = []
             self.card_search_no_close_match = False
             self.card_search_more_btn.hide()
+            self._sync_card_search_action_button()
             self._render_cards()
             return
 
         cards = self._filtered_cards()
-        semantic_enabled = self.preflight.semantic_search_available()
+        semantic_enabled = self._neural_acceleration_enabled() and self.preflight.semantic_search_available()
         missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
         if semantic_enabled and missing:
             self._embed_remaining_cards_in_background(missing)
         self.card_search_query = query
         self.card_search_has_executed = True
+        self._sync_card_search_action_button()
         self.card_search_result_limit = 8
         self.card_search_request_id += 1
         worker = CardSearchWorker(
@@ -3054,6 +3260,103 @@ class StudyTab(QWidget):
         worker.finished.connect(lambda _req, _query, _scored, current=worker: self._cleanup_card_search_worker(current))
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _execute_image_card_search(self, image_path: str, *, fallback_text: str = "") -> None:
+        model_key = self._smallest_available_image_model_key()
+        if not model_key:
+            QMessageBox.information(self, "Image search", "Install a supported AI text model before using image search.")
+            return
+        if not self.preflight.require_model(model_key, parent=self, feature_name="Image search"):
+            return
+        cards = self._filtered_cards()
+        if not cards:
+            return
+        self.card_search_request_id += 1
+        request_id = self.card_search_request_id
+        self.card_search_query = "Image search"
+        self.card_search_has_executed = True
+        self._sync_card_search_action_button()
+        self.card_search_result_limit = 8
+        self.card_search_full_results = []
+        self.card_search_last_scores = []
+        self.card_search_no_close_match = False
+        ai_settings = self.datastore.load_ai_settings()
+        term_count = max(2, min(6, int(ai_settings.get("image_search_term_count", 4) or 4)))
+        context_length = max(9216, int(ai_settings.get("followup_context_length", 9216) or 9216))
+        worker = ImageSearchTermsWorker(
+            request_id=request_id,
+            ollama=self.ollama,
+            model=self._model_tag_for_key(model_key),
+            image_path=image_path,
+            term_count=term_count,
+            context_length=context_length,
+        )
+        self.image_search_terms_worker = worker
+        worker.finished.connect(
+            lambda _request_id, terms, original=fallback_text: self._on_image_search_terms_ready(_request_id, original, terms)
+        )
+        worker.failed.connect(self._on_image_search_terms_failed)
+        worker.finished.connect(lambda _request_id, _terms, current=worker: self._cleanup_image_search_worker(current))
+        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_image_search_worker(current))
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_image_search_terms_ready(self, request_id: int, fallback_text: str, terms: object) -> None:
+        if request_id != self.card_search_request_id:
+            return
+        search_terms = [str(term).strip() for term in terms if str(term).strip()] if isinstance(terms, list) else []
+        queries = [fallback_text.strip(), *search_terms]
+        queries = [" ".join(query.split()) for query in queries if " ".join(query.split())]
+        if not queries:
+            self._on_image_search_terms_failed(request_id, "Image search returned no searchable terms.")
+            return
+        cards = self._filtered_cards()
+        semantic_enabled = self._neural_acceleration_enabled() and self.preflight.semantic_search_available()
+        missing = [card for card in cards if not self.embedding_service.is_card_cached(card)]
+        if semantic_enabled and missing:
+            self._embed_remaining_cards_in_background(missing)
+        worker = ImageCardSearchWorker(
+            request_id=request_id,
+            queries=queries,
+            cards=cards,
+            embedding_service=self.embedding_service,
+            limit=max(8, len(cards)),
+            allow_semantic=semantic_enabled,
+        )
+        self.image_card_search_worker = worker
+        worker.finished.connect(self._on_image_card_search_finished)
+        worker.finished.connect(lambda _req, _query, _scored, current=worker: self._cleanup_image_card_search_worker(current))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_image_card_search_finished(self, request_id: int, query: str, scored: object) -> None:
+        if request_id != self.card_search_request_id:
+            return
+        del query
+        scored_items = scored if isinstance(scored, list) else []
+        self.card_search_full_results = [item["card"] for item in scored_items if isinstance(item, dict) and isinstance(item.get("card"), dict)]
+        self.card_search_last_scores = [float(item.get("score", 0.0)) for item in scored_items if isinstance(item, dict)]
+        self.card_search_no_close_match = not bool(scored_items)
+        self._sync_card_search_action_button()
+        self._render_cards(animate_search_results=True)
+        self._clear_ai_image()
+        self._sync_card_search_action_button()
+
+    def _on_image_search_terms_failed(self, request_id: int, message: str) -> None:
+        if request_id != self.card_search_request_id:
+            return
+        self.card_search_has_executed = False
+        self._sync_card_search_action_button()
+        QMessageBox.warning(self, "Image search", message)
+
+    def _cleanup_image_search_worker(self, worker: ImageSearchTermsWorker) -> None:
+        if self.image_search_terms_worker is worker:
+            self.image_search_terms_worker = None
+
+    def _cleanup_image_card_search_worker(self, worker: ImageCardSearchWorker) -> None:
+        if self.image_card_search_worker is worker:
+            self.image_card_search_worker = None
 
     def _on_card_search_finished(self, request_id: int, query: str, scored: object) -> None:
         if request_id != self.card_search_request_id:
@@ -3268,7 +3571,7 @@ class StudyTab(QWidget):
             cards=self.cards,
             embedding_service=self.embedding_service,
             limit=6,
-            allow_semantic=True,
+            allow_semantic=self._neural_acceleration_enabled() and self.preflight.semantic_search_available(),
         )
         self.ai_query_tool_worker = worker
         worker.finished.connect(self._on_ai_show_cards_finished)
@@ -3692,19 +3995,9 @@ class StudyTab(QWidget):
         self.card_empty_state.show()
 
     def _animate_card_tile(self, tile: QWidget, index: int) -> None:
-        end_pos = tile.pos()
-        start_pos = QPoint(end_pos.x(), end_pos.y() + 12)
-        tile.move(start_pos)
-
         opacity = QGraphicsOpacityEffect(tile)
         opacity.setOpacity(0.0)
         tile.setGraphicsEffect(opacity)
-
-        pop = QPropertyAnimation(tile, b"pos", tile)
-        pop.setDuration(180)
-        pop.setStartValue(start_pos)
-        pop.setEndValue(end_pos)
-        pop.setEasingCurve(QEasingCurve.OutCubic)
 
         opacity_anim = QVariantAnimation(tile)
         opacity_anim.setDuration(170)
@@ -3714,7 +4007,6 @@ class StudyTab(QWidget):
         opacity_anim.valueChanged.connect(lambda value, effect=opacity: effect.setOpacity(float(value)))
 
         group = QParallelAnimationGroup(tile)
-        group.addAnimation(pop)
         group.addAnimation(opacity_anim)
         group.finished.connect(lambda current=tile, effect=opacity: current.setGraphicsEffect(None) if current.graphicsEffect() is effect else None)
         self._card_search_animations.append(group)
@@ -4600,7 +4892,7 @@ class StudyTab(QWidget):
         self.session_temp_batches = {}
         self.session_title.setText("Pick a card to start")
         self.session_meta.setText("")
-        self.session_question.setText("Use the Cards subtab or press Start for the current section.")
+        self.session_question.setText("Press Start for the current section.")
         self.answer_input.setEnabled(True)
         self.answer_input.clear()
         self.hints_text.clear()
@@ -4611,6 +4903,7 @@ class StudyTab(QWidget):
         self.grade_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.idk_btn.setEnabled(False)
+        self._update_study_primary_action()
 
     def _remove_card_from_session(self, card: dict) -> None:
         card_id = str(card.get("id", ""))

@@ -149,6 +149,8 @@ class DataStore:
             "followup_context_length": 9216,
             "reinforcement_context_length": 8192,
             "files_to_cards_ocr": True,
+            "neural_acceleration": True,
+            "image_search_term_count": 4,
             "updated_at": cls.now_iso(),
         }
 

@@ -14,6 +14,7 @@ from studymate.services.study_intelligence import build_session_state, enqueue_s
 from studymate.ui.study_tab import AiResponseOverlay, StudyTab
 from studymate.utils.markdown import markdown_to_html
 from studymate.utils.paths import AppPaths
+from studymate.workers.ai_search_worker import _extract_image_search_terms_loose
 
 
 class FakeOllama:
@@ -400,6 +401,20 @@ class NnaServiceTests(unittest.TestCase):
 
         self.assertIn("<h2>1. Master the 2-Minute Rule</h2>", rendered)
         self.assertNotIn("># 1. Master the 2-Minute Rule<", rendered)
+
+    def test_image_search_terms_parser_accepts_cloud_json_array(self) -> None:
+        content = '["photosynthesis diagram", "chloroplast", "plant cell", "sunlight energy"]'
+
+        terms = _extract_image_search_terms_loose(content, limit=4)
+
+        self.assertEqual(["photosynthesis diagram", "chloroplast", "plant cell", "sunlight energy"], terms)
+
+    def test_image_search_terms_parser_accepts_numbered_cloud_text(self) -> None:
+        content = "1. quadratic formula\n2. algebra equation\n3. parabola graph\n4. vertex"
+
+        terms = _extract_image_search_terms_loose(content, limit=4)
+
+        self.assertEqual(["quadratic formula", "algebra equation", "parabola graph", "vertex"], terms)
 
 
 if __name__ == "__main__":

@@ -513,7 +513,7 @@ class SettingsDialog(QDialog):
             QFrame#SettingsWindowShell {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #f8fafc);
                 border: 1px solid rgba(203, 213, 225, 0.6);
-                border-radius: 24px;
+                border-radius: 22px;
             }
             QStackedWidget#SettingsPages,
             QScrollArea#SettingsScrollArea,
@@ -647,8 +647,8 @@ class SettingsDialog(QDialog):
                 stop: 0.35 rgba(248, 250, 252, 240),
                 stop: 1 #f8fafc
             );
-            border-bottom-left-radius: 24px;
-            border-bottom-right-radius: 24px;
+            border-bottom-left-radius: 22px;
+            border-bottom-right-radius: 22px;
             """
         )
         self._top_fade = QWidget(shell_surface)
@@ -738,8 +738,8 @@ class SettingsDialog(QDialog):
             }
             """
         )
-        header.addWidget(self.cancel_btn)
         header.addWidget(self.save_btn)
+        header.addWidget(self.cancel_btn)
         shell.addLayout(header)
         shell.addWidget(self.pages, 1)
         self._set_settings_page(0)
@@ -1749,11 +1749,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(models_surface)
 
         ai_surface, ai_layout = self._settings_card()
-        ai_title = QLabel("AI features")
+        ai_title = QLabel("AI browse")
         ai_title.setObjectName("SectionTitle")
         ai_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         ai_note = QLabel(
-            "Context lengths can only be increased above the shipped defaults. Higher values can use more memory and may slow requests on weaker devices."
+            "Ask AI browsing settings. Context lengths can only be increased above the shipped defaults. Higher values can use more memory and may slow requests on weaker devices."
         )
         ai_note.setObjectName("SectionText")
         ai_note.setWordWrap(True)
@@ -1875,6 +1875,65 @@ class SettingsDialog(QDialog):
         model_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
         ai_layout.addWidget(model_note)
         layout.addWidget(ai_surface)
+
+        search_surface, search_layout = self._settings_card()
+        search_title = QLabel("Search")
+        search_title.setObjectName("SectionTitle")
+        search_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
+        search_note = QLabel("Control semantic search and image search query generation.")
+        search_note.setObjectName("SectionText")
+        search_note.setWordWrap(True)
+        search_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
+        search_layout.addWidget(search_title)
+        search_layout.addWidget(search_note)
+
+        search_form = QFormLayout()
+        search_form.setHorizontalSpacing(18)
+        search_form.setVerticalSpacing(16)
+        search_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.neural_acceleration_checkbox = QCheckBox("Neural Acceleration")
+        self.neural_acceleration_checkbox.setChecked(True)
+        self.neural_acceleration_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                font-size: 14px;
+                color: #334155;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #0f2539;
+                border: 2px solid #0f2539;
+                image: url("__CHECK_ICON__");
+            }
+            """.replace("__CHECK_ICON__", CHECK_ICON_URL)
+        )
+        self.image_search_term_count = QSpinBox()
+        self.image_search_term_count.setRange(2, 6)
+        self.image_search_term_count.setValue(4)
+        self.image_search_term_count.setMinimumWidth(140)
+        self.image_search_term_count.setSuffix(" terms")
+        search_form.addRow("Search mode", self.neural_acceleration_checkbox)
+        search_form.addRow("Image Search", self.image_search_term_count)
+        search_layout.addLayout(search_form)
+
+        search_hint = QLabel(
+            "When Neural Acceleration is off, Cards and MCQ search use keyword matching instead of semantic embeddings."
+        )
+        search_hint.setObjectName("SmallMeta")
+        search_hint.setWordWrap(True)
+        search_hint.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
+        search_layout.addWidget(search_hint)
+        layout.addWidget(search_surface)
 
         layout.addStretch(1)
         scroll.setWidget(host)
@@ -2175,6 +2234,8 @@ class SettingsDialog(QDialog):
         self.ask_ai_emoji_slider.setValue(emoji_value)
         self._last_ask_ai_emoji_value = emoji_value
         self._update_ask_ai_emoji_label(emoji_value)
+        self.neural_acceleration_checkbox.setChecked(bool(ai_settings.get("neural_acceleration", True)))
+        self.image_search_term_count.setValue(max(2, min(6, int(ai_settings.get("image_search_term_count", 4) or 4))))
         cloud_enabled = bool(ai_settings.get("ollama_cloud_enabled", False))
         cloud_api_key = str(ai_settings.get("ollama_cloud_api_key", "")).strip()
         cloud_tag = str(ai_settings.get("ollama_cloud_selected_model_tag", "")).strip()
@@ -2444,6 +2505,8 @@ class SettingsDialog(QDialog):
         ai_settings["ask_ai_tone"] = str(self.ask_ai_tone.currentData() or "warm")
         ai_settings["assistant_tone"] = ai_settings["ask_ai_tone"]
         ai_settings["ask_ai_emoji_level"] = max(1, min(4, self.ask_ai_emoji_slider.value()))
+        ai_settings["neural_acceleration"] = bool(self.neural_acceleration_checkbox.isChecked())
+        ai_settings["image_search_term_count"] = max(2, min(6, int(self.image_search_term_count.value())))
         ai_settings["files_to_cards_ocr"] = self.ftc_ocr_checkbox.isChecked()
         self.datastore.save_ai_settings(ai_settings)
         self.ollama.configure_from_ai_settings(ai_settings)

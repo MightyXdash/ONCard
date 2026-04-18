@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from PySide6.QtCore import QThread, Signal
 
@@ -33,6 +34,14 @@ AI_IMAGE_ANALYSIS_SCHEMA = {
         "uncertainty_note": {"type": "string"},
     },
     "required": ["summary", "visible_text", "topic_hint", "can_read_clearly", "uncertainty_note"],
+}
+
+IMAGE_SEARCH_TERMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "search_terms": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["search_terms"],
 }
 
 
@@ -82,6 +91,77 @@ def _extract_tool_query(tool_calls: object) -> str:
             if query:
                 return query
     return ""
+
+
+def _append_unique_term(terms: list[str], value: object, *, limit: int) -> None:
+    term = " ".join(str(value or "").strip().strip("-*0123456789. )(").split())
+    if not term:
+        return
+    if term.lower() in {existing.lower() for existing in terms}:
+        return
+    terms.append(term)
+    if len(terms) > limit:
+        del terms[limit:]
+
+
+def _extract_image_search_terms(payload: object, *, limit: int) -> list[str]:
+    terms: list[str] = []
+    if isinstance(payload, dict):
+        raw_terms = payload.get("search_terms", [])
+        if isinstance(raw_terms, list):
+            for item in raw_terms:
+                _append_unique_term(terms, item, limit=limit)
+        elif isinstance(raw_terms, str):
+            for part in re.split(r"[,;\n]+", raw_terms):
+                _append_unique_term(terms, part, limit=limit)
+    elif isinstance(payload, list):
+        for item in payload:
+            _append_unique_term(terms, item, limit=limit)
+    return terms[:limit]
+
+
+def _extract_image_search_terms_loose(content: str, *, limit: int) -> list[str]:
+    text = str(content or "").strip()
+    if not text:
+        return []
+    candidates = [text]
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE):
+        snippet = str(match.group(1) or "").strip()
+        if snippet:
+            candidates.insert(0, snippet)
+    start_obj = text.find("{")
+    end_obj = text.rfind("}")
+    if start_obj >= 0 and end_obj > start_obj:
+        candidates.insert(0, text[start_obj : end_obj + 1])
+    start_array = text.find("[")
+    end_array = text.rfind("]")
+    if start_array >= 0 and end_array > start_array:
+        candidates.insert(0, text[start_array : end_array + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        terms = _extract_image_search_terms(parsed, limit=limit)
+        if terms:
+            return terms
+
+    terms: list[str] = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        if not cleaned or cleaned.lower().startswith(("search_terms", "search terms", "json")):
+            continue
+        if ":" in cleaned:
+            cleaned = cleaned.split(":", 1)[1].strip()
+        if "," in cleaned:
+            for part in cleaned.split(","):
+                _append_unique_term(terms, part, limit=limit)
+        else:
+            _append_unique_term(terms, cleaned, limit=limit)
+        if len(terms) >= limit:
+            break
+    return terms[:limit]
 
 
 def _analyze_attached_image(
@@ -333,6 +413,92 @@ class AiSearchPlannerWorker(QThread):
             "reasoning_steps": _default_reasoning_steps(self.prompt, has_image=bool(self.image_paths)),
             "image_analysis": image_analysis,
         }
+
+
+class ImageSearchTermsWorker(QThread):
+    failed = Signal(int, str)
+    finished = Signal(int, object)
+
+    def __init__(
+        self,
+        *,
+        request_id: int,
+        ollama: OllamaService,
+        model: str,
+        image_path: str,
+        term_count: int = 4,
+        context_length: int = 9216,
+    ) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.ollama = ollama
+        self.model = model
+        self.image_path = image_path
+        self.term_count = max(2, min(6, int(term_count or 4)))
+        self.context_length = max(4096, int(context_length or 9216))
+
+    def run(self) -> None:
+        system_prompt = (
+            "You are ONCard's image search query generator. "
+            "Look at the image and return concise terms that would find matching study cards. "
+            "Use only visible evidence. Prefer subject names, concepts, objects, formulas, and readable text."
+        )
+        user_prompt = (
+            f"Return strict JSON with exactly {self.term_count} probable search terms for this image.\n"
+            "Rules:\n"
+            "- Each term should be 1 to 5 words.\n"
+            "- Do not include explanations.\n"
+            "- Do not invent details that are not visible.\n"
+            "- If text is visible, include the most searchable visible words.\n"
+            f'- Example shape: {{"search_terms": ["term one", "term two"]}}\n'
+        )
+        payload: dict | None = None
+        try:
+            payload = self.ollama.structured_chat(
+                model=self.model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=IMAGE_SEARCH_TERMS_SCHEMA,
+                temperature=0.0,
+                timeout=120,
+                image_paths=[self.image_path],
+                extra_options={
+                    "num_ctx": self.context_length,
+                    "num_predict": 160,
+                },
+            )
+        except OllamaError as exc:
+            try:
+                fallback_content = self.ollama.chat(
+                    model=self.model,
+                    system_prompt=system_prompt,
+                    user_prompt=(
+                        f"{user_prompt}\n\n"
+                        "Return only JSON. If your system cannot enforce JSON mode, still write only the JSON object."
+                    ),
+                    temperature=0.0,
+                    timeout=120,
+                    image_paths=[self.image_path],
+                    extra_options={
+                        "num_ctx": self.context_length,
+                        "num_predict": 160,
+                    },
+                )
+            except OllamaError:
+                self.failed.emit(self.request_id, str(exc))
+                return
+            terms = _extract_image_search_terms_loose(fallback_content, limit=self.term_count)
+            if len(terms) >= 2:
+                self.finished.emit(self.request_id, terms)
+                return
+            self.failed.emit(self.request_id, "Image search could not read enough search terms from the cloud response.")
+            return
+
+        terms = _extract_image_search_terms(payload, limit=self.term_count)
+        if len(terms) < 2:
+            self.failed.emit(self.request_id, "Image search could not find enough searchable terms.")
+            return
+        self.finished.emit(self.request_id, terms)
 
 
 class AiSearchAnswerWorker(QThread):

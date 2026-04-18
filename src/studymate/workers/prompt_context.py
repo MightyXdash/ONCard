@@ -322,7 +322,7 @@ def build_ask_ai_answer_system_prompt(
             "GENERAL NAVIGATION MODEL",
             "- Use top nav to switch between Create and Cards",
             "- Use left sidebar in Cards page to filter by subject/topic",
-            "- Use Cards / Study tabs to switch between browsing cards and active studying",
+            "- Press Start from Cards to begin studying, then use Cards in the study view to return to browsing",
             "- Use Settings for app configuration",
             "- Use Profile > View stats for performance summaries",
             "- Use the app icon menu for account switching and external links",
