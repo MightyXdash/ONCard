@@ -16,7 +16,7 @@ Elevate your learning experience with a fully offline AI-powered study app.
 ## About ONCard
 **ONCard (Open-source Neural-Accelerated Cards)** is a fully offline study app with a virtual teacher and an adaptive learning algorithm that improves context and teaching quality over time.
 
-<img width="2559" height="1439" alt="ONCard_Main_UI" src="https://github.com/user-attachments/assets/222943a7-6603-452e-87d4-7bc9ed85c9b7" />
+<img src="https://github.com/user-attachments/assets/222943a7-6603-452e-87d4-7bc9ed85c9b7" width="100%" />
 
 
 ## Features
