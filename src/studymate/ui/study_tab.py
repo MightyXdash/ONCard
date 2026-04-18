@@ -464,6 +464,8 @@ class AiResponseSkeleton(QWidget):
 
 
 class CardSearchSkeletonTile(QFrame):
+    cycleCompleted = Signal()
+
     def __init__(self, tile_width: int, parent=None) -> None:
         super().__init__(parent)
         self._phase = 0.18
@@ -487,7 +489,10 @@ class CardSearchSkeletonTile(QFrame):
         self._timer.stop()
 
     def _advance(self) -> None:
-        self._phase = (self._phase + 0.032) % 1.0
+        previous = self._phase
+        self._phase = (self._phase + 0.022) % 1.0
+        if self._phase < previous:
+            self.cycleCompleted.emit()
         self.update()
 
     def _draw_bar(self, painter: QPainter, rect: QRectF, color: QColor, radius: float) -> None:
@@ -495,15 +500,17 @@ class CardSearchSkeletonTile(QFrame):
         painter.setBrush(color)
         painter.drawRoundedRect(rect, radius, radius)
 
-        shimmer_width = max(42.0, rect.width() * 0.22)
+        shimmer_width = max(62.0, rect.width() * 0.42)
         track = max(1.0, rect.width() + shimmer_width)
         x = rect.left() - shimmer_width + (track * self._phase)
         highlight = QRectF(x, rect.top(), shimmer_width, rect.height())
         gradient = QLinearGradient(highlight.left(), highlight.center().y(), highlight.right(), highlight.center().y())
         gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
-        gradient.setColorAt(0.2, QColor(255, 255, 255, 54))
-        gradient.setColorAt(0.5, QColor(255, 255, 255, 220))
-        gradient.setColorAt(0.8, QColor(255, 255, 255, 54))
+        gradient.setColorAt(0.18, QColor(255, 255, 255, 28))
+        gradient.setColorAt(0.36, QColor(255, 255, 255, 82))
+        gradient.setColorAt(0.5, QColor(255, 255, 255, 132))
+        gradient.setColorAt(0.64, QColor(255, 255, 255, 82))
+        gradient.setColorAt(0.82, QColor(255, 255, 255, 28))
         gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
         painter.save()
         painter.setClipPath(self._rounded_rect_path(rect, radius))
@@ -2178,7 +2185,7 @@ class StudyTab(QWidget):
     CARD_SUGGESTION_IDLE_COLLAPSE_MS = 6000
     CARD_GHOST_FULL_ACCEPT_MS = 750
     CARD_GHOST_AUTO_SEARCH_MS = 850
-    CARD_SEARCH_SKELETON_MIN_MS = 2850
+    CARD_SEARCH_SKELETON_MIN_CYCLES = 2
     CARDS_TOOLBAR_CONTROL_HEIGHT = 40
     CARDS_TOOLBAR_SHELL_HEIGHT = 50
     AI_TRIGGER_TOKENS = {"/ai", "#ai"}
@@ -2269,12 +2276,13 @@ class StudyTab(QWidget):
         self.card_search_last_scores: list[float] = []
         self.card_search_has_executed = False
         self.card_search_loading = False
-        self.card_search_loading_started_at = 0.0
+        self.card_search_skeleton_cycles = 0
         self.pending_card_search_results: tuple[int, str, list] | None = None
         self.card_search_request_id = 0
         self.card_search_dropdown_collapsed_by_idle = False
         self.card_search_ghost_text = ""
         self.card_search_last_tab_at = 0.0
+        self.card_search_term_cache: list[tuple[str, str, str, str, str]] = []
         self.ai_query_request_id = 0
         self.card_search_no_close_match = False
         self.global_recommendations: list[RecommendedCard] = []
@@ -2588,6 +2596,7 @@ class StudyTab(QWidget):
         self.card_scroll.setWidget(self.card_host)
         cards_layout.addWidget(self.card_scroll)
         self.card_empty_state = QWidget()
+        self.card_empty_state.setObjectName("CardEmptyState")
         self.card_empty_state.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         empty_layout = QVBoxLayout(self.card_empty_state)
         empty_layout.setContentsMargins(56, 40, 56, 40)
@@ -3028,6 +3037,7 @@ class StudyTab(QWidget):
         if self.cards_loaded_once and not (force or self.cards_dirty):
             return
         self.cards = self.datastore.list_all_cards()
+        self._rebuild_card_search_term_cache()
         self.cards_loaded_once = True
         self.cards_dirty = False
         self.card_search_loading = False
@@ -3175,6 +3185,37 @@ class StudyTab(QWidget):
             filtered = [card for card in filtered if card.get("subtopic") == self.current_subtopic]
         return filtered
 
+    def _rebuild_card_search_term_cache(self) -> None:
+        cache: list[tuple[str, str, str, str, str]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for card in self.cards:
+            raw_terms = card.get("search_terms", [])
+            if not isinstance(raw_terms, list):
+                continue
+            subject = str(card.get("subject", ""))
+            category = str(card.get("category", ""))
+            subtopic = str(card.get("subtopic", ""))
+            for term in raw_terms:
+                display = " ".join(str(term or "").strip().split())
+                if len(display) < 2:
+                    continue
+                key = (display.lower(), subject, category, subtopic)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cache.append((display.lower(), display, subject, category, subtopic))
+        cache.sort(key=lambda item: (len(item[1]), item[1].lower()))
+        self.card_search_term_cache = cache
+
+    def _card_search_term_in_scope(self, subject: str, category: str, subtopic: str) -> bool:
+        if self.current_subject != "All Subjects" and subject != self.current_subject:
+            return False
+        if self.current_category != "All" and category != self.current_category:
+            return False
+        if self.current_subtopic != "All" and subtopic != self.current_subtopic:
+            return False
+        return True
+
     def _queue_card_search(self, text: str) -> None:
         normalized = text.strip()
         if not self.card_search_input.ai_mode_active() and normalized.lower() in self.AI_TRIGGER_TOKENS:
@@ -3289,31 +3330,18 @@ class StudyTab(QWidget):
         self.card_search_input.set_ghost_text(ghost)
 
     def _card_search_terms_ghost(self, query: str, scored_items: object | None = None) -> str:
+        del scored_items
         raw_query = str(query or "")
-        normalized_query = " ".join(str(query or "").strip().split())
-        if not normalized_query:
+        if not raw_query.strip():
             return ""
-        cards: list[dict] = []
-        if isinstance(scored_items, list):
-            for item in scored_items:
-                if isinstance(item, dict) and isinstance(item.get("card"), dict):
-                    cards.append(item["card"])
-        if not cards:
-            cards = list(self.card_search_suggestions)
-        if not cards:
-            cards = self._filtered_cards()
-
         raw_query_lower = raw_query.lower()
-        for card in cards:
-            raw_terms = card.get("search_terms", [])
-            if not isinstance(raw_terms, list):
+        for candidate_lower, candidate, subject, category, subtopic in self.card_search_term_cache:
+            if not self._card_search_term_in_scope(subject, category, subtopic):
                 continue
-            for term in raw_terms:
-                candidate = " ".join(str(term or "").strip().split())
-                if len(candidate) <= len(raw_query):
-                    continue
-                if raw_query and candidate.lower().startswith(raw_query_lower):
-                    return f"{raw_query}{candidate[len(raw_query):]}"
+            if len(candidate) <= len(raw_query):
+                continue
+            if candidate_lower.startswith(raw_query_lower):
+                return f"{raw_query}{candidate[len(raw_query):]}"
         return ""
 
     def _accept_card_search_ghost_completion(self) -> bool:
@@ -3344,7 +3372,7 @@ class StudyTab(QWidget):
             self.card_search_input.setText(accepted)
             self.card_search_input.setCursorPosition(len(accepted))
         self._sync_card_search_ghost_text()
-        self._request_card_suggestions()
+        self.card_search_timer.start(self.CARD_SUGGESTION_DEBOUNCE_MS)
         self._restart_card_suggestion_idle_collapse()
         if auto_search:
             QTimer.singleShot(0, self._execute_card_search)
@@ -3535,7 +3563,7 @@ class StudyTab(QWidget):
         self.card_search_query = query
         self.card_search_has_executed = True
         self.card_search_loading = True
-        self.card_search_loading_started_at = time.monotonic()
+        self.card_search_skeleton_cycles = 0
         self.pending_card_search_results = None
         self._sync_card_search_action_button()
         self.card_search_result_limit = 8
@@ -3674,11 +3702,12 @@ class StudyTab(QWidget):
         if query != self.card_search_input.text().strip():
             return
         scored_items = scored if isinstance(scored, list) else []
-        elapsed_ms = int((time.monotonic() - self.card_search_loading_started_at) * 1000)
-        remaining_ms = self.CARD_SEARCH_SKELETON_MIN_MS - elapsed_ms
-        if self.card_search_loading and remaining_ms > 0:
+        if (
+            self.card_search_loading
+            and scored_items
+            and self.card_search_skeleton_cycles < self.CARD_SEARCH_SKELETON_MIN_CYCLES
+        ):
             self.pending_card_search_results = (request_id, query, list(scored_items))
-            QTimer.singleShot(remaining_ms, lambda req=request_id: self._apply_pending_card_search_results(req))
             return
         self._apply_card_search_results(scored_items)
 
@@ -4235,6 +4264,13 @@ class StudyTab(QWidget):
     def _build_card_search_skeleton_tile(self, tile_width: int) -> QFrame:
         return CardSearchSkeletonTile(tile_width)
 
+    def _on_card_search_skeleton_cycle_completed(self) -> None:
+        if not self.card_search_loading:
+            return
+        self.card_search_skeleton_cycles += 1
+        if self.card_search_skeleton_cycles >= self.CARD_SEARCH_SKELETON_MIN_CYCLES:
+            self._apply_pending_card_search_results(self.card_search_request_id)
+
     def _show_card_search_skeleton(self) -> None:
         self.card_scroll.show()
         self.card_empty_state.hide()
@@ -4249,7 +4285,10 @@ class StudyTab(QWidget):
         for index in range(skeleton_count):
             row = index // columns
             col = index % columns
-            self.card_grid.addWidget(self._build_card_search_skeleton_tile(tile_width), row, col)
+            tile = self._build_card_search_skeleton_tile(tile_width)
+            if index == 0 and isinstance(tile, CardSearchSkeletonTile):
+                tile.cycleCompleted.connect(self._on_card_search_skeleton_cycle_completed)
+            self.card_grid.addWidget(tile, row, col)
 
     def _render_next_card_batch(self) -> None:
         if not self._card_stream_cards:

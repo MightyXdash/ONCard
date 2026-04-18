@@ -31,6 +31,7 @@ from studymate.ui.mcq_tab import MCQTab
 from studymate.ui.settings_dialog import SettingsDialog
 from studymate.ui.stats_dialog import StatsDialog
 from studymate.ui.study_tab import StudyTab
+from studymate.ui.windows_toast import set_windows_app_user_model_id, show_windows_toast
 from studymate.ui.window_effects import polish_windows_window
 
 
@@ -1073,6 +1074,7 @@ class MainWindow(QMainWindow):
 
     def _init_tray_icon(self) -> None:
         self._tray_icon: QSystemTrayIcon | None = None
+        set_windows_app_user_model_id()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         tray_icon = self.windowIcon()
@@ -1090,14 +1092,16 @@ class MainWindow(QMainWindow):
         message_subject = str(subject).strip() or "study"
         message_text = f"We have completed making your {message_subject} slides"
         notification_sound = str(setup.get("audio", {}).get("notification_sound", "windows")).strip().lower()
-        if self._tray_icon is not None and self._tray_icon.isVisible():
+        custom_sound = notification_sound and notification_sound != "windows"
+        toast_shown = show_windows_toast("ONCard - FTC", message_text, silent=bool(custom_sound))
+        if not toast_shown and self._tray_icon is not None and self._tray_icon.isVisible():
             self._tray_icon.showMessage(
                 "ONCard - FTC",
                 message_text,
                 QSystemTrayIcon.MessageIcon.Information,
                 6000,
             )
-        if notification_sound and notification_sound != "windows":
+        if custom_sound:
             for index in range(4):
                 QTimer.singleShot(index * 650, lambda sound=notification_sound: self.sounds.play_notification(sound))
         self.show_update_notice(message_text, 6000)
@@ -1105,14 +1109,16 @@ class MainWindow(QMainWindow):
     def show_audio_test_notification(self, sound: str) -> None:
         clean_sound = str(sound or "windows").strip().lower()
         message = random.choice(self.AUDIO_TEST_MESSAGES)
-        if self._tray_icon is not None and self._tray_icon.isVisible():
+        custom_sound = clean_sound != "windows"
+        toast_shown = show_windows_toast("ONCard Dummy Notification", message, silent=custom_sound)
+        if not toast_shown and self._tray_icon is not None and self._tray_icon.isVisible():
             self._tray_icon.showMessage(
                 "ONCard Dummy Notification",
                 message,
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
             )
-        if clean_sound != "windows":
+        if custom_sound:
             self.sounds.play_notification(clean_sound)
 
     def begin_update_shutdown(self) -> None:

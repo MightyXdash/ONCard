@@ -111,6 +111,9 @@ def app_stylesheet() -> str:
     QWidget#CardsCanvas {
         background-color: transparent;
     }
+    QWidget#CardEmptyState {
+        background-color: transparent;
+    }
     QLabel#RecommendationTitle {
         font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
         font-size: 19px;
