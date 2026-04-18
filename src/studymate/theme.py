@@ -695,6 +695,26 @@ def app_stylesheet() -> str:
         background-color: #fbfdff;
         border-color: rgba(122, 168, 220, 0.66);
     }
+    QFrame#CardSearchSkeletonTile {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(168, 182, 197, 0.38);
+        border-radius: 24px;
+    }
+    QFrame#CardSearchSkeletonBarStrong {
+        background-color: rgba(213, 224, 235, 0.98);
+        border: none;
+        border-radius: 8px;
+    }
+    QFrame#CardSearchSkeletonBar {
+        background-color: rgba(226, 234, 242, 0.98);
+        border: none;
+        border-radius: 6px;
+    }
+    QFrame#CardSearchSkeletonPill {
+        background-color: rgba(236, 242, 248, 0.98);
+        border: none;
+        border-radius: 10px;
+    }
     QToolButton#CardOptionsButton {
         background-color: rgba(255, 255, 255, 0.98);
         color: #2e465b;
