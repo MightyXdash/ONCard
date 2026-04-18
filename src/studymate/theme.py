@@ -92,7 +92,7 @@ def app_stylesheet() -> str:
     QFrame#SearchInputShell {
         background-color: rgba(255, 255, 255, 0.98);
         border: 1px solid rgba(167, 182, 199, 0.42);
-        border-radius: 19px;
+        border-radius: 20px;
     }
     QFrame#SearchInputShell[focusRing="true"] {
         border: 1px solid #7aa8dc;

@@ -34,6 +34,11 @@ class FilesToCardsJob:
     background_workers: int = 2
     text_model_tag: str = "gemma3:4b"
     text_model_label: str = "Gemma3:4b"
+    ocr_model_tag: str = "gemma3:4b"
+    ocr_model_label: str = "Gemma3:4b"
+    ocr_context_length: int = 8192
+    paper_context_length: int = 8192
+    cards_context_length: int = 8192
 
 
 class FilesToCardsWorker(QThread):
@@ -77,7 +82,7 @@ class FilesToCardsWorker(QThread):
         total_units = len(normalized)
         if self.job.use_ocr:
             source_text_parts: list[str] = []
-            self._emit_status(f"{self.job.text_model_label} OCR is extracting page text...")
+            self._emit_status(f"{self.job.ocr_model_label} OCR is extracting page text...")
             for page in normalized:
                 self._ensure_running()
                 page_text = self._ocr_page(page)
@@ -93,14 +98,14 @@ class FilesToCardsWorker(QThread):
 
     def _ocr_page(self, page) -> str:
         entry_key = f"{self.job.run_id}:ocr:{page.unit_index}"
-        self._emit_status(f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
+        self._emit_status(f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
 
         while True:
             self._ensure_running()
             parts: list[str] = []
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=self.job.text_model_tag,
+                model=self.job.ocr_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are a careful OCR assistant. "
@@ -115,7 +120,7 @@ class FilesToCardsWorker(QThread):
                 image_paths=[str(page.image_path)],
                 temperature=0.0,
                 extra_options={
-                    "num_ctx": 8192,
+                    "num_ctx": max(2000, min(86000, int(self.job.ocr_context_length or 8192))),
                     "repeat_last_n": 256,
                     "repeat_penalty": 1.2,
                 },
@@ -128,7 +133,7 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}",
+                    title=f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(combined, threshold=8) or _has_consecutive_repeated_line(
@@ -230,7 +235,7 @@ class FilesToCardsWorker(QThread):
                 image_paths=image_paths,
                 temperature=0.15,
                 extra_options={
-                    "num_ctx": max(8192, paper_ctx_for_units(total_units)),
+                    "num_ctx": max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units)))),
                     "repeat_last_n": 256,
                     "repeat_penalty": 1.2,
                 },
@@ -304,7 +309,7 @@ class FilesToCardsWorker(QThread):
                 ),
                 user_prompt=user_prompt,
                 temperature=0.2,
-                extra_options={"num_ctx": max(8192, paper_ctx_for_units(total_units))},
+                extra_options={"num_ctx": max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units))))},
                 timeout=420,
                 should_stop=self.isInterruptionRequested,
             ):
@@ -338,7 +343,7 @@ class FilesToCardsWorker(QThread):
 
     def _run_paper_stage(self, source_text_parts: list[str], total_units: int) -> str:
         paper_buffer: list[str] = []
-        ctx = paper_ctx_for_units(total_units)
+        ctx = max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units))))
         source_block = "\n\n".join(source_text_parts).strip()
         custom_block = self.job.custom_instructions.strip()
         user_prompt = (
@@ -416,7 +421,7 @@ class FilesToCardsWorker(QThread):
             self._ensure_running()
             batch_index += 1
             batch_size = min(4, remaining)
-            ctx = gemma_ctx_for_batch(batch_index)
+            ctx = max(2000, min(86000, int(self.job.cards_context_length or gemma_ctx_for_batch(batch_index))))
             self._emit_status(f"Generating question batch {batch_index} with {self.job.text_model_label}...")
             batch_questions = self._collect_gemma_batch(
                 research_paper=research_paper,

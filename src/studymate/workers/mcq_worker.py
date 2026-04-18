@@ -233,6 +233,7 @@ class MCQWorker(QThread):
         ollama: OllamaService,
         model: str,
         profile_context: dict | None = None,
+        context_length: int = 8192,
         difficulty: str = "slightly_harder",
     ) -> None:
         super().__init__()
@@ -240,6 +241,7 @@ class MCQWorker(QThread):
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.context_length = max(1024, int(context_length or 8192))
         self.difficulty = difficulty
 
     def run(self) -> None:
@@ -253,6 +255,7 @@ class MCQWorker(QThread):
                 ollama=self.ollama,
                 model=self.model,
                 profile_context=self.profile_context,
+                context_length=self.context_length,
                 difficulty=self.difficulty,
                 status_callback=self.status.emit,
             )
@@ -276,6 +279,7 @@ class MCQBulkWorker(QThread):
         ollama: OllamaService,
         model: str,
         profile_context: dict | None = None,
+        context_length: int = 8192,
         difficulty: str = "slightly_harder",
     ) -> None:
         super().__init__()
@@ -284,6 +288,7 @@ class MCQBulkWorker(QThread):
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.context_length = max(1024, int(context_length or 8192))
         self.difficulty = difficulty
 
     def _save_generated_card_answer(self, card: dict, payload: dict) -> None:
@@ -323,6 +328,7 @@ class MCQBulkWorker(QThread):
                     ollama=self.ollama,
                     model=self.model,
                     profile_context=self.profile_context,
+                    context_length=self.context_length,
                     difficulty=self.difficulty,
                 )
                 save_mcq_payload(self.datastore, card, payload)
@@ -341,6 +347,7 @@ def generate_mcq_payload(
     ollama: OllamaService,
     model: str,
     profile_context: dict | None = None,
+    context_length: int = 8192,
     difficulty: str = "slightly_harder",
 ) -> dict:
     question = str(card.get("question", "")).strip()
@@ -352,6 +359,7 @@ def generate_mcq_payload(
         ollama=ollama,
         model=model,
         profile_context=profile_context,
+        context_length=context_length,
         difficulty=difficulty,
     )
 
@@ -362,10 +370,12 @@ def _generate_mcq_payload_with_retries(
     ollama: OllamaService,
     model: str,
     profile_context: dict | None = None,
+    context_length: int = 8192,
     difficulty: str = "slightly_harder",
     status_callback=None,
 ) -> dict:
     profile_context = profile_context or {}
+    context_length = max(1024, int(context_length or 8192))
     system_prompt = _mcq_system_prompt(profile_context, difficulty)
     base_user_prompt = _mcq_user_prompt(card, profile_context)
     last_error: Exception | None = None
@@ -390,6 +400,7 @@ def _generate_mcq_payload_with_retries(
                 schema=MCQ_RESPONSE_SCHEMA,
                 temperature=min(0.45, 0.2 + (0.1 * attempt)),
                 timeout=MCQ_GENERATION_TIMEOUT_SECONDS,
+                extra_options={"num_ctx": context_length},
             )
             return build_mcq_payload(card, normalize_mcq_answers(response.get("answers", [])), model)
         except (OllamaError, ValueError) as exc:

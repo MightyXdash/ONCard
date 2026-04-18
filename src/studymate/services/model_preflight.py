@@ -9,7 +9,7 @@ import time
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from studymate.services.data_store import DataStore
-from studymate.services.model_registry import MODELS, non_embedding_llm_keys
+from studymate.services.model_registry import MODELS, non_embedding_llm_keys, ocr_llm_keys, smallest_supported_ocr_llm_key
 from studymate.services.ollama_service import OllamaService
 
 
@@ -93,6 +93,12 @@ class ModelPreflightService:
                     installed_models[key] = False
                 else:
                     installed_models[key] = bool(installed_models.get(key, False))
+
+            installed_ocr_keys = [key for key in ocr_llm_keys() if bool(installed_models.get(key, False))]
+            selected_ocr_key = str(ai_settings.get("selected_ocr_llm_key", "")).strip()
+            if installed_ocr_keys and selected_ocr_key not in installed_ocr_keys:
+                ai_settings["selected_ocr_llm_key"] = smallest_supported_ocr_llm_key(installed_ocr_keys)
+                self.datastore.save_ai_settings(ai_settings)
 
             if installed_models != dict(setup.get("installed_models", {})):
                 setup["installed_models"] = installed_models

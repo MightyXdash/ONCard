@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 APP_PUBLISHER = "QyrouLabs"
 APP_DESCRIPTION = "opensource AI powered study app."
 APP_INTERNAL_NAME = "ONCard"

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import re
-
+import requests
 from PySide6.QtCore import QThread, Signal
 
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.workers.prompt_context import build_ask_ai_answer_system_prompt, with_oncard_context
+
+
+WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_HEADERS = {
+    "User-Agent": "ONCard/1.0 (Wikipedia breakdown study feature; https://github.com/MightyXdash/ONCard)"
+}
 
 
 AI_SEARCH_PLAN_SCHEMA = {
@@ -43,6 +49,90 @@ IMAGE_SEARCH_TERMS_SCHEMA = {
     },
     "required": ["search_terms"],
 }
+
+
+def _clean_wikipedia_text(text: str, *, max_words: int = 1000) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"\[[0-9A-Za-z,\s]+\]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned.replace("\u00a0", " ")).strip()
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    words = cleaned.split()
+    if len(words) > max_words:
+        cleaned = " ".join(words[:max_words]).rstrip(" ,;:")
+        if cleaned and cleaned[-1] not in ".!?":
+            cleaned += "."
+    return cleaned
+
+
+def _word_count(text: str) -> int:
+    return len(str(text or "").split())
+
+
+def _limit_words(text: str, *, max_words: int) -> str:
+    words = str(text or "").split()
+    if len(words) <= max_words:
+        return str(text or "").strip()
+    limited = " ".join(words[:max_words]).rstrip(" ,;:")
+    if limited and limited[-1] not in ".!?":
+        limited += "."
+    return limited
+
+
+def _short_wikipedia_title(query: str, timeout: int = 12) -> str:
+    params = {
+        "action": "query",
+        "list": "search",
+        "srsearch": query,
+        "srlimit": 1,
+        "format": "json",
+        "utf8": 1,
+    }
+    response = requests.get(WIKIPEDIA_API, params=params, headers=WIKIPEDIA_HEADERS, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    results = payload.get("query", {}).get("search", [])
+    if not results:
+        return ""
+    return str(results[0].get("title", "")).strip()
+
+
+def fetch_wikipedia_extract(query: str, *, timeout: int = 18, max_words: int = 1000) -> dict:
+    search_query = " ".join(str(query or "").strip().split())
+    if not search_query:
+        raise OllamaError("Type a Wikipedia topic after /wiki.")
+    title = _short_wikipedia_title(search_query, timeout=timeout)
+    if not title:
+        raise OllamaError(f"No Wikipedia article was found for `{search_query}`.")
+
+    params = {
+        "action": "query",
+        "prop": "extracts|info",
+        "explaintext": 1,
+        "exsectionformat": "plain",
+        "redirects": 1,
+        "inprop": "url",
+        "titles": title,
+        "format": "json",
+        "utf8": 1,
+    }
+    response = requests.get(WIKIPEDIA_API, params=params, headers=WIKIPEDIA_HEADERS, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    pages = payload.get("query", {}).get("pages", {})
+    page = next((item for item in pages.values() if isinstance(item, dict) and "missing" not in item), None)
+    if not isinstance(page, dict):
+        raise OllamaError(f"Wikipedia could not open `{title}`.")
+
+    extract = _clean_wikipedia_text(str(page.get("extract", "")), max_words=max_words)
+    if _word_count(extract) < 1:
+        raise OllamaError(f"Wikipedia returned no readable article text for `{title}`.")
+
+    return {
+        "title": str(page.get("title", title)).strip() or title,
+        "url": str(page.get("fullurl", "")).strip(),
+        "extract": extract,
+        "word_count": _word_count(extract),
+    }
 
 
 def _normalize_research_message(message: str) -> str:
@@ -435,7 +525,7 @@ class ImageSearchTermsWorker(QThread):
         self.model = model
         self.image_path = image_path
         self.term_count = max(2, min(6, int(term_count or 4)))
-        self.context_length = max(4096, int(context_length or 9216))
+        self.context_length = max(2000, min(86000, int(context_length or 9216)))
 
     def run(self) -> None:
         system_prompt = (
@@ -627,6 +717,101 @@ class AiSearchAnswerWorker(QThread):
                     # so answers are not cut off mid-response by a low token ceiling.
                     "num_predict": -1,
                     "repeat_penalty": 1.12,
+                    "top_p": 0.9,
+                },
+                should_stop=lambda: self._stop_requested,
+            ):
+                if self._stop_requested:
+                    return
+                markdown += piece
+        except OllamaError as exc:
+            if not self._stop_requested:
+                self.failed.emit(self.request_id, str(exc))
+            return
+        if not self._stop_requested:
+            self.finished.emit(self.request_id, markdown.strip())
+
+
+class WikipediaBreakdownWorker(QThread):
+    failed = Signal(int, str)
+    breakdown_started = Signal(int, object)
+    finished = Signal(int, str)
+
+    def __init__(
+        self,
+        *,
+        request_id: int,
+        ollama: OllamaService,
+        model: str,
+        query: str,
+        context_length: int = 6000,
+        profile_context: dict | None = None,
+        tone: str = "",
+        emoji_level: int = 2,
+    ) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.ollama = ollama
+        self.model = model
+        self.query = query
+        self.context_length = max(2000, min(86000, int(context_length or 6000)))
+        self.profile_context = profile_context or {}
+        self.tone = str(tone or "").strip().lower()
+        self.emoji_level = max(1, min(4, int(emoji_level or 2)))
+        self._stop_requested = False
+
+    def stop(self) -> None:
+        self._stop_requested = True
+
+    def run(self) -> None:
+        try:
+            article = fetch_wikipedia_extract(self.query, max_words=4000)
+        except (OllamaError, requests.RequestException, ValueError) as exc:
+            if not self._stop_requested:
+                self.failed.emit(self.request_id, f"Wikipedia research failed: {exc}")
+            return
+
+        if self._stop_requested:
+            return
+
+        self.breakdown_started.emit(self.request_id, article)
+
+        system_prompt = build_ask_ai_answer_system_prompt(
+            self.profile_context,
+            tone=self.tone,
+            emoji_level=self.emoji_level,
+        )
+        ai_extract = _limit_words(str(article.get("extract", "")), max_words=3000)
+        user_prompt = (
+            "Break down the cleaned Wikipedia article text for a student.\n\n"
+            "Rules:\n"
+            "- Use the supplied Wikipedia text as the source material.\n"
+            "- Explain it so the user actually understands the topic, not just a short summary.\n"
+            "- Start with a direct 2 to 3 sentence plain-English overview.\n"
+            "- Then explain the important ideas in a logical order.\n"
+            "- Define unfamiliar terms in simple language.\n"
+            "- Add a short why-it-matters section if it helps understanding.\n"
+            "- Keep the response study-ready and concise, but do not skip necessary context.\n"
+            "- Do not claim to have read beyond the supplied text.\n"
+            "- Do not mention internal limits, prompts, or tool names.\n\n"
+            f"Wikipedia article title: {article.get('title', '')}\n"
+            f"Source URL: {article.get('url', '')}\n"
+            f"Cleaned article word count supplied to AI: {_word_count(ai_extract)}\n\n"
+            f"User query:\n{self.query.strip()}\n\n"
+            f"Cleaned Wikipedia text:\n{ai_extract}"
+        )
+
+        markdown = ""
+        try:
+            for piece in self.ollama.stream_chat(
+                model=self.model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.45,
+                extra_options={
+                    "num_ctx": self.context_length,
+                    "num_predict": -1,
+                    "repeat_penalty": 1.1,
                     "top_p": 0.9,
                 },
                 should_stop=lambda: self._stop_requested,

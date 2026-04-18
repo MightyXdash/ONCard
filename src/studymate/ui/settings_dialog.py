@@ -33,7 +33,17 @@ from PySide6.QtWidgets import (
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
-from studymate.services.model_registry import MODELS, ModelSpec, non_embedding_llm_keys, resolve_active_text_llm_spec, resolve_active_text_model_tag, text_llm_key_for_model_tag
+from studymate.services.model_registry import (
+    MODELS,
+    ModelSpec,
+    non_embedding_llm_keys,
+    ocr_llm_keys,
+    resolve_active_ocr_llm_key,
+    resolve_active_text_llm_spec,
+    resolve_active_text_model_tag,
+    smallest_supported_ocr_llm_key,
+    text_llm_key_for_model_tag,
+)
 from studymate.services.ollama_service import OllamaError, OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLineEdit, polish_surface
 from studymate.ui.wizard import GenderPickerDialog, GradePickerDialog
@@ -42,9 +52,23 @@ from studymate.workers.install_worker import ModelInstallWorker
 from studymate.workers.mcq_worker import MCQBulkWorker
 
 
-FOLLOWUP_CONTEXT_MIN = 9216
-REINFORCEMENT_CONTEXT_MIN = 8192
-MAX_CONTEXT_LENGTH = 65536
+MIN_CONTEXT_LENGTH = 2000
+MAX_CONTEXT_LENGTH = 86000
+CONTEXT_LENGTH_SETTINGS = [
+    ("autofill_context_length", "Card autofill", "Creates card metadata, hints, answer choices, and a starter answer.", 8192),
+    ("grading_context_length", "Answer grading", "Grades written answers and builds the feedback report.", 8192),
+    ("mcq_context_length", "MCQ generation", "Creates multiple-choice answers and tricky distractors for cards.", 8192),
+    ("ask_ai_planner_context_length", "Ask AI planner", "Decides whether Ask AI should browse cards, images, or answer directly.", 4400),
+    ("ask_ai_answer_context_length", "Ask AI answer", "Writes the final Ask AI response from retrieved cards and study context.", 9216),
+    ("ask_ai_image_context_length", "Image search terms", "Reads an attached image and turns it into searchable study terms.", 8192),
+    ("wiki_breakdown_context_length", "Wikipedia breakdown", "Reads a cleaned Wikipedia extract and explains it in simple study-ready language.", 6000),
+    ("followup_context_length", "Follow-up chat", "Answers follow-up questions about the current card and feedback.", 9216),
+    ("reinforcement_context_length", "Reinforcement cards", "Creates temporary practice cards after weak answers.", 8192),
+    ("files_to_cards_ocr_context_length", "Files To Cards OCR", "Extracts text from PDFs, slides, and images before card generation.", 8192),
+    ("files_to_cards_paper_context_length", "Files To Cards paper", "Builds revision notes from uploaded source material.", 8192),
+    ("files_to_cards_cards_context_length", "Files To Cards cards", "Converts revision notes into final study cards.", 8192),
+    ("stats_context_length", "Stats summary", "Summarizes progress charts, weak subjects, and next study steps.", 4000),
+]
 ASK_AI_TONE_OPTIONS = [
     ("Warm", "warm"),
     ("Funny", "funny"),
@@ -72,16 +96,59 @@ CHECK_ICON_URL = (Path(__file__).resolve().parents[3] / "assets" / "icons" / "co
 class PopupMenuComboBox(AnimatedComboBox):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._popup_handler = None
 
     def set_popup_handler(self, handler) -> None:
         self._popup_handler = handler
+
+    def wheelEvent(self, event) -> None:
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
     def showPopup(self) -> None:
         if callable(self._popup_handler):
             self._popup_handler()
             return
         super().showPopup()
+
+
+class SettingsComboBox(QComboBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event) -> None:
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
+
+
+class SettingsSlider(QSlider):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event) -> None:
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
+
+
+class SettingsSpinBox(QSpinBox):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event) -> None:
+        if not self.hasFocus():
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
 
 class SettingsPickerButton(AnimatedButton):
@@ -485,6 +552,7 @@ class SettingsDialog(QDialog):
         self._mcq_bulk_worker: MCQBulkWorker | None = None
         self._install_target_key = ""
         self._model_rows: dict[str, dict[str, object]] = {}
+        self._context_length_spins: dict[str, SettingsSpinBox] = {}
         self._account_action_buttons: list[QPushButton] = []
         self._sfx_ready = False
         self._last_attention_value = 5
@@ -1003,6 +1071,23 @@ class SettingsDialog(QDialog):
             layout.setSpacing(10)
         return surface, layout
 
+    def _context_row_label(self, title: str, description: str) -> QWidget:
+        host = QWidget()
+        host.setStyleSheet("QWidget { background: transparent; }")
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("SectionText")
+        title_label.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #0f172a; font-weight: 600; }")
+        description_label = QLabel(description)
+        description_label.setObjectName("SmallMeta")
+        description_label.setWordWrap(True)
+        description_label.setStyleSheet("QLabel#SmallMeta { font-size: 11px; color: #64748b; }")
+        layout.addWidget(title_label)
+        layout.addWidget(description_label)
+        return host
+
     def _build_general_tab(self) -> QWidget:
         scroll = self._settings_scroll_area()
 
@@ -1049,7 +1134,7 @@ class SettingsDialog(QDialog):
 
         self.name_edit = AnimatedLineEdit()
         self.profile_name_edit = AnimatedLineEdit()
-        self.age_spin = QSpinBox()
+        self.age_spin = SettingsSpinBox()
         self.age_spin.setRange(4, 99)
         self.hobbies_edit = AnimatedLineEdit()
         self.grade_combo = SettingsPickerButton("Choose grade")
@@ -1071,9 +1156,8 @@ class SettingsDialog(QDialog):
         gender_layout.setSpacing(6)
         gender_layout.addWidget(self.gender_combo)
         gender_layout.addWidget(self.gender_custom_edit)
-        self.attention_slider = QSlider(Qt.Horizontal)
+        self.attention_slider = SettingsSlider(Qt.Horizontal)
         self.attention_slider.setObjectName("SettingsAttentionSlider")
-        self.attention_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.attention_slider.setRange(1, 10)
         self.attention_slider.setSingleStep(1)
         self.attention_slider.setPageStep(1)
@@ -1211,10 +1295,10 @@ class SettingsDialog(QDialog):
         self.ftc_default_mode.addItem("Force", "force")
         self.ftc_default_mode.set_popup_handler(self._open_ftc_mode_picker)
 
-        self.ftc_questions_standard = QSpinBox()
+        self.ftc_questions_standard = SettingsSpinBox()
         self.ftc_questions_standard.setRange(1, 30)
         self.ftc_questions_standard.setMinimumWidth(140)
-        self.ftc_questions_force = QSpinBox()
+        self.ftc_questions_force = SettingsSpinBox()
         self.ftc_questions_force.setRange(1, 30)
         self.ftc_questions_force.setMinimumWidth(140)
 
@@ -1549,6 +1633,49 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 4, 82)
         layout.setSpacing(20)
 
+        ai_model_surface, ai_model_layout = self._settings_card()
+        ai_model_title = QLabel("AI-Model")
+        ai_model_title.setObjectName("SectionTitle")
+        ai_model_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
+        ai_model_note = QLabel("Choose the main text model and the model ONCard uses for OCR extraction.")
+        ai_model_note.setObjectName("SectionText")
+        ai_model_note.setWordWrap(True)
+        ai_model_note.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #64748b; }")
+        ai_model_layout.addWidget(ai_model_title)
+        ai_model_layout.addWidget(ai_model_note)
+
+        ai_model_form = QFormLayout()
+        ai_model_form.setHorizontalSpacing(18)
+        ai_model_form.setVerticalSpacing(16)
+        ai_model_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.selected_text_llm = PopupMenuComboBox()
+        self.selected_text_llm.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="AI text model",
+                control=self.selected_text_llm,
+                fallback_value=str(self.selected_text_llm.currentData() or ""),
+            )
+        )
+        self.selected_ocr_llm = PopupMenuComboBox()
+        self.selected_ocr_llm.set_popup_handler(
+            lambda: self._open_combo_choice_picker(
+                title="OCR model",
+                control=self.selected_ocr_llm,
+                fallback_value=str(self.selected_ocr_llm.currentData() or ""),
+            )
+        )
+        ai_model_form.addRow("Text AI model", self.selected_text_llm)
+        ai_model_form.addRow("OCR model", self.selected_ocr_llm)
+        ai_model_layout.addLayout(ai_model_form)
+        ai_model_footer = QLabel(
+            "OCR falls back to the smallest installed supported model each time model status refreshes, so deleted selections do not stick."
+        )
+        ai_model_footer.setObjectName("SmallMeta")
+        ai_model_footer.setWordWrap(True)
+        ai_model_footer.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
+        ai_model_layout.addWidget(ai_model_footer)
+        layout.addWidget(ai_model_surface)
+
         # Cloud service card
         cloud_surface, cloud_layout = self._settings_card()
         cloud_title = QLabel("Ollama cloud")
@@ -1749,11 +1876,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(models_surface)
 
         ai_surface, ai_layout = self._settings_card()
-        ai_title = QLabel("AI browse")
+        ai_title = QLabel("Sequence Lengths")
         ai_title.setObjectName("SectionTitle")
         ai_title.setStyleSheet("QLabel#SectionTitle { font-size: 18px; font-weight: 700; color: #0f172a; background: transparent; border: none; padding: 0px 0px 8px 0px; }")
         ai_note = QLabel(
-            "Ask AI browsing settings. Context lengths can only be increased above the shipped defaults. Higher values can use more memory and may slow requests on weaker devices."
+            "Context lengths for every AI feature in ONCard. Higher values can use more memory and may slow requests on weaker devices."
         )
         ai_note.setObjectName("SectionText")
         ai_note.setWordWrap(True)
@@ -1766,14 +1893,15 @@ class SettingsDialog(QDialog):
         form.setVerticalSpacing(16)
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        self.followup_ctx = QSpinBox()
-        self.followup_ctx.setRange(FOLLOWUP_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
-        self.followup_ctx.setSingleStep(1024)
-        self.followup_ctx.setSuffix(" tokens")
-        self.reinforcement_ctx = QSpinBox()
-        self.reinforcement_ctx.setRange(REINFORCEMENT_CONTEXT_MIN, MAX_CONTEXT_LENGTH)
-        self.reinforcement_ctx.setSingleStep(1024)
-        self.reinforcement_ctx.setSuffix(" tokens")
+        self._context_length_spins = {}
+        for key, label, description, minimum in CONTEXT_LENGTH_SETTINGS:
+            spin = SettingsSpinBox()
+            spin.setRange(MIN_CONTEXT_LENGTH, MAX_CONTEXT_LENGTH)
+            spin.setSingleStep(1024)
+            spin.setSuffix(" tokens")
+            spin.setMinimumWidth(180)
+            self._context_length_spins[key] = spin
+            form.addRow(self._context_row_label(label, description), spin)
         self.ask_ai_tone = PopupMenuComboBox()
         for label, value in ASK_AI_TONE_OPTIONS:
             self.ask_ai_tone.addItem(label, value)
@@ -1784,9 +1912,8 @@ class SettingsDialog(QDialog):
                 fallback_value="warm",
             )
         )
-        self.ask_ai_emoji_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ask_ai_emoji_slider = SettingsSlider(Qt.Orientation.Horizontal)
         self.ask_ai_emoji_slider.setObjectName("SettingsAskAiEmojiSlider")
-        self.ask_ai_emoji_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.ask_ai_emoji_slider.setRange(1, 4)
         self.ask_ai_emoji_slider.setSingleStep(1)
         self.ask_ai_emoji_slider.setPageStep(1)
@@ -1830,14 +1957,6 @@ class SettingsDialog(QDialog):
         self.ask_ai_emoji_value = QLabel(ASK_AI_EMOJI_LABELS[2])
         self.ask_ai_emoji_value.setObjectName("SectionText")
         self.ask_ai_emoji_value.setStyleSheet("QLabel#SectionText { font-size: 13px; color: #475569; }")
-        self.selected_text_llm = PopupMenuComboBox()
-        self.selected_text_llm.set_popup_handler(
-            lambda: self._open_combo_choice_picker(
-                title="AI text model",
-                control=self.selected_text_llm,
-                fallback_value=str(self.selected_text_llm.currentData() or ""),
-            )
-        )
         emoji_shell = QWidget()
         emoji_shell.setObjectName("SettingsAskAiEmojiShell")
         emoji_shell.setStyleSheet("QWidget#SettingsAskAiEmojiShell { background: transparent; }")
@@ -1846,15 +1965,12 @@ class SettingsDialog(QDialog):
         emoji_layout.setSpacing(6)
         emoji_layout.addWidget(self.ask_ai_emoji_value)
         emoji_layout.addWidget(self.ask_ai_emoji_slider)
-        form.addRow("Follow-up context length", self.followup_ctx)
-        form.addRow("Reinforcement context length", self.reinforcement_ctx)
-        form.addRow("AI text model", self.selected_text_llm)
         form.addRow("Ask AI tone", self.ask_ai_tone)
         form.addRow("Ask AI emoji level", emoji_shell)
         ai_layout.addLayout(form)
 
         minimum_note = QLabel(
-            f"Minimums: Follow-up {FOLLOWUP_CONTEXT_MIN} tokens, Reinforcement {REINFORCEMENT_CONTEXT_MIN} tokens."
+            "Each value can be set from 2,000 to 86,000 tokens."
         )
         minimum_note.setObjectName("SmallMeta")
         minimum_note.setWordWrap(True)
@@ -1867,14 +1983,7 @@ class SettingsDialog(QDialog):
         tone_note.setWordWrap(True)
         tone_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
         ai_layout.addWidget(tone_note)
-        model_note = QLabel(
-            "Default setup installs only Gemma3:4b and Nomic Embed. Ministral models are optional and can be installed later here. The dropdown below uses installed text models only."
-        )
-        model_note.setObjectName("SmallMeta")
-        model_note.setWordWrap(True)
-        model_note.setStyleSheet("QLabel#SmallMeta { font-size: 12px; color: #94a3b8; margin-top: 6px; }")
-        ai_layout.addWidget(model_note)
-        layout.addWidget(ai_surface)
+        layout.insertWidget(1, ai_surface)
 
         search_surface, search_layout = self._settings_card()
         search_title = QLabel("Search")
@@ -1917,7 +2026,7 @@ class SettingsDialog(QDialog):
             }
             """.replace("__CHECK_ICON__", CHECK_ICON_URL)
         )
-        self.image_search_term_count = QSpinBox()
+        self.image_search_term_count = SettingsSpinBox()
         self.image_search_term_count.setRange(2, 6)
         self.image_search_term_count.setValue(4)
         self.image_search_term_count.setMinimumWidth(140)
@@ -1965,7 +2074,7 @@ class SettingsDialog(QDialog):
         form.addRow("Master audio", self.audio_enabled_checkbox)
 
         self.click_enabled_checkbox = QCheckBox("Mouse Click")
-        self.click_sound_combo = QComboBox()
+        self.click_sound_combo = SettingsComboBox()
         for label, value in (
             ("Soft tap", "click3"),
             ("Classic tap", "click"),
@@ -1977,7 +2086,7 @@ class SettingsDialog(QDialog):
         form.addRow("Mouse Click", click_row)
 
         self.transition_enabled_checkbox = QCheckBox("Transition")
-        self.transition_sound_combo = QComboBox()
+        self.transition_sound_combo = SettingsComboBox()
         self.transition_sound_combo.addItem("Simple woosh", "woosh")
         transition_row = self._audio_choice_row(
             self.transition_enabled_checkbox,
@@ -1986,7 +2095,7 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Transition", transition_row)
 
-        self.notification_sound_combo = QComboBox()
+        self.notification_sound_combo = SettingsComboBox()
         self.notification_sound_combo.addItem("Default Windows", "windows")
         self.notification_sound_combo.addItem("Notify 1", "notify1")
         self.notification_sound_combo.addItem("Notify 2", "notify2")
@@ -2055,9 +2164,9 @@ class SettingsDialog(QDialog):
         )
         self.performance_mode.currentIndexChanged.connect(self._refresh_performance_mode)
 
-        self.startup_workers = QSpinBox()
+        self.startup_workers = SettingsSpinBox()
         self.startup_workers.setRange(1, 8)
-        self.background_workers = QSpinBox()
+        self.background_workers = SettingsSpinBox()
         self.background_workers.setRange(1, 8)
         self.warm_cache_checkbox = QCheckBox("Warm SQL, card, and vector caches during startup")
         self.warm_cache_checkbox.setStyleSheet(
@@ -2219,10 +2328,11 @@ class SettingsDialog(QDialog):
         self._update_attention_label(attention_value)
 
         ai_settings = self.datastore.load_ai_settings()
-        self.followup_ctx.setValue(max(FOLLOWUP_CONTEXT_MIN, int(ai_settings.get("followup_context_length", FOLLOWUP_CONTEXT_MIN))))
-        self.reinforcement_ctx.setValue(
-            max(REINFORCEMENT_CONTEXT_MIN, int(ai_settings.get("reinforcement_context_length", REINFORCEMENT_CONTEXT_MIN)))
-        )
+        for key, _label, _description, minimum in CONTEXT_LENGTH_SETTINGS:
+            spin = self._context_length_spins.get(key)
+            if spin is not None:
+                value = int(ai_settings.get(key, minimum) or minimum)
+                spin.setValue(max(MIN_CONTEXT_LENGTH, min(MAX_CONTEXT_LENGTH, value)))
         tone_value = str(ai_settings.get("ask_ai_tone", ai_settings.get("assistant_tone", "warm"))).strip().lower() or "warm"
         tone_index = self.ask_ai_tone.findData(tone_value)
         if tone_index < 0:
@@ -2477,8 +2587,10 @@ class SettingsDialog(QDialog):
         self.datastore.save_profile(profile)
 
         ai_settings = self.datastore.load_ai_settings()
-        ai_settings["followup_context_length"] = max(FOLLOWUP_CONTEXT_MIN, self.followup_ctx.value())
-        ai_settings["reinforcement_context_length"] = max(REINFORCEMENT_CONTEXT_MIN, self.reinforcement_ctx.value())
+        for key, _label, _description, minimum in CONTEXT_LENGTH_SETTINGS:
+            spin = self._context_length_spins.get(key)
+            if spin is not None:
+                ai_settings[key] = max(MIN_CONTEXT_LENGTH, min(MAX_CONTEXT_LENGTH, int(spin.value())))
         ai_settings["use_selected_llm_for_text_features"] = True
         cloud_enabled = self._cloud_mode_enabled()
         cloud_api_key = self.cloud_api_key_edit.text().strip()
@@ -2498,6 +2610,9 @@ class SettingsDialog(QDialog):
                 ai_settings["selected_text_llm_key"] = mapped_key
         elif selected_key:
             ai_settings["selected_text_llm_key"] = selected_key
+        selected_ocr_key = str(self.selected_ocr_llm.currentData() or "").strip()
+        if selected_ocr_key:
+            ai_settings["selected_ocr_llm_key"] = selected_ocr_key
         ai_settings["ollama_cloud_enabled"] = cloud_enabled
         ai_settings["ollama_cloud_api_key"] = cloud_api_key
         if cloud_model_tag:
@@ -2635,6 +2750,7 @@ class SettingsDialog(QDialog):
         self.selected_text_llm.setEnabled(self.selected_text_llm.count() > 0 and not cloud_enabled)
         self.selected_text_llm.setToolTip("Cloud mode is enabled. Use the Cloud model selector above." if cloud_enabled else "")
         self.selected_text_llm.blockSignals(False)
+        self._refresh_ocr_model_choices_from_keys(installed_keys, ai_settings)
 
     def _refresh_text_model_choices(self, snap=None) -> None:
         snapshot = snap or self.preflight.snapshot(force=False)
@@ -2664,6 +2780,32 @@ class SettingsDialog(QDialog):
         else:
             self.selected_text_llm.setToolTip("")
         self.selected_text_llm.blockSignals(False)
+        self._refresh_ocr_model_choices_from_keys([key for key in ocr_llm_keys() if self._is_model_installed_ui(snapshot, key)], ai_settings)
+
+    def _refresh_ocr_model_choices_from_keys(self, installed_keys: list[str], ai_settings: dict) -> None:
+        supported_keys = [key for key in ocr_llm_keys() if key in set(installed_keys)]
+        selected_key = resolve_active_ocr_llm_key(ai_settings, supported_keys)
+        if selected_key not in supported_keys and supported_keys:
+            selected_key = smallest_supported_ocr_llm_key(supported_keys)
+        self.selected_ocr_llm.blockSignals(True)
+        self.selected_ocr_llm.clear()
+        for key in supported_keys:
+            spec = MODELS.get(key)
+            if spec is not None:
+                self.selected_ocr_llm.addItem(spec.display_name, key)
+        selected_index = self.selected_ocr_llm.findData(selected_key)
+        if selected_index < 0 and self.selected_ocr_llm.count() > 0:
+            selected_index = 0
+        if selected_index >= 0:
+            self.selected_ocr_llm.setCurrentIndex(selected_index)
+        self.selected_ocr_llm.setEnabled(self.selected_ocr_llm.count() > 0)
+        self.selected_ocr_llm.setToolTip("" if self.selected_ocr_llm.count() > 0 else "Install a supported text model first.")
+        self.selected_ocr_llm.blockSignals(False)
+        current_key = str(self.selected_ocr_llm.currentData() or "").strip()
+        if current_key and current_key != str(ai_settings.get("selected_ocr_llm_key", "")).strip():
+            updated = dict(ai_settings)
+            updated["selected_ocr_llm_key"] = current_key
+            self.datastore.save_ai_settings(updated)
 
     def _is_model_installed_ui(self, snapshot, model_key: str) -> bool:
         spec = MODELS.get(model_key)
@@ -3014,6 +3156,13 @@ class SettingsDialog(QDialog):
                                 replacement = llm_key
                                 break
                         ai_settings["selected_text_llm_key"] = replacement
+                    if str(ai_settings.get("selected_ocr_llm_key", "")).strip() == key:
+                        replacement_keys = [
+                            llm_key
+                            for llm_key in ocr_llm_keys()
+                            if llm_key != key and bool(installed_models.get(llm_key, False))
+                        ]
+                        ai_settings["selected_ocr_llm_key"] = smallest_supported_ocr_llm_key(replacement_keys)
                     successes.append(MODELS[key].display_name)
                 else:
                     failures.append(MODELS[key].display_name)

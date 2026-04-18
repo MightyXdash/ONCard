@@ -635,7 +635,9 @@ class StatsDialog(QDialog):
         self._summary_token += 1
         token = self._summary_token
         summary_payload = dict(snapshot.get("summary_payload", {}))
-        context_length = int(snapshot.get("range", {}).get("context_length", 4000))
+        ai_settings = self.datastore.load_ai_settings()
+        default_context = int(snapshot.get("range", {}).get("context_length", 4000))
+        context_length = int(ai_settings.get("stats_context_length", default_context) or default_context)
         self._show_summary_skeleton(force=True)
 
         worker = StatsSummaryWorker(
@@ -643,7 +645,7 @@ class StatsDialog(QDialog):
             profile=self.profile,
             summary_payload=summary_payload,
             context_length=context_length,
-            model=resolve_active_text_model_tag(self.datastore.load_ai_settings()),
+            model=resolve_active_text_model_tag(ai_settings),
         )
         self._summary_worker = worker
         self._summary_workers.add(worker)

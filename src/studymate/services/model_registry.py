@@ -83,6 +83,7 @@ NON_EMBEDDING_LLM_KEYS = [
     "ministral_3_8b",
     "ministral_3_14b",
 ]
+OCR_LLM_KEYS = list(NON_EMBEDDING_LLM_KEYS)
 
 
 def recommended_models_for_ram(ram_gb: int) -> list[str]:
@@ -105,6 +106,20 @@ def non_embedding_llm_keys() -> list[str]:
     return [key for key in NON_EMBEDDING_LLM_KEYS if key in MODELS]
 
 
+def ocr_llm_keys() -> list[str]:
+    return [key for key in OCR_LLM_KEYS if key in MODELS]
+
+
+def smallest_supported_ocr_llm_key(installed_keys: list[str] | set[str] | tuple[str, ...] | None = None) -> str:
+    supported = ocr_llm_keys()
+    if installed_keys is not None:
+        installed = {str(key) for key in installed_keys}
+        supported = [key for key in supported if key in installed]
+    if not supported:
+        return DEFAULT_TEXT_LLM_KEY
+    return min(supported, key=lambda key: MODELS[key].size_gb)
+
+
 def resolve_active_text_llm_key(ai_settings: dict | None = None) -> str:
     settings = ai_settings or {}
     if not bool(settings.get("use_selected_llm_for_text_features", False)):
@@ -119,6 +134,25 @@ def resolve_active_text_llm_spec(ai_settings: dict | None = None) -> ModelSpec:
     return MODELS[resolve_active_text_llm_key(ai_settings)]
 
 
+def resolve_active_ocr_llm_key(
+    ai_settings: dict | None = None,
+    installed_keys: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
+    settings = ai_settings or {}
+    preferred = str(settings.get("selected_ocr_llm_key", "")).strip()
+    available = set(ocr_llm_keys() if installed_keys is None else [str(key) for key in installed_keys])
+    if preferred in available and preferred in MODELS:
+        return preferred
+    return smallest_supported_ocr_llm_key(installed_keys)
+
+
+def resolve_active_ocr_llm_spec(
+    ai_settings: dict | None = None,
+    installed_keys: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> ModelSpec:
+    return MODELS[resolve_active_ocr_llm_key(ai_settings, installed_keys)]
+
+
 def ollama_cloud_enabled(ai_settings: dict | None = None) -> bool:
     settings = ai_settings or {}
     return bool(settings.get("ollama_cloud_enabled", False))
@@ -130,6 +164,13 @@ def resolve_active_text_model_tag(ai_settings: dict | None = None) -> str:
     if ollama_cloud_enabled(settings) and cloud_tag:
         return cloud_tag
     return resolve_active_text_llm_spec(settings).primary_tag
+
+
+def resolve_active_ocr_model_tag(
+    ai_settings: dict | None = None,
+    installed_keys: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
+    return resolve_active_ocr_llm_spec(ai_settings, installed_keys).primary_tag
 
 
 def text_llm_key_for_model_tag(model_tag: str) -> str:

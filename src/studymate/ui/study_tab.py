@@ -74,7 +74,7 @@ from studymate.workers.embedding_worker import EmbeddingWorker
 from studymate.workers.followup_worker import FollowUpWorker
 from studymate.workers.grade_worker import GradeWorker
 from studymate.workers.reinforcement_worker import ReinforcementWorker
-from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker, ImageSearchTermsWorker
+from studymate.workers.ai_search_worker import AiSearchAnswerWorker, AiSearchPlannerWorker, ImageSearchTermsWorker, WikipediaBreakdownWorker
 from studymate.workers.mcq_worker import cached_mcq_payload, normalize_mcq_answers
 
 
@@ -140,11 +140,12 @@ class AiQueryLineEdit(AnimatedLineEdit):
     historyRequested = Signal()
     imageDropped = Signal(str)
 
-    TRIGGER_TOKENS = {"/ai", "#ai"}
+    TRIGGER_TOKENS = {"/ai": "ai", "#ai": "ai", "/wiki": "wiki"}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._ai_mode = False
+        self._ai_mode_kind = "ai"
         self._image_attached = False
         self._ghost_text = ""
         self._base_left_margin = self.textMargins().left()
@@ -155,6 +156,9 @@ class AiQueryLineEdit(AnimatedLineEdit):
 
     def ai_mode_active(self) -> bool:
         return self._ai_mode
+
+    def ai_mode_kind(self) -> str:
+        return self._ai_mode_kind if self._ai_mode else ""
 
     def set_image_attached(self, attached: bool) -> None:
         self._image_attached = bool(attached)
@@ -169,15 +173,21 @@ class AiQueryLineEdit(AnimatedLineEdit):
         self._ghost_text = normalized
         self.update()
 
-    def set_ai_mode(self, active: bool) -> None:
-        if self._ai_mode == active:
+    def set_ai_mode(self, active: bool, mode_kind: str = "ai") -> None:
+        normalized_kind = "wiki" if str(mode_kind or "").strip().lower() == "wiki" else "ai"
+        if self._ai_mode == active and self._ai_mode_kind == normalized_kind:
             return
         self._ai_mode = active
+        self._ai_mode_kind = normalized_kind if active else "ai"
         self.setProperty("aiMode", active)
         if active:
             self._placeholder_before_ai_mode = self.placeholderText()
+            self._ai_placeholder_text = (
+                "Search a Wikipedia topic to break down..." if self._ai_mode_kind == "wiki" else "I am Luca, how can I help you?"
+            )
             self.setPlaceholderText("")
         else:
+            self._ai_placeholder_text = "I am Luca, how can I help you?"
             if self._placeholder_before_ai_mode:
                 self.setPlaceholderText(self._placeholder_before_ai_mode)
         self._update_text_margins()
@@ -202,10 +212,11 @@ class AiQueryLineEdit(AnimatedLineEdit):
                 prospective = f"{self.text()[:start]}{event.text()}{self.text()[end:]}"
             else:
                 prospective = f"{self.text()[:cursor]}{event.text()}{self.text()[cursor:]}"
-            if prospective.strip().lower() in self.TRIGGER_TOKENS:
+            trigger_kind = self.TRIGGER_TOKENS.get(prospective.strip().lower(), "")
+            if trigger_kind:
                 with QSignalBlocker(self):
                     self.clear()
-                self.set_ai_mode(True)
+                self.set_ai_mode(True, trigger_kind)
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -727,6 +738,7 @@ class AiResponseOverlay(QWidget):
 
     def __init__(self, icons: IconHelper, parent=None) -> None:
         super().__init__(parent)
+        self._icons = icons
         self.setObjectName("AiResponseOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background: transparent;")
@@ -753,6 +765,11 @@ class AiResponseOverlay(QWidget):
         self._render_cost_ema_ms = 7.0
         self._last_fade_start = 0.0
         self._active_char_fades: list[tuple[QVariantAnimation, int, int]] = []
+        self._reveal_duration_ms = 620
+        self._tab_mode = ""
+        self._active_tab = "wiki"
+        self._tab_markdown: dict[str, str] = {}
+        self._tab_loading: dict[str, bool] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
@@ -765,7 +782,7 @@ class AiResponseOverlay(QWidget):
             QFrame#AiResponseSurface {
                 background: #FAFAFB;
                 border: 1px solid rgba(215, 219, 226, 0.88);
-                border-radius: 34px;
+                border-radius: 18px;
             }
             """
         )
@@ -788,6 +805,29 @@ class AiResponseOverlay(QWidget):
         header = QHBoxLayout(self.header_frame)
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
+        self.wiki_tab_btn = AnimatedToolButton()
+        self.wiki_tab_btn.setObjectName("AiOverlayTabButton")
+        self.wiki_tab_btn.setIcon(icons.icon("common", "wiki", "W"))
+        self.wiki_tab_btn.setIconSize(QSize(18, 18))
+        self.wiki_tab_btn.setAutoRaise(True)
+        self.wiki_tab_btn.setFixedSize(34, 30)
+        self.wiki_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.wiki_tab_btn.setProperty("skipClickSfx", True)
+        self.wiki_tab_btn.clicked.connect(lambda: self._select_response_tab("wiki"))
+        self.wiki_tab_btn.setStyleSheet(self._tab_button_style(True))
+        header.addWidget(self.wiki_tab_btn)
+
+        self.ai_tab_btn = AnimatedToolButton()
+        self.ai_tab_btn.setObjectName("AiOverlayTabButton")
+        self.ai_tab_btn.setIcon(icons.icon("common", "clean", "A"))
+        self.ai_tab_btn.setIconSize(QSize(18, 18))
+        self.ai_tab_btn.setAutoRaise(True)
+        self.ai_tab_btn.setFixedSize(34, 30)
+        self.ai_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_tab_btn.setProperty("skipClickSfx", True)
+        self.ai_tab_btn.clicked.connect(lambda: self._select_response_tab("ai"))
+        self.ai_tab_btn.setStyleSheet(self._tab_button_style(False))
+        header.addWidget(self.ai_tab_btn)
         header.addStretch(1)
 
         self.copy_btn = AnimatedToolButton()
@@ -802,15 +842,17 @@ class AiResponseOverlay(QWidget):
         self.copy_btn.hide()
         self.copy_btn.clicked.connect(self._copy_response)
         self.copy_btn.setStyleSheet(
-            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
+            "background: transparent; border: none; padding: 4px;"
         )
-        self.copy_btn.set_motion_scale_range(0.08)
-        self.copy_btn._hover_animation.setDuration(650)
+        self.copy_btn.set_motion_scale_range(0.0)
+        self.copy_btn.set_motion_hover_grow(0, 0)
+        self.copy_btn.set_motion_lift(0.0)
+        self.copy_btn.set_motion_press_scale(0.0)
         header.addWidget(self.copy_btn)
 
         self.close_btn = AnimatedToolButton()
         self.close_btn.setObjectName("AiOverlayCloseButton")
-        self.close_btn.setIcon(icons.icon("common", "close", "X"))
+        self.close_btn.setIcon(icons.icon("common", "cross_three", "X"))
         self.close_btn.setIconSize(QSize(16, 16))
         self.close_btn.setAutoRaise(True)
         self.close_btn.setFixedSize(28, 28)
@@ -819,10 +861,12 @@ class AiResponseOverlay(QWidget):
         self.close_btn.setProperty("skipClickSfx", True)
         self.close_btn.clicked.connect(self.close_overlay)
         self.close_btn.setStyleSheet(
-            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
+            "background: transparent; border: none; padding: 4px;"
         )
-        self.close_btn.set_motion_scale_range(0.08)
-        self.close_btn._hover_animation.setDuration(650)
+        self.close_btn.set_motion_scale_range(0.0)
+        self.close_btn.set_motion_hover_grow(0, 0)
+        self.close_btn.set_motion_lift(0.0)
+        self.close_btn.set_motion_press_scale(0.0)
         header.addWidget(self.close_btn)
         layout.addWidget(self.header_frame)
         header.removeWidget(self.copy_btn)
@@ -830,6 +874,8 @@ class AiResponseOverlay(QWidget):
         self.copy_btn.setParent(self.surface)
         self.close_btn.setParent(self.surface)
         self.header_frame.hide()
+        self.wiki_tab_btn.hide()
+        self.ai_tab_btn.hide()
 
         self.drag_zone = QWidget(self.surface)
         self.drag_zone.setCursor(Qt.OpenHandCursor)
@@ -925,6 +971,10 @@ class AiResponseOverlay(QWidget):
             em {
                 font-style: italic;
             }
+            a {
+                color: #0B3A75;
+                text-decoration: none;
+            }
             """
         )
         document_layout = self.body.document().documentLayout()
@@ -963,6 +1013,11 @@ class AiResponseOverlay(QWidget):
         self._size_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def begin_stream(self) -> None:
+        self._reveal_duration_ms = 620
+        self._tab_mode = ""
+        self._active_tab = "wiki"
+        self._tab_markdown = {}
+        self._tab_loading = {}
         self._last_markdown = ""
         self._display_markdown = ""
         self._target_markdown = ""
@@ -982,6 +1037,10 @@ class AiResponseOverlay(QWidget):
         self.response_stack.setCurrentWidget(self.skeleton)
         self.reveal_overlay.hide()
         self.copy_btn.hide()
+        self.header_frame.setFixedHeight(0)
+        self.header_frame.hide()
+        self.wiki_tab_btn.hide()
+        self.ai_tab_btn.hide()
         parent = self.parentWidget()
         self._manual_pos = None
         self._anchor_y = max(72, int(parent.height() * 0.16)) if parent is not None else 72
@@ -992,6 +1051,82 @@ class AiResponseOverlay(QWidget):
         self.raise_()
         self._layout_overlay_elements()
         self._animate_in()
+
+    @staticmethod
+    def _tab_button_style(active: bool) -> str:
+        if active:
+            return "background: rgba(15, 37, 57, 0.10); border: none; border-radius: 6px; padding: 5px;"
+        return "background: rgba(255, 255, 255, 0.72); border: none; border-radius: 6px; padding: 5px;"
+
+    def enable_wikipedia_tabs(self) -> None:
+        self._tab_mode = "wiki"
+        self._active_tab = "wiki"
+        self._tab_markdown = {"wiki": "", "ai": ""}
+        self._tab_loading = {"wiki": True, "ai": True}
+        self.header_frame.setFixedHeight(38)
+        self.header_frame.show()
+        self.wiki_tab_btn.show()
+        self.ai_tab_btn.show()
+        self._refresh_tab_styles()
+        self.copy_btn.hide()
+        self.response_stack.setCurrentWidget(self.skeleton)
+        self.skeleton.clear_research_message()
+        self.skeleton.start()
+        self._layout_overlay_elements()
+        self._sync_size(animated=False)
+
+    def set_wikipedia_markdown(self, markdown_text: str) -> None:
+        if self._tab_mode != "wiki":
+            return
+        self._tab_markdown["wiki"] = markdown_text
+        self._tab_loading["wiki"] = False
+        if self._active_tab == "wiki":
+            self._show_tab_markdown("wiki")
+
+    def set_wikipedia_ai_markdown(self, markdown_text: str) -> None:
+        if self._tab_mode != "wiki":
+            return
+        self._tab_markdown["ai"] = markdown_text
+        self._tab_loading["ai"] = False
+        if self._active_tab == "ai":
+            self._show_tab_markdown("ai")
+
+    def _select_response_tab(self, tab_name: str) -> None:
+        if self._tab_mode != "wiki":
+            return
+        normalized = "ai" if tab_name == "ai" else "wiki"
+        if self._active_tab == normalized:
+            return
+        self._active_tab = normalized
+        self._refresh_tab_styles()
+        if self._tab_loading.get(normalized, False):
+            self._show_tab_skeleton()
+            return
+        self._show_tab_markdown(normalized)
+
+    def _refresh_tab_styles(self) -> None:
+        self.wiki_tab_btn.setStyleSheet(self._tab_button_style(self._active_tab == "wiki"))
+        self.ai_tab_btn.setStyleSheet(self._tab_button_style(self._active_tab == "ai"))
+
+    def _show_tab_skeleton(self) -> None:
+        self._stream_timer.stop()
+        self._stop_char_fades()
+        self.body.clear()
+        self.copy_btn.hide()
+        self.response_stack.setCurrentWidget(self.skeleton)
+        self.skeleton.clear_research_message()
+        self.skeleton.start()
+        self.reveal_overlay.hide()
+        self._layout_overlay_elements()
+        self._sync_size(animated=False)
+
+    def _show_tab_markdown(self, tab_name: str) -> None:
+        markdown_text = self._tab_markdown.get(tab_name, "")
+        if self.response_stack.currentWidget() is self.body_container:
+            self.response_stack.setCurrentWidget(self.skeleton)
+            self.skeleton.clear_research_message()
+            self.skeleton.start()
+        self.set_markdown(markdown_text)
 
     def show_research_message(self, message: str) -> None:
         self.show_reasoning_messages([message])
@@ -1080,7 +1215,7 @@ class AiResponseOverlay(QWidget):
         self.reveal_overlay.show()
 
         animation = QPropertyAnimation(self.reveal_overlay, b"progress", self)
-        animation.setDuration(620)
+        animation.setDuration(int(getattr(self, "_reveal_duration_ms", 620) or 620))
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -1092,6 +1227,9 @@ class AiResponseOverlay(QWidget):
         animation.finished.connect(_finish)
         animation.start()
         self._close_animation = animation
+
+    def set_reveal_duration(self, duration_ms: int) -> None:
+        self._reveal_duration_ms = max(1, int(duration_ms or 620))
 
     def _should_follow_bottom(self) -> bool:
         scroll = self.body.verticalScrollBar()
@@ -1149,16 +1287,12 @@ class AiResponseOverlay(QWidget):
             return
         QApplication.clipboard().setText(self._last_markdown)
         self._copy_flash_active = True
-        self.copy_btn.setStyleSheet(
-            "background: rgba(74, 126, 232, 0.16); border: none; border-radius: 10px; padding: 4px;"
-        )
-        QTimer.singleShot(140, self._reset_copy_button_style)
+        self.copy_btn.setIcon(self._icons.icon("common", "check", "C"))
+        QTimer.singleShot(2000, self._reset_copy_button_style)
 
     def _reset_copy_button_style(self) -> None:
         self._copy_flash_active = False
-        self.copy_btn.setStyleSheet(
-            "background: rgba(255, 255, 255, 0.92); border: none; border-radius: 10px; padding: 4px;"
-        )
+        self.copy_btn.setIcon(self._icons.icon("common", "copy", "C"))
 
     def _layout_overlay_elements(self) -> None:
         surface_rect = self.surface.rect()
@@ -1169,9 +1303,13 @@ class AiResponseOverlay(QWidget):
         drag_left = 14
         drag_top = 10
         drag_height = 34
+        if self._tab_mode == "wiki":
+            drag_left = 98
         drag_right = max(drag_left + 1, self.copy_btn.x() - 10)
         self.drag_zone.setGeometry(drag_left, drag_top, max(1, drag_right - drag_left), drag_height)
         self.drag_zone.raise_()
+        if self._tab_mode == "wiki":
+            self.header_frame.raise_()
         self.copy_btn.raise_()
         self.close_btn.raise_()
 
@@ -2188,7 +2326,8 @@ class StudyTab(QWidget):
     CARD_SEARCH_SKELETON_MIN_CYCLES = 2
     CARDS_TOOLBAR_CONTROL_HEIGHT = 40
     CARDS_TOOLBAR_SHELL_HEIGHT = 50
-    AI_TRIGGER_TOKENS = {"/ai", "#ai"}
+    CARDS_TOOLBAR_ACTION_WIDTH = 88
+    AI_TRIGGER_TOKENS = {"/ai": "ai", "#ai": "ai", "/wiki": "wiki"}
 
     @staticmethod
     def _card_expected_answer(card: dict, datastore=None, model_tag: str = "") -> str:
@@ -2253,6 +2392,7 @@ class StudyTab(QWidget):
         self.ai_query_planner_worker: AiSearchPlannerWorker | None = None
         self.ai_query_answer_worker: AiSearchAnswerWorker | None = None
         self.ai_query_tool_worker: CardSearchWorker | None = None
+        self.wiki_breakdown_worker: WikipediaBreakdownWorker | None = None
         self.image_search_terms_worker: ImageSearchTermsWorker | None = None
         self._ai_query_workers: set[QThread] = set()
         self._pending_ai_query_plans: dict[int, dict] = {}
@@ -2491,7 +2631,7 @@ class StudyTab(QWidget):
         self.card_ai_attach_btn.clicked.connect(self._pick_ai_image)
         self.card_search_btn = AnimatedToolButton()
         self.card_search_btn.setObjectName("SearchInputButton")
-        self.card_search_btn.setIcon(self._build_search_icon())
+        self.card_search_btn.setIcon(self._current_search_icon())
         self.card_search_btn.setIconSize(QSize(18, 18))
         self.card_search_btn.setCursor(Qt.PointingHandCursor)
         self.card_search_btn.setAutoRaise(True)
@@ -2517,11 +2657,13 @@ class StudyTab(QWidget):
 
         self.start_cards_btn = AnimatedButton("Start")
         self.start_cards_btn.setFixedHeight(self.CARDS_TOOLBAR_CONTROL_HEIGHT)
+        self.start_cards_btn.setFixedWidth(self.CARDS_TOOLBAR_ACTION_WIDTH)
         self.start_cards_btn.setProperty("skipClickSfx", True)
         self.start_cards_btn.clicked.connect(self._open_start_dialog)
         actions_layout.addWidget(self.start_cards_btn)
         self.refresh_cards_btn = AnimatedButton("Refresh")
         self.refresh_cards_btn.setFixedHeight(self.CARDS_TOOLBAR_CONTROL_HEIGHT)
+        self.refresh_cards_btn.setFixedWidth(self.CARDS_TOOLBAR_ACTION_WIDTH)
         self.refresh_cards_btn.clicked.connect(lambda: self.reload_cards(force=True))
         actions_layout.addWidget(self.refresh_cards_btn)
         search_layout.addWidget(actions_shell, 0)
@@ -2640,6 +2782,13 @@ class StudyTab(QWidget):
         painter.drawLine(14, 14, 20, 20)
         painter.end()
         return QIcon(pixmap)
+
+    def _current_search_icon(self) -> QIcon:
+        if self.card_search_input.ai_mode_active():
+            if self.card_search_input.ai_mode_kind() == "wiki":
+                return self.icons.icon("common", "wiki_search", "W")
+            return self.icons.icon("common", "ai_search", "A")
+        return self._build_search_icon()
 
     def _build_close_icon(self) -> QIcon:
         pixmap = QPixmap(24, 24)
@@ -3218,10 +3367,11 @@ class StudyTab(QWidget):
 
     def _queue_card_search(self, text: str) -> None:
         normalized = text.strip()
-        if not self.card_search_input.ai_mode_active() and normalized.lower() in self.AI_TRIGGER_TOKENS:
+        trigger_kind = self.AI_TRIGGER_TOKENS.get(normalized.lower(), "")
+        if not self.card_search_input.ai_mode_active() and trigger_kind:
             with QSignalBlocker(self.card_search_input):
                 self.card_search_input.clear()
-            self.card_search_input.set_ai_mode(True)
+            self.card_search_input.set_ai_mode(True, trigger_kind)
             self._sync_card_search_action_button()
             self._sync_card_search_ghost_text()
             return
@@ -3474,7 +3624,7 @@ class StudyTab(QWidget):
         show_close = bool(self.ai_query_image_path.strip()) or (
             self.card_search_has_executed and not self.card_search_input.ai_mode_active()
         )
-        self.card_search_btn.setIcon(self._build_close_icon() if show_close else self._build_search_icon())
+        self.card_search_btn.setIcon(self._build_close_icon() if show_close else self._current_search_icon())
         self.card_search_btn.setToolTip("Back" if show_close else "Search")
 
     def _on_card_search_button_clicked(self) -> None:
@@ -3540,7 +3690,10 @@ class StudyTab(QWidget):
         if self.card_search_input.ai_mode_active():
             self.card_search_loading = False
             self.pending_card_search_results = None
-            self._submit_ai_query(query)
+            if self.card_search_input.ai_mode_kind() == "wiki":
+                self._submit_wiki_query(query)
+            else:
+                self._submit_ai_query(query)
             return
         if image_path:
             self.card_search_loading = False
@@ -3618,7 +3771,7 @@ class StudyTab(QWidget):
         self.card_search_no_close_match = False
         ai_settings = self.datastore.load_ai_settings()
         term_count = max(2, min(6, int(ai_settings.get("image_search_term_count", 4) or 4)))
-        context_length = max(9216, int(ai_settings.get("followup_context_length", 9216) or 9216))
+        context_length = int(ai_settings.get("ask_ai_image_context_length", 8192) or 8192)
         worker = ImageSearchTermsWorker(
             request_id=request_id,
             ollama=self.ollama,
@@ -3748,7 +3901,7 @@ class StudyTab(QWidget):
             self.card_search_worker = None
 
     def _stop_active_ai_workers(self) -> None:
-        for worker in (self.ai_query_planner_worker, self.ai_query_answer_worker):
+        for worker in (self.ai_query_planner_worker, self.ai_query_answer_worker, self.wiki_breakdown_worker):
             if worker is not None and worker.isRunning():
                 worker.stop()
 
@@ -3829,7 +3982,7 @@ class StudyTab(QWidget):
             ollama=self.ollama,
             model=self._active_text_model_tag(),
             prompt=query,
-            context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
+            context_length=int(ai_settings.get("ask_ai_answer_context_length", ai_settings.get("discuss_context_length", 9216)) or 9216),
             profile_context=profile_context,
             retrieved_cards=retrieved_cards,
             retrieval_query=retrieval_query,
@@ -3876,7 +4029,7 @@ class StudyTab(QWidget):
             ollama=self.ollama,
             model=self._active_text_model_tag(),
             prompt=query,
-            context_length=max(9216, int(ai_settings.get("followup_context_length", 9216))),
+            context_length=int(ai_settings.get("ask_ai_planner_context_length", ai_settings.get("discuss_context_length", 4400)) or 4400),
             profile_context=profile_context,
             image_paths=[image_path] if image_path else [],
             use_native_tools=bool(model_spec.supports_native_tools),
@@ -3892,6 +4045,75 @@ class StudyTab(QWidget):
         worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_ai_planner_worker(current))
         worker.planned.connect(lambda _request_id, _plan, current=worker: self._cleanup_ai_planner_worker(current))
         worker.start()
+
+    def _submit_wiki_query(self, query: str) -> None:
+        if self.ai_query_image_path.strip():
+            QMessageBox.information(self, "Wikipedia", "Wikipedia breakdown works from text topics, so remove the image first.")
+            return
+        if not query:
+            return
+        model_spec = self._active_text_llm_spec()
+        if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Wikipedia breakdown"):
+            return
+        if not self.ai_query_history or self.ai_query_history[-1] != query:
+            self.ai_query_history.append(query)
+        self.ai_query_history_index = len(self.ai_query_history)
+        self._stop_active_ai_workers()
+        self.ai_query_request_id += 1
+        request_id = self.ai_query_request_id
+        self._pending_ai_query_plans.clear()
+        with QSignalBlocker(self.card_search_input):
+            self.card_search_input.clear()
+        self._clear_ai_image()
+        self.card_search_input.set_ai_mode(False)
+
+        if self.ai_response_overlay is not None:
+            self.ai_response_overlay.begin_stream()
+            self.ai_response_overlay.enable_wikipedia_tabs()
+
+        ai_settings = self.datastore.load_ai_settings()
+        profile_context = self.datastore.load_profile()
+        worker = WikipediaBreakdownWorker(
+            request_id=request_id,
+            ollama=self.ollama,
+            model=self._active_text_model_tag(),
+            query=query,
+            context_length=int(ai_settings.get("wiki_breakdown_context_length", 6000) or 6000),
+            profile_context=profile_context,
+            tone=str(ai_settings.get("ask_ai_tone", ai_settings.get("assistant_tone", ""))).strip().lower(),
+            emoji_level=max(1, min(4, int(ai_settings.get("ask_ai_emoji_level", 2) or 2))),
+        )
+        self.wiki_breakdown_worker = worker
+        self._ai_query_workers.add(worker)
+        worker.failed.connect(self._on_ai_query_failed)
+        worker.breakdown_started.connect(self._on_wiki_breakdown_started)
+        worker.finished.connect(self._on_wiki_breakdown_finished)
+        worker.failed.connect(lambda _request_id, _message, current=worker: self._cleanup_wiki_breakdown_worker(current))
+        worker.finished.connect(lambda _request_id, _markdown, current=worker: self._cleanup_wiki_breakdown_worker(current))
+        worker.start()
+
+    def _on_wiki_breakdown_started(self, request_id: int, article: object) -> None:
+        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
+            return
+        if isinstance(article, dict):
+            self.ai_response_overlay.set_wikipedia_markdown(self._wiki_article_markdown(article))
+
+    def _on_wiki_breakdown_finished(self, request_id: int, markdown_text: str) -> None:
+        if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
+            return
+        cleaned = (markdown_text or "").strip() or "### No answer\n- The model returned an empty response."
+        self.ai_response_overlay.set_wikipedia_ai_markdown(cleaned)
+
+    @staticmethod
+    def _wiki_article_markdown(article: dict) -> str:
+        title = " ".join(str(article.get("title", "Wikipedia")).strip().split()) or "Wikipedia"
+        url = str(article.get("url", "")).strip()
+        extract = str(article.get("extract", "")).strip()
+        parts = [f"# {title}", ""]
+        parts.append(extract or "Wikipedia returned no readable article text.")
+        if url:
+            parts.extend(["", f"[view all in wikipedia]({url})"])
+        return "\n".join(parts).strip()
 
     def _on_ai_query_planned(self, request_id: int, original_query: str, plan: dict, image_paths: list[str] | None = None) -> None:
         if request_id != self.ai_query_request_id:
@@ -3958,6 +4180,9 @@ class StudyTab(QWidget):
         if request_id != self.ai_query_request_id or self.ai_response_overlay is None:
             return
         self._pending_ai_query_plans.pop(request_id, None)
+        if getattr(self.ai_response_overlay, "_tab_mode", "") == "wiki" and not self.ai_response_overlay._tab_loading.get("wiki", True):
+            self.ai_response_overlay.set_wikipedia_ai_markdown(f"### Unable to break down text\n- {message}")
+            return
         self.ai_response_overlay.set_markdown(f"### Unable to answer\n- {message}")
 
     def _on_ai_query_finished(self, request_id: int, markdown_text: str) -> None:
@@ -3987,6 +4212,14 @@ class StudyTab(QWidget):
     def _cleanup_ai_tool_worker(self, worker: CardSearchWorker) -> None:
         if self.ai_query_tool_worker is worker:
             self.ai_query_tool_worker = None
+        worker.deleteLater()
+
+    def _cleanup_wiki_breakdown_worker(self, worker: WikipediaBreakdownWorker) -> None:
+        self._ai_query_workers.discard(worker)
+        if self.wiki_breakdown_worker is not worker:
+            worker.deleteLater()
+            return
+        self.wiki_breakdown_worker = None
         worker.deleteLater()
 
     def _close_ai_overlay(self) -> None:
@@ -4901,6 +5134,7 @@ class StudyTab(QWidget):
                 ollama=self.ollama,
                 model=self._active_text_model_tag(),
                 profile_context=self.datastore.load_profile(),
+                context_length=int(self.datastore.load_ai_settings().get("grading_context_length", 8192) or 8192),
                 stream_preview=False,
             )
             self.queued_grade_worker = worker
@@ -4962,6 +5196,7 @@ class StudyTab(QWidget):
             ollama=self.ollama,
             model=self._active_text_model_tag(),
             profile_context=self.datastore.load_profile(),
+            context_length=int(self.datastore.load_ai_settings().get("grading_context_length", 8192) or 8192),
             stream_preview=True,
         )
         self.grade_worker = worker
@@ -5067,7 +5302,7 @@ class StudyTab(QWidget):
             recent_incorrect_answers=recent_incorrect,
             profile_context=self.datastore.load_profile(),
             assistant_tone=str(ai_settings.get("assistant_tone", "")),
-            context_length=int(ai_settings.get("reinforcement_context_length", 8192)),
+            context_length=int(ai_settings.get("reinforcement_context_length", 8192) or 8192),
             model=self._active_text_model_tag(),
         )
         self.reinforcement_worker = worker
@@ -5219,7 +5454,7 @@ class StudyTab(QWidget):
             model=self._active_text_model_tag(),
             prompt=prompt,
             context=context,
-            context_length=int(ai_settings.get("followup_context_length", 8192)),
+            context_length=int(ai_settings.get("followup_context_length", 8192) or 8192),
             profile_context=profile_context,
         )
         self.followup_worker.chunk.connect(self.grade_feedback.setMarkdown)

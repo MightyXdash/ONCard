@@ -87,7 +87,7 @@ class MCQTab(StudyTab):
         actions = QHBoxLayout()
         self.start_btn = AnimatedButton("Start")
         self.start_btn.setProperty("skipClickSfx", True)
-        self.start_btn.clicked.connect(self._open_start_dialog)
+        self.start_btn.clicked.connect(self._handle_study_primary_action)
         self.refresh_study_btn = AnimatedButton("Refresh")
         self.refresh_study_btn.clicked.connect(lambda: self.reload_cards(force=True))
         actions.addStretch(1)
@@ -232,12 +232,14 @@ class MCQTab(StudyTab):
         if not missing:
             return
         mcq_difficulty = self._mcq_difficulty()
+        ai_settings = self.datastore.load_ai_settings()
         worker = MCQBulkWorker(
             cards=missing,
             datastore=self.datastore,
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            context_length=int(ai_settings.get("mcq_context_length", 8192) or 8192),
             difficulty=mcq_difficulty,
         )
         self.mcq_background_worker = worker
@@ -456,11 +458,13 @@ class MCQTab(StudyTab):
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="MCQ generation"):
             self.mcq_result.setText("MCQ choices could not be generated until the model is ready.")
             return
+        ai_settings = self.datastore.load_ai_settings()
         worker = MCQWorker(
             card=card,
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            context_length=int(ai_settings.get("mcq_context_length", 8192) or 8192),
             difficulty=self._mcq_difficulty(),
         )
         self.mcq_worker = worker
@@ -590,6 +594,7 @@ class MCQTab(StudyTab):
         is_latest = self.current_history_index == len(self.session_history) - 1
         pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
         can_choose = bool(entry) and not pending_current and not entry.get("attempt_logged") and self.mcq_worker is None
+        self._update_study_primary_action()
         self.prev_card_btn.setEnabled(self.current_history_index > 0)
         self.next_btn.setEnabled(bool(entry and entry.get("attempt_logged")) and self.mcq_worker is None)
         self.skip_btn.setEnabled(can_choose and is_latest)
@@ -659,6 +664,7 @@ class MCQTab(StudyTab):
         self.skip_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.hint_btn.setEnabled(False)
+        self._update_study_primary_action()
         for button in self.choice_buttons:
             button.setText("")
             button.setEnabled(False)

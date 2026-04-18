@@ -43,7 +43,7 @@ from studymate.services.files_to_cards_service import (
     files_to_cards_limit,
     files_to_cards_question_cap,
 )
-from studymate.services.model_registry import resolve_active_text_llm_spec, resolve_active_text_model_tag
+from studymate.services.model_registry import resolve_active_ocr_llm_spec, resolve_active_text_llm_spec, resolve_active_text_model_tag
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.ui.animated import AnimatedButton, AnimatedComboBox, polish_surface
@@ -1056,6 +1056,12 @@ class CreateTab(QWidget):
     def _active_text_model_tag(self) -> str:
         return resolve_active_text_model_tag(self.datastore.load_ai_settings())
 
+    def _active_ocr_llm_spec(self):
+        ai_settings = self.datastore.load_ai_settings()
+        snap = self.preflight.snapshot(force=False)
+        installed_keys = [key for key, installed in snap.installed_models.items() if installed]
+        return resolve_active_ocr_llm_spec(ai_settings, installed_keys)
+
     def _surface(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Surface")
@@ -1384,6 +1390,7 @@ class CreateTab(QWidget):
     def _process_next_question(self) -> None:
         if self.active_job is not None or not self.pending_jobs:
             return
+        ai_settings = self.datastore.load_ai_settings()
         model_spec = self._active_text_llm_spec()
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Card generation"):
             return
@@ -1399,6 +1406,7 @@ class CreateTab(QWidget):
             self.ollama,
             model=self._active_text_model_tag(),
             profile_context=self.datastore.load_profile(),
+            context_length=int(ai_settings.get("autofill_context_length", 8192) or 8192),
         )
         self.autofill_worker.progress.connect(lambda message: self._add_activity(kind="status", title="Autofill", text=message))
         self.autofill_worker.field.connect(self._on_field_ready)
@@ -1734,9 +1742,11 @@ class CreateTab(QWidget):
     def _start_files_to_cards(self) -> None:
         if not self.selected_source_files or self.ftc_run is not None:
             return
+        ai_settings = self.datastore.load_ai_settings()
         model_spec = self._active_text_llm_spec()
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="Files To Cards"):
             return
+        ocr_model_spec = self._active_ocr_llm_spec()
 
         active_sources = list(self.selected_source_files)
         active_mode = self._current_mode()
@@ -1746,11 +1756,14 @@ class CreateTab(QWidget):
         if total_units <= 0 or total_units > limit:
             return
 
+        self.use_ocr = bool(self._load_ftc_defaults().get("use_ocr", True))
+        if self.use_ocr and not self.preflight.require_model(ocr_model_spec.key, parent=self, feature_name="Files To Cards OCR"):
+            return
+
         self._play_sound("click")
         run_id = str(uuid.uuid4())
         self.ftc_run = FilesToCardsRunState(run_id=run_id, phase="generating", question_entries=[])
         self._add_activity(kind="status", title="Files To Cards", text="Started a new Files To Cards run.")
-        self.use_ocr = bool(self._load_ftc_defaults().get("use_ocr", True))
         background_workers = max(1, min(8, int(self.datastore.load_setup().get("performance", {}).get("background_workers", 2) or 2)))
 
         job = FilesToCardsJob(
@@ -1764,6 +1777,11 @@ class CreateTab(QWidget):
             background_workers=background_workers,
             text_model_tag=self._active_text_model_tag(),
             text_model_label=model_spec.display_name,
+            ocr_model_tag=ocr_model_spec.primary_tag,
+            ocr_model_label=ocr_model_spec.display_name,
+            ocr_context_length=int(ai_settings.get("files_to_cards_ocr_context_length", 8192) or 8192),
+            paper_context_length=int(ai_settings.get("files_to_cards_paper_context_length", 8192) or 8192),
+            cards_context_length=int(ai_settings.get("files_to_cards_cards_context_length", 8192) or 8192),
         )
         self.ftc_worker = FilesToCardsWorker(
             job=job,
