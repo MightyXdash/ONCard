@@ -77,6 +77,8 @@ Use the Linux-specific version here: [ONCard-Linux](https://github.com/Corban162
 
 ## Recommended Requirements
 For a smooth experience:
+
+_at least an_
 - Intel i5-8100
 - 16 GB DDR4 RAM
 - NVIDIA RTX 2060 Super
