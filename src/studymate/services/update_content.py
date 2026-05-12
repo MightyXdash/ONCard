@@ -8,6 +8,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class PackagedUpdateContent:
     prompt_banner: Path
+    summary_banner: Path
     update_name: str
     learn_more_title: str
     subtitle: str
@@ -16,6 +17,8 @@ class PackagedUpdateContent:
     text1: str
     banner2: Path | None
     text2: str
+    banner3: Path | None
+    text3: str
 
 
 def load_packaged_update_content(assets_root: Path, version: str) -> PackagedUpdateContent:
@@ -31,20 +34,26 @@ def load_packaged_update_content(assets_root: Path, version: str) -> PackagedUpd
     version_dir = updates_root / version
 
     prompt_banner_name = str(prompt_scope.get("banner", "update_prompt_banner_16x9.png"))
-    banner1_name = str(post_install_scope.get("banner1", whats_new_scope.get("top_banner", "whats_new_top_banner_16x9.png")))
-    banner2_name = str(post_install_scope.get("banner2", whats_new_scope.get("showcase_banner", ""))).strip()
+    summary_banner_name = str(post_install_scope.get("banner1", whats_new_scope.get("showcase_banner", whats_new_scope.get("top_banner", "whats_new_top_banner_16x9.png"))))
+    banner1_name = str(whats_new_scope.get("top_banner", post_install_scope.get("banner2", "whats_new_top_banner_16x9.png"))).strip()
+    banner2_name = str(whats_new_scope.get("closing_banner", whats_new_scope.get("showcase_banner", post_install_scope.get("banner3", "")))).strip()
+    banner3_name = ""
     update_name = str(post_install_scope.get("update_name", whats_new_scope.get("title", f"Welcome to ONCard {version}"))).strip()
     learn_more_title = str(whats_new_scope.get("title", update_name)).strip()
     subtitle = str(post_install_scope.get("subtitle", "")).strip()
-    text1 = str(post_install_scope.get("text1", whats_new_scope.get("description", "A cleaner update with new features and polish."))).strip()
-    text2 = str(post_install_scope.get("text2", "")).strip()
+    summary_text = str(post_install_scope.get("text1", post_install_scope.get("summary_text", "")).strip())
+    text1 = str(whats_new_scope.get("description", post_install_scope.get("text2", "A cleaner update with new features and polish."))).strip()
+    text2 = str(whats_new_scope.get("closing_description", "")).strip()
+    text3 = ""
     if not text2:
         points = [str(item).strip() for item in whats_new_scope.get("points", []) if str(item).strip()]
         text2 = "\n".join(f"- {point}" for point in points)
-    summary_text = str(post_install_scope.get("summary_text", text2 or text1)).strip()
+    if not summary_text:
+        summary_text = str(post_install_scope.get("summary_text", "")).strip() or text1
 
     return PackagedUpdateContent(
         prompt_banner=_resolve_asset(version_dir, common_dir, prompt_banner_name),
+        summary_banner=_resolve_asset(version_dir, common_dir, summary_banner_name),
         update_name=update_name or f"Welcome to ONCard {version}",
         learn_more_title=learn_more_title or update_name or f"Welcome to ONCard {version}",
         subtitle=subtitle,
@@ -53,6 +62,8 @@ def load_packaged_update_content(assets_root: Path, version: str) -> PackagedUpd
         text1=text1 or "A cleaner update with new features and polish.",
         banner2=_resolve_optional_asset(version_dir, common_dir, banner2_name),
         text2=text2,
+        banner3=_resolve_optional_asset(version_dir, common_dir, banner3_name),
+        text3=text3,
     )
 
 

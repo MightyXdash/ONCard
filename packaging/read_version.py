@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
 from packaging.version import Version  # noqa: E402
 
 from studymate.constants import APP_NAME  # noqa: E402
-from studymate.version import APP_COPYRIGHT, APP_DESCRIPTION, APP_INTERNAL_NAME, APP_ORIGINAL_FILENAME, APP_PUBLISHER, APP_VERSION  # noqa: E402
+from studymate.version import APP_COPYRIGHT, APP_DESCRIPTION, APP_INTERNAL_NAME, APP_ORIGINAL_FILENAME, APP_PUBLISHER, APP_VERSION, pep440_version  # noqa: E402
 
 
 def main() -> int:
@@ -32,7 +32,7 @@ def main() -> int:
     elif arg == "copyright":
         print(APP_COPYRIGHT)
     elif arg == "fileversion":
-        version = Version(APP_VERSION)
+        version = Version(pep440_version(APP_VERSION))
         parts = [version.major, version.minor, version.micro]
         build = version.pre[1] if version.pre else version.post if version.post is not None else 0
         parts.append(int(build or 0))

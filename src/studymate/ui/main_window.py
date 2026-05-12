@@ -37,6 +37,7 @@ from studymate.ui.stats_dialog import StatsDialog
 from studymate.ui.study_tab import StudyTab
 from studymate.ui.windows_toast import set_windows_app_user_model_id, show_windows_toast
 from studymate.ui.window_effects import polish_popup_window, polish_windows_window
+from studymate.version import app_name_with_release_channel
 
 
 def _motion_duration(duration: int) -> int:
@@ -1191,7 +1192,7 @@ class MainWindow(QMainWindow):
         self._opacity_anim: QPropertyAnimation | None = None
         self._closing = False
         self._close_anim: QParallelAnimationGroup | None = None
-        self.setWindowTitle("ONCard")
+        self.setWindowTitle(app_name_with_release_channel("ONCard"))
         self.setObjectName("OnCardMainWindow")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setMinimumSize(760, 540)
@@ -1709,7 +1710,7 @@ class MainWindow(QMainWindow):
         if tray_icon.isNull():
             tray_icon = self.icons.icon("app", "app_logo", "O")
         self._tray_icon = QSystemTrayIcon(tray_icon, self)
-        self._tray_icon.setToolTip("ONCard")
+        self._tray_icon.setToolTip(app_name_with_release_channel("ONCard"))
         self._tray_icon.show()
 
     def _notify_ftc_completed(self, subject: str) -> None:

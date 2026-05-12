@@ -36,11 +36,47 @@ def _add_surface_shadow(surface: QFrame) -> None:
     surface.setGraphicsEffect(shadow)
 
 
+def _apply_update_dialog_fallback_theme(dialog: QDialog) -> None:
+    dialog.setStyleSheet(
+        """
+        QDialog {
+            background: transparent;
+        }
+        QFrame#Surface {
+            background: #f8fafc;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: 26px;
+        }
+        QLabel#PageTitle {
+            color: #102033;
+            font-size: 30px;
+            font-weight: 700;
+        }
+        QLabel#UpdateSubtitle {
+            color: #47607a;
+            font-size: 15px;
+            font-weight: 500;
+        }
+        QLabel#SectionTitle {
+            color: #16324a;
+            font-size: 20px;
+            font-weight: 600;
+        }
+        QLabel#SectionText {
+            color: #34495e;
+            font-size: 14px;
+            line-height: 1.45em;
+        }
+        """
+    )
+
+
 class UpdateDialog(QDialog):
     def __init__(self, *, release: ReleaseInfo, prompt_banner: Path) -> None:
         super().__init__()
         self.setWindowTitle("Update available")
         self.setFixedSize(620, 480)
+        _apply_update_dialog_fallback_theme(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 22, 22, 22)
@@ -84,7 +120,8 @@ class WhatsNewSummaryDialog(QDialog):
         super().__init__()
         self.setWindowTitle("What's new")
         _use_frameless_surface(self)
-        self.setFixedSize(660, 660)
+        self.setFixedSize(600, 760)
+        _apply_update_dialog_fallback_theme(self)
         self.dive_deeper_requested = False
         self.sounds = UiSoundBank(content.banner1.parents[2] / "sfx")
 
@@ -113,13 +150,10 @@ class WhatsNewSummaryDialog(QDialog):
         subtitle.setWordWrap(True)
         surface_layout.addWidget(subtitle)
 
-        summary_banner = content.banner1.parent / "whats_new_showcase_16x9.png"
-        if not summary_banner.exists():
-            summary_banner = content.banner1
         banner = BannerWidget(
-            banner_path=summary_banner,
+            banner_path=content.summary_banner,
             placeholder_text="whats_new_top_banner_16x9.png",
-            height=260,
+            height=290,
             radius=24,
         )
         surface_layout.addWidget(banner, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -140,6 +174,8 @@ class WhatsNewSummaryDialog(QDialog):
         dive_btn.setObjectName("PrimaryButton")
         okay_btn.setFixedWidth(132)
         dive_btn.setFixedWidth(156)
+        okay_btn.setFixedHeight(48)
+        dive_btn.setFixedHeight(48)
         okay_btn.setProperty("skipClickSfx", True)
         dive_btn.setProperty("skipClickSfx", True)
         okay_btn.clicked.connect(self._okay)
@@ -164,7 +200,8 @@ class WhatsNewDialog(QDialog):
         super().__init__()
         self.setWindowTitle("What's new")
         _use_frameless_surface(self)
-        self.resize(800, 900)
+        self.resize(700, 980)
+        _apply_update_dialog_fallback_theme(self)
         self.sounds = UiSoundBank(content.banner1.parents[2] / "sfx")
 
         layout = QVBoxLayout(self)
@@ -205,7 +242,7 @@ class WhatsNewDialog(QDialog):
         banner1 = BannerWidget(
             banner_path=content.banner1,
             placeholder_text="whats_new_top_banner_16x9.png",
-            height=228,
+            height=250,
             radius=26,
         )
         body.addWidget(banner1, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -220,7 +257,7 @@ class WhatsNewDialog(QDialog):
             banner2 = BannerWidget(
                 banner_path=content.banner2,
                 placeholder_text="whats_new_showcase_16x9.png",
-                height=228,
+                height=250,
                 radius=26,
             )
             body.addWidget(banner2, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -232,6 +269,22 @@ class WhatsNewDialog(QDialog):
             text2.setAlignment(Qt.AlignmentFlag.AlignJustify | Qt.AlignmentFlag.AlignTop)
             body.addWidget(text2)
 
+        if content.banner3 is not None:
+            banner3 = BannerWidget(
+                banner_path=content.banner3,
+                placeholder_text="whats_new_closing_banner_16x9.png",
+                height=250,
+                radius=26,
+            )
+            body.addWidget(banner3, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        if content.text3.strip():
+            text3 = QLabel(content.text3)
+            text3.setObjectName("SectionText")
+            text3.setWordWrap(True)
+            text3.setAlignment(Qt.AlignmentFlag.AlignJustify | Qt.AlignmentFlag.AlignTop)
+            body.addWidget(text3)
+
         body.addStretch(1)
         scroll.setWidget(host)
         surface_layout.addWidget(scroll, 1)
@@ -241,6 +294,7 @@ class WhatsNewDialog(QDialog):
         close_btn = AnimatedButton("Continue")
         close_btn.setObjectName("PrimaryButton")
         close_btn.setFixedWidth(156)
+        close_btn.setFixedHeight(50)
         close_btn.setProperty("skipClickSfx", True)
         close_btn.clicked.connect(self._accept_with_click)
         close_row.addWidget(close_btn)
@@ -257,6 +311,7 @@ class EmbeddingOnboardingDialog(QDialog):
         super().__init__()
         self.setWindowTitle("Smarter study mode")
         self.setFixedSize(520, 360)
+        _apply_update_dialog_fallback_theme(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 22, 22, 22)

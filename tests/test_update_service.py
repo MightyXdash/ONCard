@@ -5,6 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -29,6 +30,56 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertFalse(self.service.is_patch_update("1.0.0", "1.1.0"))
         self.assertFalse(self.service.is_patch_update("1.0.0", "2.0.0"))
         self.assertFalse(self.service.is_patch_update("1.0.1", "1.0.1"))
+
+    def test_beta_updates_are_newer_but_not_patch_updates(self) -> None:
+        self.assertTrue(self.service.is_newer_version("1.5.9", "1.5.10.beta"))
+        self.assertEqual("beta", self.service.classify_update("1.5.9", "1.5.10.beta"))
+        self.assertFalse(self.service.is_patch_update("1.5.9", "1.5.10.beta"))
+
+    def test_stable_release_beats_same_core_beta(self) -> None:
+        self.assertTrue(self.service.is_newer_version("1.5.10.beta", "1.5.10"))
+        self.assertEqual("patch", self.service.classify_update("1.5.9", "1.5.10"))
+
+    def test_get_latest_release_can_pick_beta_prerelease(self) -> None:
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = [
+            {
+                "tag_name": "v1.5.10.beta",
+                "html_url": "https://example.com/beta",
+                "body": "beta body",
+                "draft": False,
+                "prerelease": True,
+                "assets": [
+                    {
+                        "name": "ONCard-Setup-1.5.10.beta.exe",
+                        "browser_download_url": "https://example.com/ONCard-Setup-1.5.10.beta.exe",
+                    }
+                ],
+            },
+            {
+                "tag_name": "v1.5.9",
+                "html_url": "https://example.com/stable",
+                "body": "stable body",
+                "draft": False,
+                "prerelease": False,
+                "assets": [
+                    {
+                        "name": "ONCard-Setup-1.5.9.exe",
+                        "browser_download_url": "https://example.com/ONCard-Setup-1.5.9.exe",
+                    }
+                ],
+            },
+        ]
+        response.raise_for_status = Mock()
+
+        with patch("studymate.services.update_service.requests.get", return_value=response):
+            release = self.service.get_latest_release("1.5.9")
+
+        self.assertIsNotNone(release)
+        assert release is not None
+        self.assertEqual("1.5.10.beta", release.version)
+        self.assertEqual("beta", release.update_kind)
 
     def test_extract_first_release_image_from_markdown(self) -> None:
         markdown = "\n".join(
@@ -82,6 +133,20 @@ class UpdateServiceTests(unittest.TestCase):
             }
         )
         self.assertEqual({}, self.service.load_ready_silent_patch("1.0.0"))
+        self.assertEqual({}, self.service.load_update_state())
+
+    def test_load_ready_silent_patch_rejects_beta_version(self) -> None:
+        installer = self.paths.updates / "ONCard-Setup-1.5.10.beta.exe"
+        installer.parent.mkdir(parents=True, exist_ok=True)
+        installer.write_bytes(b"x")
+        self.service.save_update_state(
+            {
+                "pending_silent_install": True,
+                "latest_version": "1.5.10.beta",
+                "installer_path": str(installer),
+            }
+        )
+        self.assertEqual({}, self.service.load_ready_silent_patch("1.5.9"))
         self.assertEqual({}, self.service.load_update_state())
 
     def test_launch_helper_raises_update_error_for_missing_script_parent(self) -> None:

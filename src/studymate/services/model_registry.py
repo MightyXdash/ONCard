@@ -174,26 +174,6 @@ FEATURE_MODEL_SETTING_KEYS = {
     "stats_context_length": "stats_model_key",
 }
 CLOUD_MODELS: dict[str, ModelSpec] = {
-    "gemini_3_flash_preview_cloud": ModelSpec(
-        key="gemini_3_flash_preview_cloud",
-        display_name="Gemini 3 Flash Preview",
-        primary_tag="gemini-3-flash-preview",
-        candidate_tags=["gemini-3-flash-preview"],
-        size_label="Cloud",
-        size_gb=0.0,
-        required=False,
-        optional=True,
-    ),
-    "qwen3_5_cloud": ModelSpec(
-        key="qwen3_5_cloud",
-        display_name="Qwen3.5 Cloud",
-        primary_tag="qwen3.5:cloud",
-        candidate_tags=["qwen3.5:cloud"],
-        size_label="Cloud",
-        size_gb=0.0,
-        required=False,
-        optional=True,
-    ),
     "gemma4_31b_cloud": ModelSpec(
         key="gemma4_31b_cloud",
         display_name="Gemma4:31b Cloud",
@@ -206,7 +186,7 @@ CLOUD_MODELS: dict[str, ModelSpec] = {
     ),
 }
 CLOUD_LLM_KEYS = list(CLOUD_MODELS.keys())
-CLOUD_COMPATIBLE_LOCAL_LLM_KEYS = [key for key in NON_EMBEDDING_LLM_KEYS if key in MODELS]
+SUPPORTED_CLOUD_LOCAL_LLM_KEYS = ["gemma4_31b_cloud"]
 LEGACY_TEXT_LLM_KEYS = {
     "ministral_3_3b": DEFAULT_TEXT_LLM_KEY,
     "ministral_3_8b": DEFAULT_TEXT_LLM_KEY,
@@ -244,11 +224,7 @@ def ocr_llm_keys() -> list[str]:
 
 def cloud_llm_specs() -> list[ModelSpec]:
     specs: list[ModelSpec] = []
-    for key in CLOUD_COMPATIBLE_LOCAL_LLM_KEYS:
-        spec = MODELS.get(key)
-        if spec is not None:
-            specs.append(spec)
-    for key in CLOUD_LLM_KEYS:
+    for key in SUPPORTED_CLOUD_LOCAL_LLM_KEYS:
         spec = CLOUD_MODELS.get(key)
         if spec is not None:
             specs.append(spec)

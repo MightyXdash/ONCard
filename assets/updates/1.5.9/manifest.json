@@ -1,0 +1,19 @@
+{
+  "post_install": {
+    "update_name": "It's Better When It's Yours...",
+    "subtitle": "ONCard introduces QNS-1, redesigned creation workflows, and tighter cloud model limits.",
+    "banner1": "whats_new_showcase_16x9.png",
+    "text1": "ONCard introduces QNS-1, a custom Wikipedia summarization model delivering up to 20× faster, cleaner, and more readable summaries directly inside search results.\n\nCard creation has also been redesigned with dedicated FTC and Question Creation workflows, queue-based processing, adaptive MCQ grading, and new AI-powered thinking modes.\n\nFree Ollama cloud access is now limited to Gemma 4 31B model",
+    "banner2": "whats_new_showcase_16x9.png",
+    "summary_text": "ONCard 1.5.9 introduces QNS-1, redesigned creation workflows, adaptive MCQ grading, and Gemma 4 31B as the only free cloud model.",
+    "text2": "ONCard introduces QNS-1, a custom Wikipedia summarization model delivering up to 20× faster, cleaner, and more readable summaries directly inside search results.\n\nCard creation has also been redesigned with dedicated FTC and Question Creation workflows, queue-based processing, adaptive MCQ grading, and new AI-powered thinking modes.\n\nFree Ollama cloud access is now limited to Gemma 4 31B model"
+  },
+  "whats_new": {
+    "top_banner": "whats_new_top_banner_16x9.png",
+    "title": "It's Better When It's Yours...",
+    "description": "The UI has been fully redesigned with cleaner animations, more native-feeling widgets, and a smoother overall experience. Settings Search is now powered by semantic search, allowing users to find features based on what they want to do instead of remembering exact setting names.",
+    "showcase_banner": "whats_new_showcase_16x9.png",
+    "closing_banner": "whats_new_closing_banner_16x9.png",
+    "closing_description": "QNS-1 (QyrouNnet-Summarizer-1) is a free and open-source summarization model developed by ONCard, delivering up to 20× faster generation than traditional 8B models while achieving performance comparable to, or exceeding, larger 24B models across benchmarks such as FactCC and SummaC. Available on Ollama."
+  }
+}

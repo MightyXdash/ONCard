@@ -28,7 +28,7 @@ from studymate.ui.update_dialog import EmbeddingOnboardingDialog, UpdateDialog, 
 from studymate.ui.window_effects import polish_windows_window
 from studymate.ui.wizard import OnboardingWizard
 from studymate.utils.paths import AppPaths
-from studymate.version import APP_VERSION
+from studymate.version import APP_VERSION, app_name_with_release_channel
 from studymate.workers.install_worker import ModelInstallWorker
 from studymate.workers.startup_warmup_worker import StartupWarmupWorker
 from studymate.workers.update_check_worker import UpdateCheckWorker
@@ -459,7 +459,6 @@ class SessionController:
             session_controller=self,
         )
         self.window.show()
-        self._maybe_prompt_qn_summarizer_download()
         self._schedule_background_model_sync()
 
         if self.window is not None and self.update_service is not None and self.datastore is not None and self.paths is not None:
@@ -470,7 +469,7 @@ class SessionController:
             QTimer.singleShot(350, lambda: _notify_pending_silent_patch(window, update_service))
             QTimer.singleShot(
                 500,
-                lambda: _show_whats_new_if_needed(
+                lambda: self._show_startup_post_update_prompts(
                     self.app,
                     window,
                     datastore,
@@ -482,6 +481,21 @@ class SessionController:
             QTimer.singleShot(1200, lambda: _check_for_updates(self.app, window, update_service))
         self._startup_ready = True
         return True
+
+    def _show_startup_post_update_prompts(
+        self,
+        app: QApplication,
+        window: MainWindow,
+        datastore: DataStore,
+        ollama: OllamaService,
+        update_service: UpdateService,
+        paths: AppPaths,
+    ) -> None:
+        showed_whats_new = _show_whats_new_if_needed(update_service, paths)
+        self._maybe_prompt_qn_summarizer_download()
+        if showed_whats_new:
+            content = load_packaged_update_content(paths.assets, APP_VERSION)
+            _maybe_prompt_embedding_onboarding(app, window, datastore, ollama, content)
 
     def _maybe_prompt_qn_summarizer_download(self) -> None:
         if self.window is None or self.datastore is None:
@@ -691,6 +705,17 @@ def _check_for_updates(app: QApplication, window: MainWindow, update_service: Up
     def on_available(release: ReleaseInfo) -> None:
         if release.update_kind == "patch":
             _prepare_silent_patch_update(app, window, update_service, release)
+            return
+        if release.update_kind == "beta":
+            answer = QMessageBox.question(
+                window,
+                "Beta update detected",
+                "New beta update detected. Should we install this BETA release for you?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                _download_update_and_install(app, window, update_service, release)
             return
         banner = _resolve_update_prompt_banner(update_service, release)
         dialog = UpdateDialog(release=release, prompt_banner=banner)
@@ -904,24 +929,20 @@ def _ensure_default_text_model(app: QApplication, datastore: DataStore, ollama: 
     return result["ok"]
 
 def _show_whats_new_if_needed(
-    app: QApplication,
-    window: MainWindow,
-    datastore: DataStore,
-    ollama: OllamaService,
     update_service: UpdateService,
     paths: AppPaths,
-) -> None:
+) -> bool:
     state = update_service.load_update_state()
     if state.get("show_whats_new_for") != APP_VERSION:
-        return
+        return False
     content = load_packaged_update_content(paths.assets, APP_VERSION)
     intro = WhatsNewSummaryDialog(version=APP_VERSION, content=content)
     intro.exec()
     if intro.dive_deeper_requested:
         dialog = WhatsNewDialog(version=APP_VERSION, content=content)
         dialog.exec()
-    _maybe_prompt_embedding_onboarding(app, window, datastore, ollama, content)
     update_service.clear_update_state()
+    return True
 
 
 def _maybe_prompt_embedding_onboarding(

@@ -12,7 +12,7 @@ import requests
 
 from studymate.services.update_notes import parse_update_notes
 from studymate.utils.paths import AppPaths
-from studymate.version import GITHUB_RELEASES_API, INSTALLER_NAME_PREFIX
+from studymate.version import GITHUB_RELEASES_API, INSTALLER_NAME_PREFIX, is_beta_version, normalize_release_version, pep440_version
 
 
 class UpdateError(RuntimeError):
@@ -37,10 +37,7 @@ class UpdateService:
 
     @staticmethod
     def normalize_version(raw: str) -> str:
-        value = raw.strip()
-        if value.lower().startswith("v"):
-            value = value[1:]
-        return value
+        return normalize_release_version(raw)
 
     def get_latest_release(self, current_version: str) -> ReleaseInfo | None:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "ONCard-Updater"}
@@ -55,32 +52,40 @@ class UpdateService:
         except ValueError as exc:
             raise UpdateError(f"Update check failed: invalid release response: {exc}") from exc
 
-        if not isinstance(payload, dict):
+        if isinstance(payload, dict):
+            releases = [payload]
+        elif isinstance(payload, list):
+            releases = [item for item in payload if isinstance(item, dict)]
+        else:
             return None
 
-        tag_name = str(payload.get("tag_name", "")).strip()
-        if not tag_name:
-            return None
-
-        latest_version = self.normalize_version(tag_name)
-        if not self.is_newer_version(current_version, latest_version):
-            return None
-
-        body = str(payload.get("body", "") or "")
-        prompt_image_url = self.extract_first_release_image(body)
-        asset = self._pick_installer_asset(payload.get("assets", []))
-        if asset is None:
-            return None
-        return ReleaseInfo(
-            version=latest_version,
-            tag_name=tag_name,
-            html_url=str(payload.get("html_url", "")),
-            asset_name=str(asset.get("name", "")),
-            asset_url=str(asset.get("browser_download_url", "")),
-            body=body,
-            prompt_image_url=prompt_image_url,
-            update_kind=self.classify_update(current_version, latest_version),
-        )
+        best_release: ReleaseInfo | None = None
+        for item in releases:
+            if bool(item.get("draft", False)):
+                continue
+            tag_name = str(item.get("tag_name", "")).strip()
+            if not tag_name:
+                continue
+            latest_version = self.normalize_version(tag_name)
+            if not self.is_newer_version(current_version, latest_version):
+                continue
+            asset = self._pick_installer_asset(item.get("assets", []))
+            if asset is None:
+                continue
+            body = str(item.get("body", "") or "")
+            candidate = ReleaseInfo(
+                version=latest_version,
+                tag_name=tag_name,
+                html_url=str(item.get("html_url", "")),
+                asset_name=str(asset.get("name", "")),
+                asset_url=str(asset.get("browser_download_url", "")),
+                body=body,
+                prompt_image_url=self.extract_first_release_image(body),
+                update_kind=self.classify_update(current_version, latest_version),
+            )
+            if best_release is None or self.is_newer_version(best_release.version, candidate.version):
+                best_release = candidate
+        return best_release
 
     def _pick_installer_asset(self, assets: list[dict]) -> dict | None:
         for asset in assets:
@@ -110,7 +115,7 @@ class UpdateService:
 
     def is_newer_version(self, current_version: str, latest_version: str) -> bool:
         try:
-            return Version(self.normalize_version(latest_version)) > Version(self.normalize_version(current_version))
+            return Version(pep440_version(latest_version)) > Version(pep440_version(current_version))
         except InvalidVersion:
             return self.normalize_version(latest_version) != self.normalize_version(current_version)
 
@@ -121,12 +126,14 @@ class UpdateService:
 
     def classify_update(self, current_version: str, latest_version: str) -> str:
         try:
-            current = Version(self.normalize_version(current_version))
-            latest = Version(self.normalize_version(latest_version))
+            current = Version(pep440_version(current_version))
+            latest = Version(pep440_version(latest_version))
         except InvalidVersion:
             return "manual"
         if latest <= current:
             return "none"
+        if is_beta_version(latest_version):
+            return "beta"
         if current.major == latest.major and current.minor == latest.minor and latest.micro > current.micro:
             return "patch"
         return "manual"

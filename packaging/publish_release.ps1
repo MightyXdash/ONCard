@@ -11,6 +11,7 @@ $Version = & $PythonExe $VersionScript version
 $Tag = "v$Version"
 $NotesPath = Join-Path $RepoRoot "release_notes\$Tag.md"
 $InstallerPath = Join-Path $RepoRoot "build\installer\ONCard-Setup-$Version.exe"
+$IsBeta = $Version.ToLower().EndsWith(".beta")
 
 if (-not (Test-Path $InstallerPath)) {
     throw "Installer not found at $InstallerPath"
@@ -52,7 +53,7 @@ if ($existing) {
         name = "ONCard $Version"
         body = $releaseBody
         draft = $false
-        prerelease = $false
+        prerelease = $IsBeta
     } | ConvertTo-Json
     $release = Invoke-RestMethod -Uri $existing.url -Headers $headers -Method Patch -Body $payload -ContentType "application/json"
 } else {
@@ -62,7 +63,7 @@ if ($existing) {
         name = "ONCard $Version"
         body = $releaseBody
         draft = $false
-        prerelease = $false
+        prerelease = $IsBeta
     } | ConvertTo-Json
     $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers -Method Post -Body $payload -ContentType "application/json"
 }
