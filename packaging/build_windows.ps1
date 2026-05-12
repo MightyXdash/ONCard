@@ -82,7 +82,10 @@ VSVersionInfo(
 "@
 $versionFileBody | Set-Content -Path $VersionFile -Encoding UTF8
 
-$addData = "$RepoRoot\assets;assets"
+$addDataItems = @(
+    "$RepoRoot\assets;assets",
+    "$RepoRoot\prompts;prompts"
+)
 $pyinstallerArgs = @(
     "-m", "PyInstaller",
     "--noconfirm",
@@ -96,9 +99,12 @@ $pyinstallerArgs = @(
     "--workpath", $PyInstallerWorkDir,
     "--specpath", $PyInstallerSpecDir,
     "--version-file", $VersionFile,
-    "--add-data", $addData,
     (Join-Path $RepoRoot "main.py")
 )
+foreach ($addData in $addDataItems) {
+    $pyinstallerArgs += "--add-data"
+    $pyinstallerArgs += $addData
+}
 if (Test-Path $IconIco) {
     $pyinstallerArgs += "--icon"
     $pyinstallerArgs += $IconIco
@@ -116,6 +122,7 @@ if (-not (Test-Path $DistDir)) {
 Write-Host "Locating Inno Setup..."
 $IsccCandidates = @(
     (Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe"
 )

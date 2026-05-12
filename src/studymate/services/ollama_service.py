@@ -182,6 +182,52 @@ class OllamaService:
                 raise OllamaError(f"Streaming chat failed: {exc}") from exc
         raise OllamaError("Streaming chat failed: no valid cloud payload variant succeeded.")
 
+    def _iter_stream_chat_events(
+        self,
+        *,
+        host: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: int,
+        should_stop,
+    ) -> Iterator[tuple[str, str]]:
+        variants = self._payload_variants(payload, host)
+        for index, candidate in enumerate(variants):
+            try:
+                with requests.post(f"{host}/api/chat", json=candidate, headers=headers, stream=True, timeout=timeout) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if should_stop and should_stop():
+                            return
+                        if not line:
+                            continue
+                        obj = json.loads(line.decode("utf-8"))
+                        message = obj.get("message", {})
+                        if not isinstance(message, dict):
+                            continue
+                        thinking = str(
+                            message.get("thinking")
+                            or message.get("reasoning")
+                            or message.get("reasoning_content")
+                            or ""
+                        )
+                        content = str(message.get("content", ""))
+                        if thinking:
+                            yield ("thinking", thinking)
+                        if content:
+                            yield ("content", content)
+                    return
+            except requests.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                can_retry = self._is_cloud_host(host) and status_code == 400 and index < (len(variants) - 1)
+                if can_retry:
+                    continue
+                detail = self._http_error_detail(exc.response)
+                raise OllamaError(f"Streaming chat failed: {detail or exc}") from exc
+            except (requests.RequestException, json.JSONDecodeError) as exc:
+                raise OllamaError(f"Streaming chat failed: {exc}") from exc
+        raise OllamaError("Streaming chat failed: no valid cloud payload variant succeeded.")
+
     @staticmethod
     def _parse_json_object_loose(content: str) -> dict[str, Any] | None:
         text = str(content or "").strip()
@@ -313,6 +359,7 @@ class OllamaService:
         extra_options: dict | None = None,
         timeout: int = 180,
         response_format: dict | None = None,
+        think: bool = False,
     ) -> str:
         host = self._resolve_host()
         headers = self._headers(host)
@@ -320,6 +367,7 @@ class OllamaService:
         payload = {
             "model": model,
             "stream": False,
+            "think": bool(think),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -347,6 +395,7 @@ class OllamaService:
         tools: list[dict] | None = None,
         response_format: dict | None = None,
         stream: bool = False,
+        think: bool = False,
     ) -> dict:
         host = self._resolve_host()
         headers = self._headers(host)
@@ -354,6 +403,7 @@ class OllamaService:
         payload = {
             "model": model,
             "stream": stream,
+            "think": bool(think),
             "messages": messages,
         }
         if options:
@@ -420,6 +470,7 @@ class OllamaService:
         response_format: dict | None = None,
         timeout: int = 180,
         should_stop=None,
+        think: bool = False,
     ) -> Iterator[str]:
         host = self._resolve_host()
         headers = self._headers(host)
@@ -427,6 +478,7 @@ class OllamaService:
         payload = {
             "model": model,
             "stream": True,
+            "think": bool(think),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -447,6 +499,88 @@ class OllamaService:
             timeout=timeout,
             should_stop=should_stop,
         )
+
+    def stream_chat_events(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        image_paths: list[str] | None = None,
+        temperature: float = 0.2,
+        extra_options: dict | None = None,
+        response_format: dict | None = None,
+        timeout: int = 180,
+        should_stop=None,
+        think: bool = False,
+    ) -> Iterator[tuple[str, str]]:
+        host = self._resolve_host()
+        headers = self._headers(host)
+        options = self._sanitize_options_for_host(self._build_options(temperature, extra_options), host)
+        payload = {
+            "model": model,
+            "stream": True,
+            "think": bool(think),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                    "images": self._encode_images(image_paths),
+                },
+            ],
+        }
+        if options:
+            payload["options"] = options
+        if response_format is not None:
+            payload["format"] = response_format
+        yield from self._iter_stream_chat_events(
+            host=host,
+            headers=headers,
+            payload=payload,
+            timeout=timeout,
+            should_stop=should_stop,
+        )
+
+    def stream_prompt(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        temperature: float = 0.2,
+        extra_options: dict | None = None,
+        timeout: int = 180,
+        should_stop=None,
+        think: bool = False,
+    ) -> Iterator[str]:
+        host = self._resolve_host()
+        headers = self._headers(host)
+        options = self._sanitize_options_for_host(self._build_options(temperature, extra_options), host)
+        payload: dict[str, Any] = {
+            "model": model,
+            "stream": True,
+            "think": bool(think),
+            "prompt": prompt,
+        }
+        if options:
+            payload["options"] = options
+        try:
+            with requests.post(f"{host}/api/generate", json=payload, headers=headers, stream=True, timeout=timeout) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if should_stop and should_stop():
+                        return
+                    if not line:
+                        continue
+                    obj = json.loads(line.decode("utf-8"))
+                    chunk = str(obj.get("response", ""))
+                    if chunk:
+                        yield chunk
+        except requests.HTTPError as exc:
+            detail = self._http_error_detail(exc.response)
+            raise OllamaError(f"Streaming generate failed: {detail or exc}") from exc
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            raise OllamaError(f"Streaming generate failed: {exc}") from exc
 
     def stream_structured_chat(
         self,
@@ -493,7 +627,7 @@ class OllamaService:
         return parsed
 
     def benchmark_tps(self, model: str, prompt: str, timeout: int = 120) -> float:
-        payload = {"model": model, "stream": False, "prompt": prompt, "options": {"temperature": 0}}
+        payload = {"model": model, "stream": False, "think": False, "prompt": prompt, "options": {"temperature": 0}}
         host = self._resolve_host()
         headers = self._headers(host)
         try:

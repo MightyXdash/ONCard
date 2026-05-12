@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.ui.animated import AnimatedToolButton, CardHoverChrome
+from studymate.ui.window_effects import polish_popup_window
 
 
 class CardTile(QFrame):
@@ -51,8 +52,7 @@ class CardTile(QFrame):
         options_button.setObjectName("CardOptionsButton")
         options_menu = QMenu(options_button)
         options_menu.setObjectName("CardOptionsMenu")
-        options_menu.setWindowFlag(Qt.NoDropShadowWindowHint, False)
-        options_menu.setAttribute(Qt.WA_TranslucentBackground, False)
+        polish_popup_window(options_menu)
         move_action = options_menu.addAction("Move card")
         remove_action = options_menu.addAction("Remove")
         move_action.triggered.connect(lambda: self.move_requested.emit(self.card))

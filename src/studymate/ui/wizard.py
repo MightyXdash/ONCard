@@ -36,7 +36,7 @@ from studymate.ui.animated import AnimatedButton, AnimatedComboBox, AnimatedLine
 from studymate.ui.audio import UiSoundBank
 from studymate.ui.banner_widget import BannerWidget
 from studymate.ui.icon_helper import IconHelper
-from studymate.ui.window_effects import polish_windows_window
+from studymate.ui.window_effects import polish_popup_window, polish_windows_window
 from studymate.workers.install_worker import ModelInstallWorker
 from studymate.workers.performance_worker import PerformanceWorker
 
@@ -248,12 +248,9 @@ class FadingIconButton(AnimatedButton):
 
     def enterEvent(self, event) -> None:
         super().enterEvent(event)
-        if self.isEnabled():
-            self._animate_fill(self._hover_anim, 1.0)
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
-        self._animate_fill(self._hover_anim, 0.0)
         self._animate_fill(self._press_anim, 0.0)
 
     def mousePressEvent(self, event) -> None:
@@ -438,7 +435,7 @@ class StartupPopupDialog(QDialog):
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        polish_popup_window(self)
         self._choice = ""
         self._blur_target = blur_target or parent
         self._overlay_target = parent
@@ -447,7 +444,7 @@ class StartupPopupDialog(QDialog):
         self._applied_blur: QGraphicsBlurEffect | None = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(44, 44, 44, 44)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         card = QFrame(self)
@@ -461,11 +458,6 @@ class StartupPopupDialog(QDialog):
             }
             """
         )
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(44)
-        shadow.setOffset(0, 0)
-        shadow.setColor(QColor(13, 26, 39, 110))
-        card.setGraphicsEffect(shadow)
         root.addWidget(card)
 
         body = QVBoxLayout(card)
@@ -561,7 +553,7 @@ class GradePickerDialog(QDialog):
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        polish_popup_window(self)
         self._choice = ""
         self._blur_target = blur_target or parent
         self._overlay_target = parent
@@ -571,7 +563,7 @@ class GradePickerDialog(QDialog):
         self._applied_blur: QGraphicsBlurEffect | None = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 22, 22, 22)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         card = QFrame(self)
@@ -604,8 +596,8 @@ class GradePickerDialog(QDialog):
                 text-align: left;
             }
             QPushButton#GradePickerOption:hover {
-                background: rgba(237, 244, 250, 0.98);
-                border: 1px solid rgba(154, 180, 206, 0.92);
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
             }
             QPushButton#GradePickerOption[optionSelected="true"] {
                 background: rgba(221, 234, 247, 0.98);
@@ -614,11 +606,6 @@ class GradePickerDialog(QDialog):
             }
             """
         )
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(42)
-        shadow.setOffset(0, 12)
-        shadow.setColor(QColor(13, 26, 39, 78))
-        card.setGraphicsEffect(shadow)
         root.addWidget(card)
 
         body = QVBoxLayout(card)
@@ -751,7 +738,7 @@ class GenderPickerDialog(QDialog):
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        polish_popup_window(self)
         self._blur_target = blur_target or parent
         self._overlay_target = parent
         self._overlay: QWidget | None = None
@@ -773,7 +760,7 @@ class GenderPickerDialog(QDialog):
             self._choice = normalized
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 22, 22, 22)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         card = QFrame(self)
@@ -806,8 +793,8 @@ class GenderPickerDialog(QDialog):
                 text-align: left;
             }
             QPushButton#GenderPresetOption:hover {
-                background: rgba(237, 244, 250, 0.98);
-                border: 1px solid rgba(154, 180, 206, 0.92);
+                background: rgba(246, 250, 253, 0.98);
+                border: 1px solid rgba(205, 218, 230, 0.92);
             }
             QPushButton#GenderPresetOption[optionSelected="true"] {
                 background: rgba(221, 234, 247, 0.98);
@@ -828,11 +815,6 @@ class GenderPickerDialog(QDialog):
             }
             """
         )
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(42)
-        shadow.setOffset(0, 12)
-        shadow.setColor(QColor(13, 26, 39, 78))
-        card.setGraphicsEffect(shadow)
         root.addWidget(card)
 
         body = QVBoxLayout(card)
@@ -1587,9 +1569,8 @@ class ModelInstallerPage(OnboardingPage):
         else:
             self.install_button.setEnabled(True)
 
-        self.size_label.setText(
-            f"Selected download size: {size_gb:.1f} GB | Models: Gemma3:4b and Nomic-embed-MoE"
-        )
+        model_names = ", ".join(MODELS[key].display_name for key in selected if key in MODELS)
+        self.size_label.setText(f"Selected download size: {size_gb:.1f} GB | Models: {model_names}")
         self.ollama_button.setVisible(not self.ollama_installed)
 
     def selected_models(self) -> list[str]:

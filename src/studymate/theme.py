@@ -1,6 +1,132 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
+
+
+ThemeMode = Literal["light", "dark", "system"]
+ResolvedTheme = Literal["light", "dark"]
+
+VALID_THEME_MODES: tuple[str, ...] = ("system", "light", "dark")
+
+LIGHT_TOKENS = {
+    "bg": "#e8eef4",
+    "surface": "rgba(255, 255, 255, 0.96)",
+    "surface_solid": "#ffffff",
+    "surface_alt": "#f8fbfd",
+    "elevated": "rgba(255, 255, 255, 0.98)",
+    "text": "#16202b",
+    "text_strong": "#111d2a",
+    "muted": "#697888",
+    "border": "rgba(167, 182, 199, 0.42)",
+    "primary": "#0f2539",
+    "primary_hover": "#13314b",
+    "hover": "#f8fbfe",
+    "pressed": "#e6eef7",
+    "selection": "#d6e4f1",
+    "success": "#58b66f",
+    "warning": "#d7a45c",
+    "danger": "#d95c5c",
+    "overlay": "rgba(15, 23, 42, 0.44)",
+}
+
+DARK_TOKENS = {
+    "bg": "#111820",
+    "surface": "rgba(26, 35, 46, 0.96)",
+    "surface_solid": "#1a232e",
+    "surface_alt": "#202b37",
+    "elevated": "rgba(31, 42, 54, 0.98)",
+    "text": "#e7edf4",
+    "text_strong": "#f7fafc",
+    "muted": "#9aa8b7",
+    "border": "rgba(122, 142, 164, 0.34)",
+    "primary": "#79b7ff",
+    "primary_hover": "#9ac8ff",
+    "hover": "#273545",
+    "pressed": "#33455a",
+    "selection": "#2d4f72",
+    "success": "#75d28b",
+    "warning": "#e6b96e",
+    "danger": "#ff8686",
+    "overlay": "rgba(0, 0, 0, 0.58)",
+}
+
+
+def normalize_theme_mode(mode: object) -> ThemeMode:
+    clean = str(mode or "").strip().lower()
+    if clean in VALID_THEME_MODES:
+        return clean  # type: ignore[return-value]
+    return "light"
+
+
+def resolve_theme_mode(mode: object = "light", app: QApplication | None = None) -> ResolvedTheme:
+    clean = normalize_theme_mode(mode)
+    if clean in ("light", "dark"):
+        return clean
+    app = app or QApplication.instance()
+    if app is not None:
+        try:
+            if app.styleHints().colorScheme() == Qt.ColorScheme.Dark:
+                return "dark"
+        except AttributeError:
+            pass
+    return "light"
+
+
+def theme_tokens(mode: object = "light", app: QApplication | None = None) -> dict[str, str]:
+    return DARK_TOKENS if resolve_theme_mode(mode, app) == "dark" else LIGHT_TOKENS
+
+
+def is_dark_theme(app: QApplication | None = None) -> bool:
+    app = app or QApplication.instance()
+    if app is None:
+        return False
+    return str(app.property("oncardResolvedTheme") or "light") == "dark"
+
+
+def apply_app_theme(app: QApplication, mode: object = "light") -> ResolvedTheme:
+    saved_mode = normalize_theme_mode(mode)
+    resolved = resolve_theme_mode(saved_mode, app)
+    app.setProperty("oncardTheme", saved_mode)
+    app.setProperty("oncardResolvedTheme", resolved)
+    _apply_palette(app, resolved)
+    app.setStyleSheet(app_stylesheet(resolved))
+    return resolved
+
+
+def _apply_palette(app: QApplication, resolved: ResolvedTheme) -> None:
+    tokens = DARK_TOKENS if resolved == "dark" else LIGHT_TOKENS
+    palette = QPalette()
+    bg = QColor(tokens["bg"])
+    surface = QColor(tokens["surface_solid"])
+    surface_alt = QColor(tokens["surface_alt"])
+    text = QColor(tokens["text"])
+    muted = QColor(tokens["muted"])
+    primary = QColor(tokens["primary"])
+    disabled = QColor("#687586" if resolved == "dark" else "#a4afbb")
+    palette.setColor(QPalette.ColorRole.Window, bg)
+    palette.setColor(QPalette.ColorRole.WindowText, text)
+    palette.setColor(QPalette.ColorRole.Base, surface)
+    palette.setColor(QPalette.ColorRole.AlternateBase, surface_alt)
+    palette.setColor(QPalette.ColorRole.ToolTipBase, surface_alt)
+    palette.setColor(QPalette.ColorRole.ToolTipText, text)
+    palette.setColor(QPalette.ColorRole.Text, text)
+    palette.setColor(QPalette.ColorRole.Button, surface)
+    palette.setColor(QPalette.ColorRole.ButtonText, text)
+    palette.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Link, primary)
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(tokens["selection"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff" if resolved == "dark" else "#132334"))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, disabled)
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor(tokens["surface_alt"]))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Window, bg)
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight, muted)
+    app.setPalette(palette)
 
 
 def _asset_url(relative_path: str) -> str:
@@ -14,9 +140,9 @@ def _asset_url(relative_path: str) -> str:
     return relative_path.replace("\\", "/")
 
 
-def app_stylesheet() -> str:
+def app_stylesheet(mode: object = "light") -> str:
     check_icon = _asset_url("assets/icons/common/check_white_small.svg")
-    return """
+    base = """
     * {
         font-family: "Nunito Sans", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", sans-serif;
         color: #16202b;
@@ -24,13 +150,13 @@ def app_stylesheet() -> str:
         background: transparent;
     }
     QMainWindow, QDialog {
-        background-color: #edf2f7;
+        background-color: #e8eef4;
     }
     QMainWindow#OnCardMainWindow {
-        background: #edf2f7;
+        background: #e8eef4;
     }
     QWidget {
-        background-color: #edf2f7;
+        background-color: #e8eef4;
     }
     QWidget#AppShell {
         background: transparent;
@@ -92,7 +218,7 @@ def app_stylesheet() -> str:
     QFrame#SearchInputShell {
         background-color: rgba(255, 255, 255, 0.98);
         border: 1px solid rgba(167, 182, 199, 0.42);
-        border-radius: 19px;
+        border-radius: 20px;
     }
     QFrame#SearchInputShell[focusRing="true"] {
         border: 1px solid #7aa8dc;
@@ -109,6 +235,9 @@ def app_stylesheet() -> str:
         border-radius: 24px;
     }
     QWidget#CardsCanvas {
+        background-color: transparent;
+    }
+    QWidget#CardEmptyState {
         background-color: transparent;
     }
     QLabel#RecommendationTitle {
@@ -279,7 +408,7 @@ def app_stylesheet() -> str:
         border-color: rgba(125, 162, 196, 0.78);
     }
     QFrame#WindowTitleBar {
-        background-color: #edf2f7;
+        background-color: #e8eef4;
         border: none;
         border-radius: 0px;
     }
@@ -695,6 +824,26 @@ def app_stylesheet() -> str:
         background-color: #fbfdff;
         border-color: rgba(122, 168, 220, 0.66);
     }
+    QFrame#CardSearchSkeletonTile {
+        background-color: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(168, 182, 197, 0.38);
+        border-radius: 24px;
+    }
+    QFrame#CardSearchSkeletonBarStrong {
+        background-color: rgba(213, 224, 235, 0.98);
+        border: none;
+        border-radius: 8px;
+    }
+    QFrame#CardSearchSkeletonBar {
+        background-color: rgba(226, 234, 242, 0.98);
+        border: none;
+        border-radius: 6px;
+    }
+    QFrame#CardSearchSkeletonPill {
+        background-color: rgba(236, 242, 248, 0.98);
+        border: none;
+        border-radius: 10px;
+    }
     QToolButton#CardOptionsButton {
         background-color: rgba(255, 255, 255, 0.98);
         color: #2e465b;
@@ -713,10 +862,146 @@ def app_stylesheet() -> str:
         image: none;
         width: 0px;
     }
-    QFrame#QueueRow {
-        background-color: rgba(248, 251, 253, 0.98);
-        border: 1px solid rgba(167, 182, 199, 0.32);
+    QFrame#CreateWorkspaceSurface, QFrame#CreateQueueSurface, QFrame#FTCWorkspaceSurface, QFrame#CreateOverlayCard {
+        background-color: rgba(255, 254, 253, 0.48);
+        border: 1px solid rgba(255, 255, 255, 0.68);
+        border-radius: 26px;
+    }
+    QFrame#CreateIdleSurface {
+        background-color: rgba(252, 252, 252, 0.46);
+        border: 1px solid rgba(255, 255, 255, 0.62);
+        border-radius: 26px;
+    }
+    QStackedWidget#CreateWorkspaceStack {
+        background: transparent;
+        border: none;
+    }
+    QWidget#CreateOverlayHeaderControls, QWidget#FTCHeaderControls {
+        background: transparent;
+        border: none;
+    }
+    QFrame#CreateWorkspaceSurface QLabel#PageTitle, QFrame#CreateIdleSurface QLabel#PageTitle, QFrame#CreateQueueSurface QLabel#PageTitle, QFrame#QuestionPromptCard QLabel#PageTitle {
+        color: #142434;
+    }
+    QFrame#CreateWorkspaceSurface QLabel#SectionTitle, QFrame#CreateIdleSurface QLabel#SectionTitle, QFrame#CreateQueueSurface QLabel#SectionTitle, QFrame#QuestionPromptCard QLabel#SectionTitle {
+        color: #1b2c3d;
+    }
+    QFrame#CreateWorkspaceSurface QLabel#SectionText, QFrame#CreateIdleSurface QLabel#SectionText, QFrame#CreateQueueSurface QLabel#SectionText, QFrame#QuestionPromptCard QLabel#SectionText {
+        color: #526374;
+    }
+    QFrame#CreateWorkspaceSurface QLabel#SmallMeta, QFrame#CreateIdleSurface QLabel#SmallMeta, QFrame#CreateQueueSurface QLabel#SmallMeta, QFrame#QuestionPromptCard QLabel#SmallMeta, QWidget#CreateModeMenu QLabel#SmallMeta, QFrame#CreateOverlayCard QLabel#SmallMeta {
+        color: #7a8896;
+    }
+    QFrame#CreateWorkspaceSurface QTextEdit, QFrame#QuestionPromptCard QTextEdit, QFrame#CreateQueueSurface QListWidget, QFrame#CreateQueueSurface QTextBrowser {
+        background-color: rgba(255, 254, 253, 0.44);
+        color: #1a2836;
+        border: 1px solid rgba(255, 255, 255, 0.68);
         border-radius: 18px;
+    }
+    QFrame#CreateWorkspaceSurface QTextEdit:focus, QFrame#QuestionPromptCard QTextEdit:focus {
+        border: 1px solid rgba(164, 169, 173, 0.58);
+        background-color: rgba(255, 254, 253, 0.70);
+    }
+    QFrame#CreateQueueSurface QListWidget::item {
+        color: #233649;
+        background-color: rgba(255, 254, 253, 0.34);
+        border: 1px solid rgba(255, 255, 255, 0.54);
+    }
+    QFrame#CreateQueueSurface QListWidget::item:selected {
+        background-color: rgba(255, 254, 253, 0.70);
+        color: #122131;
+    }
+    QFrame#CreateQueueSurface QListWidget::item:hover {
+        background-color: rgba(255, 254, 253, 0.62);
+    }
+    QFrame#QuestionComposeShell {
+        background-color: rgba(255, 254, 253, 0.44);
+        border: 1px solid rgba(191, 200, 209, 0.40);
+        border-radius: 22px;
+    }
+    QFrame#QuestionComposeShell QTextEdit {
+        background: transparent;
+        border: none;
+        border-radius: 0px;
+        padding: 2px 2px 0px 2px;
+    }
+    QFrame#QuestionComposeShell QTextEdit:focus {
+        background: transparent;
+        border: none;
+    }
+    QWidget#QuestionHeaderControls {
+        background: transparent;
+        border: none;
+    }
+    QToolButton#QuestionHeaderActionButton {
+        background-color: rgba(255, 254, 253, 0.46);
+        border: 1px solid rgba(174, 188, 202, 0.40);
+        border-radius: 10px;
+        padding: 5px 9px;
+        color: #18293a;
+    }
+    QToolButton#QuestionHeaderActionButton:hover {
+        background-color: rgba(255, 254, 253, 0.66);
+        border-color: rgba(164, 169, 173, 0.58);
+    }
+    QToolButton#QuestionHeaderActionButton:disabled {
+        background-color: rgba(238, 243, 248, 0.56);
+        border-color: rgba(190, 200, 210, 0.3);
+        color: #8f9ca8;
+    }
+    QPushButton#QuestionComposeButton {
+        background-color: rgba(255, 254, 253, 0.62);
+        color: #18293a;
+        border: 1px solid rgba(174, 188, 202, 0.42);
+        border-radius: 15px;
+        padding: 10px 16px;
+    }
+    QPushButton#QuestionComposeButton:hover {
+        background-color: rgba(255, 254, 253, 0.78);
+        border-color: rgba(164, 169, 173, 0.62);
+    }
+    QPushButton#QuestionComposeButton:pressed {
+        background-color: rgba(239, 244, 249, 0.94);
+    }
+    QWidget#CreateModeMenu, QDialog#QuestionPromptDialog, QDialog#CreateOverlayDialog {
+        background: transparent;
+        border: none;
+    }
+    QFrame#CreateModeMenuSurface {
+        background-color: rgba(252, 253, 255, 0.86);
+        border: 1px solid rgba(194, 202, 210, 0.58);
+        border-radius: 18px;
+    }
+    QFrame#QuestionPromptCard {
+        background-color: rgba(252, 253, 255, 0.86);
+        border: 1px solid rgba(194, 202, 210, 0.58);
+        border-radius: 26px;
+    }
+    QPushButton#CreateModeMenuButton {
+        background-color: rgba(255, 255, 255, 0.68);
+        color: #18293a;
+        border: 1px solid rgba(194, 202, 210, 0.42);
+        border-radius: 12px;
+        padding: 12px 16px;
+        text-align: left;
+    }
+    QPushButton#CreateModeMenuButton:hover {
+        background-color: rgba(255, 255, 255, 0.92);
+        border-color: rgba(139, 169, 199, 0.6);
+    }
+    QPushButton#CreateModeMenuButton:pressed {
+        background-color: rgba(239, 244, 249, 0.94);
+    }
+    QPushButton#CreateOverlayCloseButton, QPushButton#CreateOverlayUploadButton {
+        background: rgba(255, 254, 253, 0.44);
+        border: 1px solid rgba(194, 202, 210, 0.38);
+        border-radius: 12px;
+        padding: 0px;
+    }
+    QPushButton#CreateOverlayCloseButton:hover, QPushButton#CreateOverlayUploadButton:hover,
+    QPushButton#CreateOverlayCloseButton:pressed, QPushButton#CreateOverlayUploadButton:pressed {
+        background: rgba(255, 254, 253, 0.44);
+        border-color: rgba(194, 202, 210, 0.38);
     }
     QMenu {
         background-color: #ffffff;
@@ -761,61 +1046,60 @@ def app_stylesheet() -> str:
         background: #e5eef7;
         color: #122131;
     }
-    QFrame#FTCControlsSurface {
-        background-color: rgba(252, 253, 255, 0.98);
-        border: 1px solid rgba(171, 186, 201, 0.26);
-        border-radius: 18px;
-    }
     QFrame#FTCSharedCanvas {
-        background-color: rgba(251, 253, 255, 0.99);
-        border: 1px solid rgba(173, 188, 203, 0.28);
-        border-radius: 24px;
-    }
-    QFrame#FTCStraightDivider, QFrame#FTCInnerDivider {
-        background-color: rgba(183, 197, 212, 0.72);
+        background: transparent;
         border: none;
-        border-radius: 0px;
+        border-radius: 26px;
     }
-    QFrame#FTCInfoSurface, QFrame#FTCUploadSurface, QFrame#FTCInstructionsSurface {
+    QFrame#FTCInfoSurface {
         background-color: transparent;
         border: none;
         border-radius: 20px;
     }
-    QLabel#FTCStatValue {
+    QFrame#FTCUploadSurface {
+        background: transparent;
+        border: none;
+        border-radius: 26px;
+    }
+    QLabel#FTCInlineMetaChip {
         font-family: "Nunito Sans", "Segoe UI Variable Display", "Segoe UI", sans-serif;
-        font-size: 21px;
-        font-weight: 400;
-        color: #122131;
+        font-size: 11px;
+        font-weight: 700;
+        color: #18293a;
+        background-color: rgba(255, 254, 253, 0.46);
+        border: 1px solid rgba(174, 188, 202, 0.40);
+        border-radius: 10px;
+        padding: 0px 9px;
     }
     QToolButton#FTCMenuButton {
-        background-color: rgba(255, 255, 255, 0.98);
-        border: 1px solid rgba(170, 184, 198, 0.42);
-        border-radius: 18px;
+        background-color: rgba(255, 255, 255, 0.84);
+        border: 1px solid rgba(255, 255, 255, 0.92);
+        border-radius: 14px;
         padding: 0px;
     }
     QToolButton#FTCMenuButton:hover {
-        background-color: #f8fbfe;
-        border-color: rgba(125, 162, 196, 0.78);
+        background-color: rgba(255, 255, 255, 0.98);
+        border-color: rgba(176, 184, 192, 0.78);
     }
     QToolButton#FTCMenuButton:pressed {
-        background-color: #e6eef7;
+        background-color: rgba(230, 238, 247, 0.94);
     }
     QFrame#FTCUploadTile {
-        background-color: rgba(248, 251, 254, 0.98);
-        border: 1px dashed rgba(184, 198, 213, 0.92);
-        border-radius: 24px;
+        background-color: rgba(255, 255, 255, 0.76);
+        border: 1px dashed rgba(150, 158, 166, 0.66);
+        border-radius: 22px;
     }
     QFrame#FTCUploadTile[hovered="true"] {
-        background-color: #f9fcff;
-        border-color: rgba(125, 162, 196, 0.88);
+        background-color: rgba(255, 255, 255, 0.96);
+        border-color: rgba(118, 128, 138, 0.86);
     }
     QFrame#FTCUploadTile:disabled {
-        background-color: #f3f6f9;
-        border-color: #d8e1ea;
+        background-color: rgba(243, 246, 249, 0.78);
+        border-color: rgba(216, 225, 234, 0.8);
     }
     QLabel#FTCUploadTileText {
-        color: #a5b0bb;
-        font-size: 11px;
+        color: #6f7880;
+        font-size: 12px;
         font-weight: 700;
         background: transparent;
         border: none;
@@ -836,18 +1120,20 @@ def app_stylesheet() -> str:
     QScrollArea#FTCHorizontalRail {
         background: transparent;
         border: none;
+        border-radius: 22px;
     }
     QScrollArea#FTCHorizontalRail > QWidget > QWidget {
         background: transparent;
+        border-radius: 22px;
     }
     QWidget#FTCRailCanvas {
         background: transparent;
         border: none;
     }
     QFrame#FTCFileCard, QFrame#FTCSkeletonCard {
-        background-color: rgba(252, 254, 255, 0.98);
-        border: 1px solid rgba(186, 199, 214, 0.48);
-        border-radius: 24px;
+        background-color: rgba(255, 255, 255, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.88);
+        border-radius: 22px;
     }
     QLabel#FTCFileCardName {
         font-size: 13px;
@@ -860,7 +1146,7 @@ def app_stylesheet() -> str:
         padding: 0px;
     }
     QToolButton#FTCFileRemove {
-        background-color: rgba(255, 255, 255, 0.96);
+        background-color: rgba(255, 255, 255, 0.9);
         border: 1px solid rgba(175, 189, 204, 0.36);
         border-radius: 11px;
         padding: 0px;
@@ -870,7 +1156,7 @@ def app_stylesheet() -> str:
         max-height: 22px;
     }
     QToolButton#FTCFileRemove:hover {
-        background-color: #f7fafc;
+        background-color: rgba(247, 250, 252, 0.98);
         border-color: rgba(129, 165, 197, 0.72);
     }
     QFrame#FTCSkeletonThumb {
@@ -982,19 +1268,33 @@ def app_stylesheet() -> str:
         border-radius: 12px;
     }
     QPushButton#FTCGenerateButton {
-        background-color: rgba(255, 255, 255, 0.98);
-        color: #5c6d7e;
-        border: 1px solid rgba(170, 184, 198, 0.42);
+        min-width: 108px;
+        background-color: rgba(255, 254, 253, 0.46);
+        color: #18293a;
+        border: 1px solid rgba(174, 188, 202, 0.40);
+        border-radius: 10px;
+        padding: 6px 12px;
     }
     QPushButton#FTCGenerateButton:hover {
-        background-color: #0f2539;
-        color: #ffffff;
-        border-color: #0f2539;
+        background-color: rgba(255, 254, 253, 0.66);
+        color: #18293a;
+        border-color: rgba(164, 169, 173, 0.58);
     }
     QPushButton#FTCGenerateButton:disabled {
-        background-color: #f2f4f7;
+        background-color: rgba(244, 244, 244, 0.76);
         color: #a4afbb;
-        border-color: #dfe5eb;
+        border-color: rgba(255, 255, 255, 0.66);
+    }
+    QTextEdit#FTCInlineInstructions {
+        background-color: rgba(255, 255, 255, 0.72);
+        color: #1a2836;
+        border: 1px solid rgba(255, 255, 255, 0.88);
+        border-radius: 18px;
+        padding: 12px 14px;
+    }
+    QTextEdit#FTCInlineInstructions:focus {
+        background-color: rgba(255, 255, 255, 0.88);
+        border-color: rgba(154, 164, 174, 0.7);
     }
     QWidget#FTCFileRow {
         background-color: rgba(255, 255, 255, 0.98);
@@ -1163,4 +1463,191 @@ def app_stylesheet() -> str:
         border-color: #dfe5eb;
     }
     """.replace("__CHECK_ICON__", check_icon)
+    if resolve_theme_mode(mode) != "dark":
+        return base
+    return base + _dark_stylesheet(check_icon)
+
+
+def _dark_stylesheet(check_icon: str) -> str:
+    t = DARK_TOKENS
+    return f"""
+    * {{
+        color: {t["text"]};
+        selection-background-color: {t["selection"]};
+        selection-color: #ffffff;
+    }}
+    QMainWindow, QDialog, QWidget {{
+        background-color: {t["bg"]};
+        color: {t["text"]};
+    }}
+    QMainWindow#OnCardMainWindow, QFrame#WindowTitleBar {{
+        background: {t["bg"]};
+    }}
+    QWidget#AppShell, QLabel, QWidget#CardsCanvas, QWidget#CardEmptyState,
+    QWidget#WindowLeftCluster, QWidget#WindowModeCluster, QWidget#WindowRightCluster,
+    QWidget#AppIconMenu, QWidget#CreateOverlayHeaderControls, QWidget#FTCHeaderControls,
+    QWidget#QuestionHeaderControls, QWidget#FTCFileBody, QWidget#FTCFileActions,
+    QWidget#FTCRailCanvas {{
+        background: transparent;
+    }}
+    QFrame#Surface, QFrame#SettingsWindowShell, QFrame#SettingsCard,
+    QFrame#SettingsSectionCard, QFrame#SidebarSurface, QFrame#RecommendationBlock,
+    QFrame#CardsSearchActions, QFrame#SearchInputShell, QFrame#SearchSuggestionDropdown,
+    QFrame#AppIconMenuSurface, QFrame#UserProfileMenuSurface, QFrame#NotificationsMenuSurface,
+    QFrame#CreateModeMenuSurface, QFrame#QuestionPromptCard, QFrame#FTCControlsPopupCard,
+    QFrame#FTCPopupValueShell, QFrame#FTCPopupFieldShell {{
+        background-color: {t["surface"]};
+        border-color: {t["border"]};
+    }}
+    QStatusBar {{
+        background: rgba(26, 35, 46, 0.96);
+        border-top-color: {t["border"]};
+        color: {t["muted"]};
+    }}
+    QLabel#PageTitle, QLabel#SectionTitle, QLabel#RecommendationTitle,
+    QLabel#CardTitleLabel, QLabel#FTCFileCardName, QLabel#FTCPopupQuestionValue,
+    QTextEdit#CardTitleDisplay {{
+        color: {t["text_strong"]};
+    }}
+    QLabel#SectionText, QLabel#RecommendationMeta, QLabel#SmallMeta,
+    QLabel#CardQuestionLabel, QLabel#FTCUploadTileText, QTextEdit#CardQuestionDisplay {{
+        color: {t["muted"]};
+    }}
+    QLabel#TierBadge, QLabel#CardMetaPill, QLabel#FTCInlineMetaChip {{
+        background-color: {t["surface_alt"]};
+        color: {t["text"]};
+        border-color: {t["border"]};
+    }}
+    QPushButton, QToolButton#CompactGhostButton, QToolButton#CardOptionsButton,
+    QToolButton#FTCMenuButton, QToolButton#FTCFileRemove, QPushButton#FTCToggle,
+    QPushButton#QuestionComposeButton, QToolButton#QuestionHeaderActionButton,
+    QPushButton#CreateModeMenuButton, QPushButton#FTCPopupChoiceButton,
+    QPushButton#FTCPopupStepButton, QPushButton#FTCGenerateButton {{
+        background-color: {t["surface"]};
+        border-color: {t["border"]};
+        color: {t["text"]};
+    }}
+    QPushButton:hover, QToolButton#CompactGhostButton:hover, QToolButton#CardOptionsButton:hover,
+    QToolButton#FTCMenuButton:hover, QToolButton#FTCFileRemove:hover,
+    QPushButton#FTCToggle:hover, QPushButton#QuestionComposeButton:hover,
+    QToolButton#QuestionHeaderActionButton:hover, QPushButton#CreateModeMenuButton:hover,
+    QPushButton#FTCPopupChoiceButton:hover, QPushButton#FTCPopupStepButton:hover,
+    QPushButton#FTCGenerateButton:hover {{
+        background-color: {t["hover"]};
+        border-color: rgba(121, 183, 255, 0.62);
+        color: {t["text_strong"]};
+    }}
+    QPushButton:pressed, QPushButton#QuestionComposeButton:pressed,
+    QPushButton#CreateModeMenuButton:pressed {{
+        background-color: {t["pressed"]};
+    }}
+    QPushButton:disabled, QToolButton:disabled {{
+        background-color: rgba(39, 51, 64, 0.78);
+        color: #687586;
+        border-color: rgba(104, 117, 134, 0.30);
+    }}
+    QPushButton#PrimaryButton, QPushButton#TopNavButton:checked, QPushButton#FTCToggle:checked,
+    QPushButton#FTCPopupChoiceButton[selected="true"], QTabBar::tab:selected {{
+        background-color: {t["primary"]};
+        border-color: {t["primary"]};
+        color: #07111b;
+    }}
+    QPushButton#PrimaryButton:hover {{
+        background-color: {t["primary_hover"]};
+        border-color: {t["primary_hover"]};
+        color: #07111b;
+    }}
+    QPushButton#TopNavButton {{
+        background-color: rgba(26, 35, 46, 0.86);
+        color: {t["text"]};
+        border-color: {t["border"]};
+    }}
+    QPushButton#TopNavButton:hover:!checked, QPushButton#AppIconMenuButton:hover,
+    QPushButton#AppIconAccountButton:hover {{
+        background-color: {t["hover"]};
+        border-color: rgba(121, 183, 255, 0.62);
+    }}
+    QPushButton#AppIconMenuButton, QPushButton#AppIconAccountButton {{
+        color: {t["text"]};
+    }}
+    QLineEdit, QTextEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox {{
+        background-color: {t["elevated"]};
+        border-color: {t["border"]};
+        color: {t["text"]};
+        selection-background-color: {t["selection"]};
+        selection-color: #ffffff;
+    }}
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus,
+    QSpinBox:focus, QLineEdit[focusRing="true"], QComboBox[focusRing="true"],
+    QFrame#SearchInputShell[focusRing="true"] {{
+        background-color: #223044;
+        border-color: {t["primary"]};
+    }}
+    QLineEdit#SearchInputField {{
+        background: transparent;
+        border: none;
+        color: {t["text"]};
+    }}
+    QComboBox QAbstractItemView, QWidget#ComboPopup, QMenu, QMenu#CardOptionsMenu {{
+        background-color: {t["surface_solid"]};
+        border-color: {t["border"]};
+        color: {t["text"]};
+        selection-background-color: {t["selection"]};
+        selection-color: #ffffff;
+    }}
+    QComboBox QAbstractItemView::item:hover, QListWidget::item:hover,
+    QListWidget#SearchSuggestionList::item:hover, QTreeWidget::item:hover,
+    QMenu::item:selected, QMenu#CardOptionsMenu::item:selected {{
+        background: {t["hover"]};
+        color: {t["text_strong"]};
+    }}
+    QListWidget::item:selected, QTreeWidget::item:selected,
+    QComboBox QAbstractItemView::item:selected {{
+        background: {t["selection"]};
+        color: #ffffff;
+    }}
+    QCheckBox::indicator {{
+        background: {t["surface_solid"]};
+        border-color: {t["border"]};
+    }}
+    QCheckBox::indicator:checked {{
+        background: {t["primary"]};
+        border-color: {t["primary"]};
+        image: url("{check_icon}");
+    }}
+    QSlider::groove:horizontal, QSlider::sub-page:horizontal, QSlider::add-page:horizontal,
+    QProgressBar {{
+        background: #344253;
+        color: {t["text"]};
+    }}
+    QSlider::handle:horizontal, QProgressBar::chunk {{
+        background: {t["primary"]};
+    }}
+    QFrame#CardTile, QFrame#FTCUploadTile, QFrame#FTCFileCard, QFrame#FTCSkeletonCard,
+    QWidget#FTCFileRow, QFrame#DropZone, QLabel#FTCPreviewThumb, QLabel#FTCPreviewDialog,
+    QFrame#CreateWorkspaceSurface, QFrame#CreateQueueSurface, QFrame#FTCWorkspaceSurface,
+    QFrame#CreateOverlayCard, QFrame#CreateIdleSurface, QFrame#QuestionComposeShell {{
+        background-color: rgba(26, 35, 46, 0.78);
+        border-color: {t["border"]};
+    }}
+    QFrame#FTCSkeletonThumb, QFrame#FTCSkeletonBar, QFrame#FTCSkeletonBarSoft {{
+        background-color: #344253;
+    }}
+    QScrollBar::handle:vertical, QScrollBar::handle:horizontal,
+    QDialog QScrollBar::handle:vertical {{
+        background: #46586c;
+    }}
+    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover,
+    QDialog QScrollBar::handle:vertical:hover {{
+        background: #5b7087;
+    }}
+    QMenu::separator {{
+        background: rgba(122, 142, 164, 0.28);
+    }}
+    QToolTip {{
+        color: {t["text_strong"]};
+        background-color: #0b1118;
+        border-color: rgba(122, 142, 164, 0.42);
+    }}
+    """
 

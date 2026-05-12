@@ -26,7 +26,7 @@ class ReinforcementWorker(QThread):
         profile_context: dict | None = None,
         assistant_tone: str = "",
         context_length: int = 8192,
-        model: str = "gemma3:4b",
+        model: str = "gemma4:e2b",
     ) -> None:
         super().__init__()
         self.ollama = ollama

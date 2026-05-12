@@ -32,8 +32,45 @@ class FilesToCardsJob:
     custom_instructions: str
     use_ocr: bool
     background_workers: int = 2
-    text_model_tag: str = "gemma3:4b"
-    text_model_label: str = "Gemma3:4b"
+    paper_model_tag: str = "gemma4:e2b"
+    paper_model_label: str = "Gemma4:e2b"
+    cards_model_tag: str = "gemma4:e2b"
+    cards_model_label: str = "Gemma4:e2b"
+    ocr_model_tag: str = "gemma4:e2b"
+    ocr_model_label: str = "Gemma4:e2b"
+    ocr_context_length: int = 8192
+    paper_context_length: int = 8192
+    cards_context_length: int = 8192
+
+
+@dataclass(frozen=True)
+class QuestionOcrJob:
+    run_id: str
+    source_family: str
+    file_paths: list[Path]
+    ocr_model_tag: str = "gemma4:e2b"
+    ocr_model_label: str = "Gemma4:e2b"
+    ocr_context_length: int = 8192
+    background_workers: int = 2
+
+
+def files_to_cards_ocr_system_prompt() -> str:
+    return with_oncard_context(
+        (
+            "You are a careful OCR assistant. "
+            "First reason about what is visible, then transcribe only the visible content. "
+            "Do not invent or complete missing text. "
+            "If a word is unreadable, write [unclear]. "
+            "Return markdown with exactly these sections: ## Analysis and ## Plain Text."
+        ),
+        feature="Files To Cards OCR extraction",
+    )
+
+
+def files_to_cards_ocr_prompt_for_page(page) -> str:
+    if page.family == "images":
+        return "OCR this image to plaintext."
+    return "OCR this document to plaintext."
 
 
 class FilesToCardsWorker(QThread):
@@ -77,14 +114,14 @@ class FilesToCardsWorker(QThread):
         total_units = len(normalized)
         if self.job.use_ocr:
             source_text_parts: list[str] = []
-            self._emit_status(f"{self.job.text_model_label} OCR is extracting page text...")
+            self._emit_status(f"{self.job.ocr_model_label} OCR is extracting page text...")
             for page in normalized:
                 self._ensure_running()
                 page_text = self._ocr_page(page)
                 source_text_parts.append(f"{page.label}\n{page_text}".strip())
             paper = self._run_paper_stage(source_text_parts, total_units)
         else:
-            self._emit_status(f"OCR is off. {self.job.text_model_label} is building the paper directly from the pages...")
+            self._emit_status(f"OCR is off. {self.job.paper_model_label} is building the paper directly from the pages...")
             paper = self._run_vision_paper_stage(normalized)
         self._ensure_running()
         questions = self._run_gemma_stage(paper)
@@ -93,29 +130,20 @@ class FilesToCardsWorker(QThread):
 
     def _ocr_page(self, page) -> str:
         entry_key = f"{self.job.run_id}:ocr:{page.unit_index}"
-        self._emit_status(f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
+        self._emit_status(f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
 
         while True:
             self._ensure_running()
             parts: list[str] = []
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=self.job.text_model_tag,
-                system_prompt=with_oncard_context(
-                    (
-                        "You are a careful OCR assistant. "
-                        "First reason about what is visible, then transcribe only the visible content. "
-                        "Do not invent or complete missing text. "
-                        "If a word is unreadable, write [unclear]. "
-                        "Return markdown with exactly these sections: ## Analysis and ## Plain Text."
-                    ),
-                    feature="Files To Cards OCR extraction",
-                ),
-                user_prompt=self._ocr_prompt_for_page(page),
+                model=self.job.ocr_model_tag,
+                system_prompt=files_to_cards_ocr_system_prompt(),
+                user_prompt=files_to_cards_ocr_prompt_for_page(page),
                 image_paths=[str(page.image_path)],
                 temperature=0.0,
                 extra_options={
-                    "num_ctx": 8192,
+                    "num_ctx": max(2000, min(86000, int(self.job.ocr_context_length or 8192))),
                     "repeat_last_n": 256,
                     "repeat_penalty": 1.2,
                 },
@@ -128,7 +156,7 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"{self.job.text_model_label} OCR {page.unit_index}/{page.total_units}",
+                    title=f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(combined, threshold=8) or _has_consecutive_repeated_line(
@@ -136,7 +164,7 @@ class FilesToCardsWorker(QThread):
                     threshold=4,
                 ):
                     restart_requested = True
-                    self._emit_status(f"{self.job.text_model_label} OCR repetition detected on {page.label}. Restarting this page...")
+                    self._emit_status(f"{self.job.ocr_model_label} OCR repetition detected on {page.label}. Restarting this page...")
                     break
 
             if not restart_requested:
@@ -151,12 +179,6 @@ class FilesToCardsWorker(QThread):
                     text=plain_text,
                 )
                 return cleanup_plain_text(plain_text)
-
-    @staticmethod
-    def _ocr_prompt_for_page(page) -> str:
-        if page.family == "images":
-            return "OCR this image to plaintext."
-        return "OCR this document to plaintext."
 
     def _run_vision_paper_stage(self, pages: list[object]) -> str:
         if not pages:
@@ -209,14 +231,14 @@ class FilesToCardsWorker(QThread):
         )
         if custom_block:
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
-        self._emit_status(f"{self.job.text_model_label} is building paper section {batch_index}/{total_batches}...")
+        self._emit_status(f"{self.job.paper_model_label} is building paper section {batch_index}/{total_batches}...")
 
         while True:
             self._ensure_running()
             paper_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=self.job.text_model_tag,
+                model=self.job.paper_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer reading images directly. "
@@ -230,7 +252,7 @@ class FilesToCardsWorker(QThread):
                 image_paths=image_paths,
                 temperature=0.15,
                 extra_options={
-                    "num_ctx": max(8192, paper_ctx_for_units(total_units)),
+                    "num_ctx": max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units)))),
                     "repeat_last_n": 256,
                     "repeat_penalty": 1.2,
                 },
@@ -243,12 +265,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"{self.job.text_model_label} Vision Paper {batch_index}/{total_batches}",
+                    title=f"{self.job.paper_model_label} Vision Paper {batch_index}/{total_batches}",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status(f"{self.job.text_model_label} repeated itself on vision batch {batch_index}. Restarting that batch...")
+                    self._emit_status(f"{self.job.paper_model_label} repeated itself on vision batch {batch_index}. Restarting that batch...")
                     break
             if not restart_requested:
                 break
@@ -285,14 +307,14 @@ class FilesToCardsWorker(QThread):
         if custom_block:
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
         user_prompt += f"\nPartial paper sections:\n{sections}\n"
-        self._emit_status(f"Merging direct-vision paper sections with {self.job.text_model_label}...")
+        self._emit_status(f"Merging direct-vision paper sections with {self.job.paper_model_label}...")
 
         while True:
             self._ensure_running()
             merged_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=self.job.text_model_tag,
+                model=self.job.paper_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer. "
@@ -304,7 +326,7 @@ class FilesToCardsWorker(QThread):
                 ),
                 user_prompt=user_prompt,
                 temperature=0.2,
-                extra_options={"num_ctx": max(8192, paper_ctx_for_units(total_units))},
+                extra_options={"num_ctx": max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units))))},
                 timeout=420,
                 should_stop=self.isInterruptionRequested,
             ):
@@ -314,12 +336,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"{self.job.text_model_label} Vision Paper Merge",
+                    title=f"{self.job.paper_model_label} Vision Paper Merge",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status(f"{self.job.text_model_label} repeated itself while merging the direct-vision paper. Restarting merge...")
+                    self._emit_status(f"{self.job.paper_model_label} repeated itself while merging the direct-vision paper. Restarting merge...")
                     break
             if not restart_requested:
                 break
@@ -338,7 +360,7 @@ class FilesToCardsWorker(QThread):
 
     def _run_paper_stage(self, source_text_parts: list[str], total_units: int) -> str:
         paper_buffer: list[str] = []
-        ctx = paper_ctx_for_units(total_units)
+        ctx = max(2000, min(86000, int(self.job.paper_context_length or paper_ctx_for_units(total_units))))
         source_block = "\n\n".join(source_text_parts).strip()
         custom_block = self.job.custom_instructions.strip()
         user_prompt = (
@@ -356,14 +378,14 @@ class FilesToCardsWorker(QThread):
             user_prompt += f"\nOptional question-style guidance for later stages:\n{custom_block}\n"
         user_prompt += f"\nSource notes:\n{source_block}\n"
         entry_key = f"{self.job.run_id}:paper"
-        self._emit_status(f"{self.job.text_model_label} is building the paper...")
+        self._emit_status(f"{self.job.paper_model_label} is building the paper...")
 
         while True:
             self._ensure_running()
             paper_buffer.clear()
             restart_requested = False
             for chunk in self.ollama.stream_chat(
-                model=self.job.text_model_tag,
+                model=self.job.paper_model_tag,
                 system_prompt=with_oncard_context(
                     (
                         "You are an expert study-material synthesizer. "
@@ -384,12 +406,12 @@ class FilesToCardsWorker(QThread):
                 self._emit_activity(
                     key=entry_key,
                     kind="reasoning",
-                    title=f"{self.job.text_model_label} Paper",
+                    title=f"{self.job.paper_model_label} Paper",
                     text=combined,
                 )
                 if _has_consecutive_repeated_word(_analysis_section(combined), threshold=8):
                     restart_requested = True
-                    self._emit_status(f"{self.job.text_model_label} repeated itself. Restarting the paper stage...")
+                    self._emit_status(f"{self.job.paper_model_label} repeated itself. Restarting the paper stage...")
                     break
             if not restart_requested:
                 break
@@ -416,8 +438,8 @@ class FilesToCardsWorker(QThread):
             self._ensure_running()
             batch_index += 1
             batch_size = min(4, remaining)
-            ctx = gemma_ctx_for_batch(batch_index)
-            self._emit_status(f"Generating question batch {batch_index} with {self.job.text_model_label}...")
+            ctx = max(2000, min(86000, int(self.job.cards_context_length or gemma_ctx_for_batch(batch_index))))
+            self._emit_status(f"Generating question batch {batch_index} with {self.job.cards_model_label}...")
             batch_questions = self._collect_gemma_batch(
                 research_paper=research_paper,
                 existing_questions=questions,
@@ -455,29 +477,47 @@ class FilesToCardsWorker(QThread):
             if self.job.custom_instructions.strip():
                 prompt += f"\nOptional guidance:\n{self.job.custom_instructions.strip()}\n"
 
-            self._emit_status(f"{self.job.text_model_label} batch attempt {attempt}: collecting {needed} more question(s)...")
-            result = self.ollama.stream_structured_chat(
-                model=self.job.text_model_tag,
-                system_prompt=with_oncard_context(
-                    (
-                        "Return only strict JSON matching the schema. "
-                        "Write concise school-study questions with natural wording. "
-                        "Every question must be fully standalone and understandable without seeing the source text, paper, or prompt. "
-                        "Do not use source-referential phrasing such as 'as of the given text', 'according to the passage', "
-                        "'based on the notes', 'from the document', or similar framing."
-                    ),
-                    feature="Files To Cards question generation",
+            self._emit_status(f"{self.job.cards_model_label} batch attempt {attempt}: collecting {needed} more question(s)...")
+            system_prompt = with_oncard_context(
+                (
+                    "Return only strict JSON matching the schema. "
+                    "Write concise school-study questions with natural wording. "
+                    "Every question must be fully standalone and understandable without seeing the source text, paper, or prompt. "
+                    "Do not use source-referential phrasing such as 'as of the given text', 'according to the passage', "
+                    "'based on the notes', 'from the document', or similar framing."
                 ),
-                user_prompt=prompt,
-                schema=schema,
-                temperature=0.1,
-                extra_options={"num_ctx": ctx},
-                timeout=240,
-                should_stop=self.isInterruptionRequested,
+                feature="Files To Cards question generation",
             )
+            try:
+                result = self.ollama.stream_structured_chat(
+                    model=self.job.cards_model_tag,
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                    schema=schema,
+                    temperature=0.1,
+                    extra_options={"num_ctx": ctx},
+                    timeout=240,
+                    should_stop=self.isInterruptionRequested,
+                )
+                raw_questions = _question_items_from_result(result)
+            except Exception as exc:
+                self._ensure_running()
+                self._emit_status(f"{self.job.cards_model_label} returned non-standard question output. Extracting usable questions...")
+                try:
+                    plain_text = self._collect_plain_question_batch(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        request_size=request_size,
+                        ctx=ctx,
+                    )
+                except Exception:
+                    if attempt >= 3:
+                        raise exc
+                    continue
+                raw_questions = _extract_question_candidates(plain_text)
 
             added_this_round = 0
-            for raw_question in result.get("questions", []):
+            for raw_question in raw_questions:
                 question = _normalize_question(str(raw_question))
                 if not question:
                     continue
@@ -492,9 +532,38 @@ class FilesToCardsWorker(QThread):
                 collected = collected[:batch_size]
 
             if added_this_round == 0 and attempt >= 8:
-                raise RuntimeError(f"{self.job.text_model_label} could not generate enough unique questions after multiple retries.")
+                raise RuntimeError(f"{self.job.cards_model_label} could not generate enough unique questions after multiple retries.")
 
         return collected[:batch_size]
+
+    def _collect_plain_question_batch(self, *, prompt: str, system_prompt: str, request_size: int, ctx: int) -> str:
+        parts: list[str] = []
+        plain_prompt = (
+            f"{prompt.strip()}\n\n"
+            f"Return exactly {request_size} standalone study questions as a numbered list only. "
+            "Do not include answers, explanations, markdown headings, or JSON."
+        )
+        for chunk in self.ollama.stream_chat(
+            model=self.job.cards_model_tag,
+            system_prompt=system_prompt,
+            user_prompt=plain_prompt,
+            temperature=0.1,
+            extra_options={"num_ctx": ctx},
+            timeout=240,
+            should_stop=self.isInterruptionRequested,
+        ):
+            self._ensure_running()
+            parts.append(chunk)
+        text = "".join(parts).strip()
+        if not text:
+            raise RuntimeError(f"{self.job.cards_model_label} returned no question text.")
+        self._emit_activity(
+            key=f"{self.job.run_id}:questions:fallback",
+            kind="markdown",
+            title="Questions",
+            text=text,
+        )
+        return text
 
     def _ensure_running(self) -> None:
         if self.isInterruptionRequested():
@@ -504,6 +573,112 @@ class FilesToCardsWorker(QThread):
         self._emit_activity(kind="status", title="Files To Cards", text=text)
 
     def _emit_activity(self, *, kind: str, title: str, text: str, key: str | None = None) -> None:
+        throttle_key = key or f"{kind}:{title}"
+        now = time.monotonic()
+        if kind == "reasoning" and (now - self._last_activity_emit_at.get(throttle_key, 0.0)) < 0.12:
+            return
+        self._last_activity_emit_at[throttle_key] = now
+        self.activity.emit(
+            {
+                "run_id": self.job.run_id,
+                "key": key or "",
+                "kind": kind,
+                "title": title,
+                "text": text,
+            }
+        )
+
+
+class QuestionOcrWorker(QThread):
+    activity = Signal(object)
+    completed = Signal(str, str)
+    failed = Signal(str, str)
+
+    def __init__(self, *, job: QuestionOcrJob, ollama: OllamaService, runtime_root: Path) -> None:
+        super().__init__()
+        self.job = job
+        self.ollama = ollama
+        self.runtime_root = runtime_root
+        self._last_activity_emit_at: dict[str, float] = {}
+
+    def run(self) -> None:
+        try:
+            run_dir = self.runtime_root / "question_ocr" / self.job.run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            self._emit_status("Preparing OCR source...")
+            pages = normalize_sources(
+                self.job.file_paths,
+                source_family=self.job.source_family,
+                run_dir=run_dir,
+                on_status=self._emit_status,
+                max_workers=self.job.background_workers,
+            )
+            if not pages:
+                raise RuntimeError("No usable pages or images were created from the selected file.")
+            parts: list[str] = []
+            self._emit_status(f"{self.job.ocr_model_label} OCR is extracting prompt text...")
+            for page in pages:
+                if self.isInterruptionRequested():
+                    return
+                parts.append(self._ocr_page(page))
+            self.completed.emit(self.job.run_id, "\n\n".join(part for part in parts if part.strip()).strip())
+        except Exception as exc:
+            self.failed.emit(self.job.run_id, str(exc))
+
+    def _ocr_page(self, page) -> str:
+        entry_key = f"{self.job.run_id}:question-ocr:{page.unit_index}"
+        self._emit_status(f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}: {page.label}")
+
+        while True:
+            parts: list[str] = []
+            restart_requested = False
+            for chunk in self.ollama.stream_chat(
+                model=self.job.ocr_model_tag,
+                system_prompt=files_to_cards_ocr_system_prompt(),
+                user_prompt=files_to_cards_ocr_prompt_for_page(page),
+                image_paths=[str(page.image_path)],
+                temperature=0.0,
+                extra_options={
+                    "num_ctx": max(2000, min(86000, int(self.job.ocr_context_length or 8192))),
+                    "repeat_last_n": 256,
+                    "repeat_penalty": 1.2,
+                },
+                timeout=300,
+                should_stop=self.isInterruptionRequested,
+            ):
+                if self.isInterruptionRequested():
+                    return ""
+                parts.append(chunk)
+                combined = "".join(parts)
+                self._emit_activity(
+                    key=entry_key,
+                    kind="reasoning",
+                    title=f"{self.job.ocr_model_label} OCR {page.unit_index}/{page.total_units}",
+                    text=combined,
+                )
+                if _has_consecutive_repeated_word(combined, threshold=8) or _has_consecutive_repeated_line(
+                    combined,
+                    threshold=4,
+                ):
+                    restart_requested = True
+                    self._emit_status(f"{self.job.ocr_model_label} OCR repetition detected on {page.label}. Restarting this page...")
+                    break
+
+            if not restart_requested:
+                combined = "".join(parts)
+                plain_text = _clean_question_ocr_plain_text(combined)
+                self._emit_activity(
+                    key=f"{entry_key}:plain",
+                    kind="markdown",
+                    title=f"OCR Text {page.unit_index}/{page.total_units}",
+                    text=plain_text,
+                )
+                return cleanup_plain_text(plain_text)
+
+    def _emit_status(self, text: str) -> None:
+        self._emit_activity(kind="status", title="Question OCR", text=text)
+
+    def _emit_activity(self, *, kind: str, title: str, text: str, key: str = "") -> None:
         throttle_key = key or f"{kind}:{title}"
         now = time.monotonic()
         if kind == "reasoning" and (now - self._last_activity_emit_at.get(throttle_key, 0.0)) < 0.12:
@@ -549,6 +724,45 @@ def _extract_ocr_plain_text(text: str) -> str:
     return text.strip()
 
 
+def _clean_question_ocr_plain_text(text: str) -> str:
+    plain_text = _extract_ocr_plain_text(text) or text
+    blocked_prefixes = (
+        "you are a careful ocr assistant",
+        "first reason about what is visible",
+        "do not invent or complete missing text",
+        "if a word is unreadable",
+        "return markdown with exactly these sections",
+        "ocr this image to plaintext",
+        "ocr this document to plaintext",
+        "feature:",
+    )
+    context_markers = (
+        "oncard app context:",
+        "oncard app context",
+        "user profile context:",
+        "selected ask ai tone:",
+    )
+    cleaned_lines: list[str] = []
+    skipping_context = False
+    for raw_line in str(plain_text or "").splitlines():
+        line = raw_line.strip()
+        lower = line.lower()
+        if any(lower.startswith(marker) for marker in context_markers):
+            skipping_context = True
+            continue
+        if skipping_context:
+            if not line:
+                skipping_context = False
+            continue
+        if lower in {"## analysis", "analysis", "## plain text", "plain text"}:
+            continue
+        if any(lower.startswith(prefix) for prefix in blocked_prefixes):
+            continue
+        cleaned_lines.append(raw_line)
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleanup_plain_text(cleaned or plain_text)
+
+
 def _has_consecutive_repeated_word(text: str, threshold: int = 8) -> bool:
     words = re.findall(r"[A-Za-z0-9']+", text.lower())
     if len(words) < threshold:
@@ -568,6 +782,41 @@ def _normalize_question(raw_question: str) -> str:
     question = cleanup_plain_text(raw_question).strip()
     question = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", question)
     return " ".join(question.split())
+
+
+def _question_items_from_result(result: object) -> list[object]:
+    if isinstance(result, dict):
+        questions = result.get("questions")
+        if isinstance(questions, list):
+            return questions
+        for key in ("items", "cards", "prompts"):
+            value = result.get(key)
+            if isinstance(value, list):
+                return value
+        numbered = [value for key, value in sorted(result.items()) if re.match(r"^(?:question|q)_?\d+$", str(key), re.IGNORECASE)]
+        if numbered:
+            return numbered
+    if isinstance(result, list):
+        return result
+    return []
+
+
+def _extract_question_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for line in str(text or "").splitlines():
+        compact = line.strip()
+        if not compact:
+            continue
+        compact = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", compact).strip()
+        compact = re.sub(r"^question\s*\d+\s*[:.-]\s*", "", compact, flags=re.IGNORECASE).strip()
+        if not compact:
+            continue
+        if compact.lower().startswith(("answer:", "explanation:", "note:")):
+            continue
+        candidates.append(compact)
+    if candidates:
+        return candidates
+    return re.findall(r'"([^"\n]*\?)"', str(text or ""))
 
 
 def _has_consecutive_repeated_line(text: str, threshold: int = 4) -> bool:

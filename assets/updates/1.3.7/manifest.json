@@ -5,7 +5,7 @@
     "banner1": "whats_new_top_banner_16x9.png",
     "text1": "The new stats tool helps you review performance across selected time periods, understand stronger and weaker subjects, and see what to focus on next. To open it, press the profile icon in the top left, then choose \"View stats\".",
     "banner2": "whats_new_closing_banner_16x9.png",
-    "text2": "Ask AI can now browse cards, respond with vision, use selectable tones, and follow the emoji preference you choose. ONCard also adds Ollama Cloud support, the Ministral-3 series, support for a total of 5 AI models, safer account exports, multi-account tools, better prompts, smoother streaming, updated animations, and more efficient storage and RAM use."
+    "text2": "Ask AI can now browse cards, respond with vision, use selectable tones, and follow the emoji preference you choose. ONCard also adds Ollama Cloud support, expanded AI model options, safer account exports, multi-account tools, better prompts, smoother streaming, updated animations, and more efficient storage and RAM use."
   },
   "whats_new": {
     "top_banner": "whats_new_top_banner_16x9.png",
@@ -14,7 +14,7 @@
     "showcase_banner": "whats_new_closing_banner_16x9.png",
     "points": [
       "Ask AI can browse cards, respond with vision, and follow selectable tone and emoji preferences.",
-      "Ollama Cloud support and the Ministral-3 series expand ONCard to a total of 5 supported AI models.",
+      "Ollama Cloud support and expanded AI model options broaden ONCard's supported AI model lineup.",
       "The stats tool can review selected time periods and summarize stronger subjects, weaker subjects, and next study steps.",
       "Accounts can now be imported, exported more safely, deleted, swapped, and used across multiple profiles.",
       "Storage, RAM usage, streaming, animations, windows, UI consistency, and Ask AI context length were improved."

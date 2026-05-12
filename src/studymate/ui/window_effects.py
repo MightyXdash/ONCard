@@ -4,6 +4,9 @@ import ctypes
 import sys
 from ctypes import wintypes
 
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QColor, QPalette, QRegion
+
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_BORDER_COLOR = 34
@@ -28,6 +31,45 @@ try:
     _dwmapi = ctypes.WinDLL("dwmapi")
 except OSError:  # pragma: no cover
     _dwmapi = None
+
+
+def _apply_popup_shell_chrome(widget, *, remove_border: bool = True) -> None:
+    widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+    widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+    widget.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+    widget.setAutoFillBackground(False)
+    if widget.width() > 0 and widget.height() > 0:
+        widget.setMask(QRegion(widget.rect()))
+    if remove_border:
+        polish_windows_window(widget, rounded=False, remove_border=True, native_shadow=False)
+
+
+def _schedule_popup_shell_chrome(widget, *, remove_border: bool = True) -> None:
+    def _refresh() -> None:
+        try:
+            _apply_popup_shell_chrome(widget, remove_border=remove_border)
+        except RuntimeError:
+            return
+
+    QTimer.singleShot(0, _refresh)
+
+
+class _PopupChromeFilter(QObject):
+    def __init__(self, widget, *, remove_border: bool) -> None:
+        super().__init__(widget)
+        self._widget = widget
+        self._remove_border = remove_border
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._widget and event.type() in {
+            QEvent.Type.Show,
+            QEvent.Type.Resize,
+            QEvent.Type.WinIdChange,
+            QEvent.Type.Polish,
+        }:
+            _schedule_popup_shell_chrome(self._widget, remove_border=self._remove_border)
+        return False
 
 
 def polish_windows_window(
@@ -59,7 +101,7 @@ def polish_windows_window(
             ctypes.sizeof(corner_value),
         )
     except Exception:
-        return
+        pass
 
     if native_shadow:
         nc_rendering_policy = ctypes.c_int(DWMNCRP_ENABLED)
@@ -91,3 +133,44 @@ def polish_windows_window(
         )
     except Exception:
         return
+
+
+def polish_popup_window(
+    widget,
+    *,
+    set_frameless: bool = True,
+    no_native_shadow: bool = True,
+    remove_border: bool = True,
+) -> None:
+    if set_frameless:
+        widget.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    if no_native_shadow:
+        widget.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+
+    widget.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+    widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+    widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+    widget.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+    widget.setAutoFillBackground(False)
+
+    palette = widget.palette()
+    transparent = QColor(0, 0, 0, 0)
+    for role in (
+        QPalette.ColorRole.Window,
+        QPalette.ColorRole.Base,
+        QPalette.ColorRole.AlternateBase,
+        QPalette.ColorRole.Button,
+    ):
+        palette.setColor(role, transparent)
+    widget.setPalette(palette)
+    if getattr(widget, "_oncard_popup_chrome_filter", None) is None:
+        popup_filter = _PopupChromeFilter(widget, remove_border=remove_border)
+        widget._oncard_popup_chrome_filter = popup_filter
+        widget.installEventFilter(popup_filter)
+    _apply_popup_shell_chrome(widget, remove_border=remove_border)
+    _schedule_popup_shell_chrome(widget, remove_border=remove_border)
+    widget.update()
+
+    if remove_border:
+        polish_windows_window(widget, rounded=False, remove_border=True, native_shadow=False)

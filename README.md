@@ -16,11 +16,40 @@ Elevate your learning experience with a fully offline AI-powered study app.
 ## About ONCard
 **ONCard (Open-source Neural-Accelerated Cards)** is a fully offline study app with a virtual teacher and an adaptive learning algorithm that improves context and teaching quality over time.
 
-<img src="https://github.com/user-attachments/assets/222943a7-6603-452e-87d4-7bc9ed85c9b7" width="100%" />
+<img width="2559" height="1439" alt="ONCard_Main_UI" src="https://github.com/user-attachments/assets/222943a7-6603-452e-87d4-7bc9ed85c9b7" />
 
 
 ## Features
-Please refer to the ONCard Wiki
+These are the core features that make ONCard powerful for daily studying:
+
+- **Fully Offline AI Workflow**
+  ONCard runs locally with Ollama, so your study sessions continue without cloud dependency.
+
+- **One-Input Card Generation**
+  Enter a single prompt from your notes or slides and ONCard auto-generates:
+  - title
+  - hints
+  - answer
+  - difficulty
+  - suggested subject location/path
+
+- **Virtual Teacher with Real-Time Grading**
+  Submit your answer and get instant evaluation and study feedback.
+
+- **Follow-Up Teaching Chat**
+  Ask follow-up questions directly after grading to get concept explanations while context is still fresh.
+
+- **Subject-Path Organization**
+  Cards are structured by topic paths (for example, computer science → languages → Python) so large subjects stay organized.
+
+- **Adaptive Learning Behavior**
+  ONCard improves how it helps you as you keep studying, creating a more personalized learning flow over time.
+
+- **Fast Study Loop**
+  Create, review, answer, grade, and clarify in one app without switching tools.
+
+- **Focused UI for Study Sessions**
+  The Create and Cards workflow is designed to keep attention on learning instead of setup.
 
 ## Installation
 
@@ -48,8 +77,6 @@ Use the Linux-specific version here: [ONCard-Linux](https://github.com/Corban162
 
 ## Recommended Requirements
 For a smooth experience:
-
-_at least an_
 - Intel i5-8100
 - 16 GB DDR4 RAM
 - NVIDIA RTX 2060 Super

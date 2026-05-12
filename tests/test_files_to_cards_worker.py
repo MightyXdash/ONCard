@@ -10,7 +10,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from studymate.utils.paths import AppPaths
-from studymate.workers.files_to_cards_worker import FilesToCardsJob, FilesToCardsWorker
+from studymate.workers.files_to_cards_worker import (
+    FilesToCardsJob,
+    FilesToCardsWorker,
+    _clean_question_ocr_plain_text,
+    _extract_question_candidates,
+    _question_items_from_result,
+)
 
 
 class FakeOllama:
@@ -94,6 +100,33 @@ class FilesToCardsWorkerRoutingTests(unittest.TestCase):
         self.assertEqual(2, ocr_page.call_count)
         paper_stage.assert_called_once()
         gemma_stage.assert_called_once_with("paper")
+
+    def test_question_result_accepts_common_structured_shapes(self) -> None:
+        self.assertEqual(["One?", "Two?"], _question_items_from_result({"questions": ["One?", "Two?"]}))
+        self.assertEqual(["One?", "Two?"], _question_items_from_result({"question_1": "One?", "question_2": "Two?"}))
+        self.assertEqual(["One?", "Two?"], _question_items_from_result(["One?", "Two?"]))
+
+    def test_plain_question_fallback_extracts_numbered_questions(self) -> None:
+        text = "1. What is photosynthesis?\n2. Why do plants need sunlight?\nAnswer: ignore me"
+        self.assertEqual(
+            ["What is photosynthesis?", "Why do plants need sunlight?"],
+            _extract_question_candidates(text),
+        )
+
+    def test_question_ocr_cleanup_removes_prompt_echoes(self) -> None:
+        text = (
+            "## Plain Text\n"
+            "You are a careful OCR assistant.\n"
+            "ONCard app context:\n"
+            "Feature: Files To Cards OCR extraction\n"
+            "\n"
+            "OXIDES.pptx - Slide 1\n"
+            "**Chemical properties** of metal oxides.\n"
+        )
+        self.assertEqual(
+            "OXIDES.pptx - Slide 1\nChemical properties of metal oxides.",
+            _clean_question_ocr_plain_text(text),
+        )
 
 
 if __name__ == "__main__":

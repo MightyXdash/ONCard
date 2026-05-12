@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 
 from PySide6.QtCore import QEvent, QParallelAnimationGroup, QPoint, QPropertyAnimation, QRect, QSize, Qt, QEasingCurve, QUrl, QTimer, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QMouseEvent, QPainter, QPainterPath, QPixmap, QShowEvent
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QImage, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPixmap, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -13,8 +13,10 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -23,6 +25,8 @@ from PySide6.QtWidgets import (
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
+from studymate.services.web_lesson_server import WebLessonServer
+from studymate.theme import apply_app_theme
 from studymate.ui.animated import AnimatedButton, AnimatedStackedWidget
 from studymate.ui.audio import ClickSoundFilter, UiSoundBank
 from studymate.ui.create_tab import CreateTab
@@ -31,7 +35,8 @@ from studymate.ui.mcq_tab import MCQTab
 from studymate.ui.settings_dialog import SettingsDialog
 from studymate.ui.stats_dialog import StatsDialog
 from studymate.ui.study_tab import StudyTab
-from studymate.ui.window_effects import polish_windows_window
+from studymate.ui.windows_toast import set_windows_app_user_model_id, show_windows_toast
+from studymate.ui.window_effects import polish_popup_window, polish_windows_window
 
 
 def _motion_duration(duration: int) -> int:
@@ -91,31 +96,24 @@ class AppIconMenu(QWidget):
         ("ONCard", "https://github.com/MightyXdash/ONCard"),
         ("Releases", "https://github.com/MightyXdash/ONCard/releases"),
         ("Ollama", "https://ollama.com/search"),
-        ("Gemma3", "https://ollama.com/library/gemma3"),
         ("NomicEmbed", "https://ollama.com/library/nomic-embed-text-v2-moe"),
     )
 
     def __init__(self, parent=None) -> None:
         super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setObjectName("AppIconMenu")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        polish_popup_window(self, set_frameless=False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._animation_group: QParallelAnimationGroup | None = None
         self._accounts: list[dict] = []
         self._active_id = ""
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
         self.surface = QFrame(self)
         self.surface.setObjectName("AppIconMenuSurface")
-        shadow = QGraphicsDropShadowEffect(self.surface)
-        shadow.setBlurRadius(26)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(15, 37, 57, 28))
-        self.surface.setGraphicsEffect(shadow)
         root_layout.addWidget(self.surface)
 
         surface_layout = QVBoxLayout(self.surface)
@@ -216,7 +214,7 @@ class ProfilesOverlayDialog(QDialog):
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        polish_popup_window(self)
         self._accounts = [dict(account) for account in accounts]
         self._active_id = str(active_id or "")
         self._blur_target = blur_target or parent
@@ -227,16 +225,11 @@ class ProfilesOverlayDialog(QDialog):
         self._selected_account_id = ""
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(40, 40, 40, 40)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         card = QFrame(self)
         card.setObjectName("AppIconMenuSurface")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(15, 37, 57, 72))
-        card.setGraphicsEffect(shadow)
         root.addWidget(card)
         self._card = card
 
@@ -272,8 +265,8 @@ class ProfilesOverlayDialog(QDialog):
                 border-radius: 10px;
             }
             QPushButton#ProfilesOverlayCloseButton:hover {
-                background: rgba(228, 236, 244, 0.95);
-                border: 1px solid rgba(170, 186, 203, 0.75);
+                background: transparent;
+                border: none;
                 border-radius: 10px;
             }
             QPushButton#ProfilesOverlayCloseButton:pressed {
@@ -394,22 +387,16 @@ class UserProfileMenu(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setObjectName("UserProfileMenu")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        polish_popup_window(self, set_frameless=False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._animation_group: QParallelAnimationGroup | None = None
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
         self.surface = QFrame(self)
         self.surface.setObjectName("UserProfileMenuSurface")
-        shadow = QGraphicsDropShadowEffect(self.surface)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(15, 37, 57, 26))
-        self.surface.setGraphicsEffect(shadow)
         root_layout.addWidget(self.surface)
 
         surface_layout = QVBoxLayout(self.surface)
@@ -505,22 +492,16 @@ class NotificationsMenu(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setObjectName("NotificationsMenu")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        polish_popup_window(self, set_frameless=False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._animation_group: QParallelAnimationGroup | None = None
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
         self.surface = QFrame(self)
         self.surface.setObjectName("NotificationsMenuSurface")
-        shadow = QGraphicsDropShadowEffect(self.surface)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(15, 37, 57, 26))
-        self.surface.setGraphicsEffect(shadow)
         root_layout.addWidget(self.surface)
 
         surface_layout = QVBoxLayout(self.surface)
@@ -587,6 +568,555 @@ class NotificationsMenu(QWidget):
         self._animation_group.start()
 
 
+class CreateModeMenu(QWidget):
+    question_requested = Signal()
+    ftc_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setObjectName("CreateModeMenu")
+        polish_popup_window(self, set_frameless=False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._animation_group: QParallelAnimationGroup | None = None
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.surface = QFrame(self)
+        self.surface.setObjectName("CreateModeMenuSurface")
+        root_layout.addWidget(self.surface)
+
+        surface_layout = QVBoxLayout(self.surface)
+        surface_layout.setContentsMargins(10, 10, 10, 10)
+        surface_layout.setSpacing(6)
+
+        header = QLabel("Create")
+        header.setObjectName("SmallMeta")
+        surface_layout.addWidget(header)
+
+        self.question_btn = AnimatedButton("Question")
+        self.question_btn.setObjectName("CreateModeMenuButton")
+        self.question_btn.setProperty("skipClickSfx", True)
+        self.question_btn.setProperty("disablePressMotion", True)
+        self.question_btn.setMinimumWidth(196)
+        self.question_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.question_btn.set_motion_scale_range(0.0)
+        self.question_btn.set_motion_press_scale(0.0)
+        self.question_btn.clicked.connect(self._request_question)
+        surface_layout.addWidget(self.question_btn)
+
+        self.ftc_btn = AnimatedButton("FTC")
+        self.ftc_btn.setObjectName("CreateModeMenuButton")
+        self.ftc_btn.setProperty("skipClickSfx", True)
+        self.ftc_btn.setProperty("disablePressMotion", True)
+        self.ftc_btn.setMinimumWidth(196)
+        self.ftc_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.ftc_btn.set_motion_scale_range(0.0)
+        self.ftc_btn.set_motion_press_scale(0.0)
+        self.ftc_btn.clicked.connect(self._request_ftc)
+        surface_layout.addWidget(self.ftc_btn)
+
+    def popup_from(self, anchor: QWidget) -> None:
+        if self.isVisible():
+            self.hide()
+            return
+
+        self.adjustSize()
+        end_rect = QRect(anchor.mapToGlobal(QPoint(0, anchor.height() + 6)), self.sizeHint())
+        screen = QGuiApplication.screenAt(end_rect.center()) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if end_rect.right() > available.right() - 8:
+                end_rect.moveRight(available.right() - 8)
+            if end_rect.bottom() > available.bottom() - 8:
+                end_rect.moveBottom(available.bottom() - 8)
+            if end_rect.left() < available.left() + 8:
+                end_rect.moveLeft(available.left() + 8)
+
+        start_rect = QRect(end_rect)
+        start_rect.translate(0, -4)
+
+        self.setGeometry(start_rect)
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+
+        if self._animation_group is not None:
+            self._animation_group.stop()
+
+        geometry_animation = QPropertyAnimation(self, b"geometry", self)
+        geometry_animation.setDuration(_motion_duration(170))
+        geometry_animation.setStartValue(start_rect)
+        geometry_animation.setEndValue(end_rect)
+        geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        opacity_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        opacity_animation.setDuration(_motion_duration(160))
+        opacity_animation.setStartValue(0.0)
+        opacity_animation.setEndValue(1.0)
+        opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._animation_group = QParallelAnimationGroup(self)
+        self._animation_group.addAnimation(geometry_animation)
+        self._animation_group.addAnimation(opacity_animation)
+        self._animation_group.start()
+
+    def _request_question(self) -> None:
+        self.hide()
+        self.question_requested.emit()
+
+    def _request_ftc(self) -> None:
+        self.hide()
+        self.ftc_requested.emit()
+
+
+class QuickAddMenu(QWidget):
+    web_lesson_requested = Signal()
+    wikipedia_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setObjectName("QuickAddMenu")
+        polish_popup_window(self, set_frameless=False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._animation_group: QParallelAnimationGroup | None = None
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.surface = QFrame(self)
+        self.surface.setObjectName("CreateModeMenuSurface")
+        root_layout.addWidget(self.surface)
+
+        surface_layout = QVBoxLayout(self.surface)
+        surface_layout.setContentsMargins(10, 10, 10, 10)
+        surface_layout.setSpacing(6)
+
+        header = QLabel("Add")
+        header.setObjectName("SmallMeta")
+        surface_layout.addWidget(header)
+
+        self.web_lesson_btn = AnimatedButton("Web Lesson")
+        self.web_lesson_btn.setObjectName("CreateModeMenuButton")
+        self.web_lesson_btn.setProperty("skipClickSfx", True)
+        self.web_lesson_btn.setProperty("disablePressMotion", True)
+        self.web_lesson_btn.setMinimumWidth(196)
+        self.web_lesson_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.web_lesson_btn.set_motion_scale_range(0.0)
+        self.web_lesson_btn.set_motion_press_scale(0.0)
+        self.web_lesson_btn.clicked.connect(self._request_web_lesson)
+        surface_layout.addWidget(self.web_lesson_btn)
+
+        self.wikipedia_btn = AnimatedButton("Wikipedia")
+        self.wikipedia_btn.setObjectName("CreateModeMenuButton")
+        self.wikipedia_btn.setProperty("skipClickSfx", True)
+        self.wikipedia_btn.setProperty("disablePressMotion", True)
+        self.wikipedia_btn.setMinimumWidth(196)
+        self.wikipedia_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.wikipedia_btn.set_motion_scale_range(0.0)
+        self.wikipedia_btn.set_motion_press_scale(0.0)
+        self.wikipedia_btn.clicked.connect(self._request_wikipedia)
+        surface_layout.addWidget(self.wikipedia_btn)
+
+    def popup_from(self, anchor: QWidget) -> None:
+        if self.isVisible():
+            self.hide()
+            return
+
+        self.adjustSize()
+        end_rect = QRect(anchor.mapToGlobal(QPoint(0, anchor.height() + 6)), self.sizeHint())
+        screen = QGuiApplication.screenAt(end_rect.center()) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            if end_rect.right() > available.right() - 8:
+                end_rect.moveRight(available.right() - 8)
+            if end_rect.bottom() > available.bottom() - 8:
+                end_rect.moveBottom(available.bottom() - 8)
+            if end_rect.left() < available.left() + 8:
+                end_rect.moveLeft(available.left() + 8)
+
+        start_rect = QRect(end_rect)
+        start_rect.translate(0, -4)
+
+        self.setGeometry(start_rect)
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+
+        if self._animation_group is not None:
+            self._animation_group.stop()
+
+        geometry_animation = QPropertyAnimation(self, b"geometry", self)
+        geometry_animation.setDuration(_motion_duration(170))
+        geometry_animation.setStartValue(start_rect)
+        geometry_animation.setEndValue(end_rect)
+        geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        opacity_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        opacity_animation.setDuration(_motion_duration(160))
+        opacity_animation.setStartValue(0.0)
+        opacity_animation.setEndValue(1.0)
+        opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._animation_group = QParallelAnimationGroup(self)
+        self._animation_group.addAnimation(geometry_animation)
+        self._animation_group.addAnimation(opacity_animation)
+        self._animation_group.start()
+
+    def _request_web_lesson(self) -> None:
+        self.hide()
+        self.web_lesson_requested.emit()
+
+    def _request_wikipedia(self) -> None:
+        self.hide()
+        self.wikipedia_requested.emit()
+
+
+class WebLessonDialog(QDialog):
+    def __init__(self, *, parent: "MainWindow", url: str) -> None:
+        super().__init__(parent, Qt.Dialog)
+        self.setModal(False)
+        self.setObjectName("WebLessonDialog")
+        self._url = url
+        self.setWindowTitle("ONCard Web Lesson")
+        self.setStyleSheet(
+            """
+            QDialog#WebLessonDialog {
+                background: #f6f8fb;
+            }
+            QFrame#WebLessonCard {
+                background: #ffffff;
+                border: 1px solid rgba(26, 39, 64, 0.10);
+                border-radius: 18px;
+            }
+            QLabel#WebLessonTitle {
+                color: #172033;
+                font-size: 24px;
+                font-weight: 800;
+            }
+            QLabel#WebLessonText {
+                color: #526275;
+                font-size: 13px;
+                line-height: 1.35;
+            }
+            QLabel#WebLessonWarning {
+                color: #5f4415;
+                background: rgba(255, 214, 125, 0.32);
+                border: 1px solid rgba(183, 130, 35, 0.24);
+                border-radius: 16px;
+                padding: 12px;
+            }
+            QLabel#WebLessonQr {
+                background: #ffffff;
+                border: 1px solid rgba(26, 39, 64, 0.10);
+                border-radius: 14px;
+                padding: 0px;
+            }
+            QLineEdit#WebLessonLink {
+                background: #ffffff;
+                border: 1px solid rgba(26, 39, 64, 0.12);
+                border-radius: 14px;
+                padding: 10px 12px;
+                color: #172033;
+            }
+            QPushButton#WebLessonPrimaryButton {
+                background: #172033;
+                color: white;
+                border: none;
+                border-radius: 14px;
+                padding: 10px 16px;
+                font-weight: 700;
+            }
+            QPushButton#WebLessonGhostButton {
+                background: #ffffff;
+                color: #172033;
+                border: 1px solid rgba(26, 39, 64, 0.12);
+                border-radius: 14px;
+                padding: 10px 16px;
+                font-weight: 700;
+            }
+            """
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("WebLessonCard")
+        root.addWidget(card)
+
+        body = QVBoxLayout(card)
+        body.setContentsMargins(24, 22, 24, 22)
+        body.setSpacing(16)
+
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        title_group = QVBoxLayout()
+        title_group.setSpacing(5)
+        title = QLabel("Web Lesson")
+        title.setObjectName("WebLessonTitle")
+        title_group.addWidget(title)
+        status = QLabel("Hosted by this ONCard desktop app")
+        status.setObjectName("WebLessonText")
+        title_group.addWidget(status)
+        top.addLayout(title_group, 1)
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("WebLessonGhostButton")
+        close_btn.clicked.connect(self.close)
+        top.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignTop)
+        body.addLayout(top)
+
+        copy = QLabel("Open this link in your browser, or scan the QR code, to study on another device connected to this network.")
+        copy.setObjectName("WebLessonText")
+        copy.setWordWrap(True)
+        body.addWidget(copy)
+
+        qr_label = QLabel()
+        qr_label.setObjectName("WebLessonQr")
+        qr_label.setFixedSize(284, 284)
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_label.setPixmap(self._qr_pixmap(url))
+        body.addWidget(qr_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        link_row = QHBoxLayout()
+        link_row.setSpacing(10)
+        link_field = QLineEdit(url)
+        link_field.setObjectName("WebLessonLink")
+        link_field.setReadOnly(True)
+        link_field.selectAll()
+        link_row.addWidget(link_field, 1)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setObjectName("WebLessonPrimaryButton")
+        copy_btn.clicked.connect(lambda: self._copy_link(copy_btn))
+        link_row.addWidget(copy_btn)
+        body.addLayout(link_row)
+
+        warning = QLabel("Keep ONCard running and do not shut down this computer during a Web Lesson. After opening the lesson on another device, you can safely close this window.")
+        warning.setObjectName("WebLessonWarning")
+        warning.setWordWrap(True)
+        body.addWidget(warning)
+
+        self.resize(520, 620)
+
+    def _copy_link(self, button: QPushButton) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.clipboard().setText(self._url)
+        button.setText("Copied")
+        QTimer.singleShot(1300, lambda: button.setText("Copy"))
+
+    def _qr_pixmap(self, url: str) -> QPixmap:
+        try:
+            import cv2
+
+            encoder = cv2.QRCodeEncoder_create()
+            image = encoder.encode(url)
+            if image is None or image.size <= 0:
+                raise RuntimeError("OpenCV returned an empty QR image.")
+            height, width = image.shape[:2]
+            if len(image.shape) == 2:
+                qimage = QImage(image.data, width, height, image.strides[0], QImage.Format.Format_Grayscale8).copy()
+            else:
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                qimage = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+            pixmap = QPixmap.fromImage(qimage)
+            return pixmap.scaled(260, 260, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        except Exception as exc:
+            pixmap = QPixmap(260, 260)
+            pixmap.fill(QColor("#ffffff"))
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QColor("#526275"))
+            painter.drawText(
+                pixmap.rect().adjusted(18, 18, -18, -18),
+                int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+                f"QR unavailable.\nUse the link below.\n\n{str(exc)[:90]}",
+            )
+            painter.end()
+            return pixmap
+
+
+class CreateOverlayDialog(QDialog):
+    def __init__(self, *, parent: "MainWindow", create_tab: CreateTab, blur_target: QWidget) -> None:
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        polish_popup_window(self)
+        self.setObjectName("CreateOverlayDialog")
+        self._create_tab = create_tab
+        self._blur_target = blur_target
+        self._overlay_target = parent
+        self._overlay: QWidget | None = None
+        self._previous_effect = None
+        self._active_session = "idle"
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.card = QFrame(self)
+        self.card.setObjectName("CreateOverlayCard")
+        root.addWidget(self.card)
+
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(18, 18, 18, 18)
+        card_layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        self.header_label = QLabel("Create")
+        self.header_label.setObjectName("SmallMeta")
+        header.addWidget(self.header_label)
+        self.header_controls_host = QWidget()
+        self.header_controls_host.setObjectName("CreateOverlayHeaderControls")
+        self.header_controls_layout = QHBoxLayout(self.header_controls_host)
+        self.header_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_controls_layout.setSpacing(10)
+        header.addWidget(self.header_controls_host, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
+
+        self.header_ftc_menu_btn = QPushButton("")
+        self.header_ftc_menu_btn.setObjectName("CreateOverlayUploadButton")
+        self.header_ftc_menu_btn.setFixedSize(32, 32)
+        self.header_ftc_menu_btn.setIcon(parent.icons.icon("common", "menu", "M"))
+        self.header_ftc_menu_btn.setIconSize(QSize(16, 16))
+        self.header_ftc_menu_btn.setToolTip("FTC controls")
+        self.header_ftc_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header_ftc_menu_btn.clicked.connect(self._create_tab.open_ftc_controls_dialog)
+        header.addWidget(self.header_ftc_menu_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.header_upload_btn = QPushButton("")
+        self.header_upload_btn.setObjectName("CreateOverlayUploadButton")
+        self.header_upload_btn.setFixedSize(32, 32)
+        self.header_upload_btn.setIcon(parent.icons.icon("common", "upload", "U"))
+        self.header_upload_btn.setIconSize(QSize(16, 16))
+        self.header_upload_btn.setToolTip("Add files")
+        self.header_upload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header_upload_btn.clicked.connect(self._create_tab.browse_ftc_files)
+        header.addWidget(self.header_upload_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.close_btn = QPushButton("")
+        self.close_btn.setObjectName("CreateOverlayCloseButton")
+        self.close_btn.setFixedSize(32, 32)
+        self.close_btn.setIcon(parent.icons.icon("common", "cross_two", "X"))
+        self.close_btn.setIconSize(QSize(12, 12))
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.reject)
+        header.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignTop)
+        card_layout.addLayout(header)
+
+        self.content_layout = QHBoxLayout()
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(16)
+        card_layout.addLayout(self.content_layout, 1)
+
+        self.resize(1180, 760)
+
+    def open_session(self, session_kind: str) -> int:
+        self._active_session = session_kind
+        self.header_label.setText("Question" if session_kind == "question" else "Files To Cards")
+        self.resize(980, 650 if session_kind == "question" else 740)
+        self._clear_content_layout()
+        self._clear_header_controls()
+        self._create_tab.mount_overlay_content(self.content_layout, session_kind, self.header_controls_layout)
+        ftc_active = session_kind == "ftc"
+        question_active = session_kind == "question"
+        self.header_controls_host.setVisible(ftc_active or question_active)
+        self.header_upload_btn.setVisible(ftc_active)
+        self.header_ftc_menu_btn.setVisible(ftc_active)
+        self._apply_backdrop()
+        try:
+            self._resize_for_available_space()
+            self._center_on_target()
+            return self.exec()
+        finally:
+            self._create_tab.restore_overlay_content()
+            self._clear_header_controls()
+            self._clear_content_layout()
+            self._clear_backdrop()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self.card.geometry().contains(event.position().toPoint()):
+            self.reject()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _center_on_target(self) -> None:
+        target_rect = self._blur_target.geometry()
+        top_left = self._blur_target.mapToGlobal(QPoint(0, 0))
+        frame = QRect(top_left, target_rect.size())
+        self.move(
+            int(frame.center().x() - (self.width() / 2)),
+            int(frame.center().y() - (self.height() / 2)),
+        )
+
+    def _resize_for_available_space(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        card_layout = self.card.layout()
+        if card_layout is not None:
+            card_layout.activate()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        content_hint = self.sizeHint()
+        if screen is None:
+            self.resize(content_hint)
+            return
+        available = screen.availableGeometry()
+        target_width = min(max(900, content_hint.width()), max(820, available.width() - 120))
+        target_height = min(max(580, content_hint.height()), max(520, available.height() - 130))
+        self.resize(target_width, target_height)
+
+    def _apply_backdrop(self) -> None:
+        self._previous_effect = self._blur_target.graphicsEffect()
+        blur = QGraphicsBlurEffect(self._blur_target)
+        blur.setBlurRadius(13.0)
+        self._blur_target.setGraphicsEffect(blur)
+
+        overlay = QWidget(self._overlay_target)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setObjectName("CreateOverlayBackdrop")
+        overlay.setStyleSheet("QWidget#CreateOverlayBackdrop { background: rgba(148, 148, 148, 0.30); }")
+        top_left = self._blur_target.mapTo(self._overlay_target, QPoint(0, 0))
+        overlay.setGeometry(QRect(top_left, self._blur_target.size()))
+        overlay.show()
+        overlay.raise_()
+        self._overlay = overlay
+
+    def _clear_backdrop(self) -> None:
+        if self._overlay is not None:
+            self._overlay.hide()
+            self._overlay.deleteLater()
+            self._overlay = None
+        try:
+            self._blur_target.setGraphicsEffect(self._previous_effect)
+        except RuntimeError:
+            self._blur_target.setGraphicsEffect(None)
+        self._previous_effect = None
+
+    def _clear_content_layout(self) -> None:
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+    def _clear_header_controls(self) -> None:
+        while self.header_controls_layout.count():
+            item = self.header_controls_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+        self.header_controls_host.setVisible(False)
+        self.header_upload_btn.setVisible(False)
+        self.header_ftc_menu_btn.setVisible(False)
+
+
 class MainWindow(QMainWindow):
     AUDIO_TEST_MESSAGES = (
         "I got rick rolled.",
@@ -633,9 +1163,17 @@ class MainWindow(QMainWindow):
         self._app_menu = AppIconMenu(self)
         self._profile_menu = UserProfileMenu(self)
         self._notifications_menu = NotificationsMenu(self)
+        self._create_mode_menu = CreateModeMenu(self)
+        self._quick_add_menu = QuickAddMenu(self)
+        self._web_lesson_server: WebLessonServer | None = None
+        self._web_lesson_dialog: WebLessonDialog | None = None
         self._app_menu.profiles_requested.connect(self._open_profiles_overlay)
         self._profile_menu.view_stats_requested.connect(self._open_stats_dialog)
         self._notifications_menu.notifications_toggled.connect(self._set_notifications_enabled)
+        self._create_mode_menu.question_requested.connect(self._begin_question_create_flow)
+        self._create_mode_menu.ftc_requested.connect(self._begin_ftc_create_flow)
+        self._quick_add_menu.web_lesson_requested.connect(self._open_web_lesson)
+        self._quick_add_menu.wikipedia_requested.connect(self._open_wikipedia_search_entry)
         self._profile_hover_timer = QTimer(self)
         self._profile_hover_timer.setSingleShot(True)
         self._profile_hover_timer.timeout.connect(self._show_profile_menu_from_hover)
@@ -662,6 +1200,10 @@ class MainWindow(QMainWindow):
         self._init_tray_icon()
         self._ensure_notification_defaults()
         self._build_ui()
+        self._wiki_search_shortcut = QShortcut(QKeySequence("Ctrl+Space"), self)
+        self._wiki_search_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._wiki_search_shortcut.activated.connect(self._open_wikipedia_search_entry)
+        self._create_overlay_dialog = CreateOverlayDialog(parent=self, create_tab=self.create_tab, blur_target=self._app_shell)
         self._apply_native_window_chrome()
 
     def _apply_initial_geometry(self) -> None:
@@ -725,7 +1267,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.feedback_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.envelope_btn = self._build_icon_button("envelope", "Notifications", self._toggle_notifications_menu)
         left_layout.addWidget(self.envelope_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.quick_add_btn = self._build_icon_button("plus", "Quick add", self._open_quick_add_notice)
+        self.quick_add_btn = self._build_icon_button("plus", "Quick add", self._toggle_quick_add_menu)
         left_layout.addWidget(self.quick_add_btn, 0, Qt.AlignmentFlag.AlignLeft)
         title_layout.addWidget(left_cluster, 0, Qt.AlignmentFlag.AlignLeft)
 
@@ -771,7 +1313,7 @@ class MainWindow(QMainWindow):
         self.mcq_btn.set_motion_lift(0.0)
         self.mcq_btn.set_motion_press_scale(0.06)
 
-        self.create_btn.clicked.connect(lambda: self._play_and_switch(0))
+        self.create_btn.clicked.connect(self._handle_create_button)
         self.cards_btn.clicked.connect(lambda: self._play_and_switch(1))
         self.mcq_btn.clicked.connect(lambda: self._play_and_switch(2))
         mode_layout.addWidget(self.create_btn)
@@ -883,6 +1425,10 @@ class MainWindow(QMainWindow):
         return QIcon(target)
 
     def _toggle_app_menu(self) -> None:
+        if self._create_mode_menu.isVisible():
+            self._create_mode_menu.hide()
+        if self._quick_add_menu.isVisible():
+            self._quick_add_menu.hide()
         if self._profile_menu.isVisible():
             self._profile_menu.hide()
         if self._notifications_menu.isVisible():
@@ -912,6 +1458,10 @@ class MainWindow(QMainWindow):
             self._on_account_selected(selected_id)
 
     def _toggle_profile_menu(self) -> None:
+        if self._create_mode_menu.isVisible():
+            self._create_mode_menu.hide()
+        if self._quick_add_menu.isVisible():
+            self._quick_add_menu.hide()
         if self._app_menu.isVisible():
             self._app_menu.hide()
         if self._notifications_menu.isVisible():
@@ -920,6 +1470,10 @@ class MainWindow(QMainWindow):
         self._profile_menu.popup_from(self.user_btn)
 
     def _toggle_notifications_menu(self) -> None:
+        if self._create_mode_menu.isVisible():
+            self._create_mode_menu.hide()
+        if self._quick_add_menu.isVisible():
+            self._quick_add_menu.hide()
         if self._app_menu.isVisible():
             self._app_menu.hide()
         if self._profile_menu.isVisible():
@@ -928,12 +1482,80 @@ class MainWindow(QMainWindow):
         self._notifications_menu.set_enabled(enabled)
         self._notifications_menu.popup_from(self.envelope_btn)
 
-    def _open_quick_add_notice(self) -> None:
-        QMessageBox.information(
-            self,
-            "Quick add",
-            "Still, under development:\n\n- Set study routines.\n- Set up your personalized study plan automatically.",
-        )
+    def _handle_create_button(self) -> None:
+        current_index = self.stack.currentIndex()
+        self.create_btn.setChecked(current_index == 0)
+        self.cards_btn.setChecked(current_index == 1)
+        self.mcq_btn.setChecked(current_index == 2)
+        self._sync_nav_icons()
+        if self.create_tab.should_show_create_selector():
+            self._create_mode_menu.popup_from(self.create_btn)
+            return
+        self._open_create_overlay(self.create_tab.reopen_session_kind())
+
+    def _begin_question_create_flow(self) -> None:
+        self.create_tab.begin_question_session()
+        self._open_create_overlay("question")
+
+    def _begin_ftc_create_flow(self) -> None:
+        self.create_tab.begin_ftc_session()
+        self._open_create_overlay("ftc")
+
+    def _open_create_overlay(self, session_kind: str) -> None:
+        if session_kind not in {"question", "ftc"}:
+            return
+        self._create_mode_menu.hide()
+        self._create_overlay_dialog.open_session(session_kind)
+
+    def _toggle_quick_add_menu(self) -> None:
+        if self._create_mode_menu.isVisible():
+            self._create_mode_menu.hide()
+        if self._app_menu.isVisible():
+            self._app_menu.hide()
+        if self._profile_menu.isVisible():
+            self._profile_menu.hide()
+        if self._notifications_menu.isVisible():
+            self._notifications_menu.hide()
+        self._quick_add_menu.popup_from(self.quick_add_btn)
+
+    def _open_wikipedia_search_entry(self) -> None:
+        overlay = self.study_tab.ai_response_overlay
+        if overlay is not None:
+            if overlay.is_wikipedia_search_entry_open():
+                return
+            if bool(getattr(overlay, "_closing", False)):
+                return
+        self._quick_add_menu.hide()
+        self._switch_tab(1)
+        self.study_tab.open_wikipedia_search_entry()
+
+    def keyPressEvent(self, event) -> None:
+        super().keyPressEvent(event)
+
+    def _open_web_lesson(self) -> None:
+        try:
+            if self._web_lesson_server is None:
+                self._web_lesson_server = WebLessonServer(self.datastore, self.ollama)
+            url = self._web_lesson_server.start()
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Web Lesson unavailable",
+                f"ONCard could not start the Web Lesson server.\n\n{exc}\n\nCheck that your firewall allows ONCard on this network.",
+            )
+            return
+        if self._web_lesson_dialog is not None:
+            self._web_lesson_dialog.close()
+            self._web_lesson_dialog.deleteLater()
+        dialog = WebLessonDialog(parent=self, url=url)
+        self._web_lesson_dialog = dialog
+        dialog.finished.connect(lambda _result: self._clear_web_lesson_dialog(dialog))
+        dialog.show()
+        dialog.raise_()
+
+    def _clear_web_lesson_dialog(self, dialog: WebLessonDialog) -> None:
+        if self._web_lesson_dialog is dialog:
+            self._web_lesson_dialog = None
 
     def _show_profile_menu_from_hover(self) -> None:
         if self._profile_menu.isVisible():
@@ -994,6 +1616,8 @@ class MainWindow(QMainWindow):
             self.mcq_tab.activate_view()
 
     def _play_and_switch(self, index: int) -> None:
+        if self._create_mode_menu.isVisible():
+            self._create_mode_menu.hide()
         if self.stack.currentIndex() != index:
             self.sounds.play("woosh")
         self._switch_tab(index)
@@ -1009,17 +1633,22 @@ class MainWindow(QMainWindow):
             self._apply_pseudo_maximize()
         self._sync_window_controls()
 
-    def _open_settings(self) -> None:
+    def _open_settings(self, *, auto_install_model_key: str = "") -> None:
         dialog = SettingsDialog(
             self.datastore,
             self.ollama,
             self.preflight,
             self,
             session_controller=self.session_controller,
+            auto_install_model_key=auto_install_model_key,
         )
         result = dialog.exec()
         if result:
-            self.sounds.configure(self.datastore.load_setup())
+            setup = self.datastore.load_setup()
+            app = QApplication.instance()
+            if app is not None:
+                apply_app_theme(app, dict(setup.get("appearance", {})).get("theme", "light"))
+            self.sounds.configure(setup)
             self.create_tab.refresh_ftc_defaults()
             self.mcq_tab.activate_view()
 
@@ -1030,7 +1659,7 @@ class MainWindow(QMainWindow):
         self._stats_overlay.show()
         self._stats_overlay.raise_()
         blur = QGraphicsBlurEffect(self._app_shell)
-        blur.setBlurRadius(16.0)
+        blur.setBlurRadius(14.0)
         self._app_shell.setGraphicsEffect(blur)
         dialog = StatsDialog(
             self.datastore,
@@ -1073,6 +1702,7 @@ class MainWindow(QMainWindow):
 
     def _init_tray_icon(self) -> None:
         self._tray_icon: QSystemTrayIcon | None = None
+        set_windows_app_user_model_id()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         tray_icon = self.windowIcon()
@@ -1090,14 +1720,16 @@ class MainWindow(QMainWindow):
         message_subject = str(subject).strip() or "study"
         message_text = f"We have completed making your {message_subject} slides"
         notification_sound = str(setup.get("audio", {}).get("notification_sound", "windows")).strip().lower()
-        if self._tray_icon is not None and self._tray_icon.isVisible():
+        custom_sound = notification_sound and notification_sound != "windows"
+        toast_shown = show_windows_toast("ONCard - FTC", message_text, silent=bool(custom_sound))
+        if not toast_shown and self._tray_icon is not None and self._tray_icon.isVisible():
             self._tray_icon.showMessage(
                 "ONCard - FTC",
                 message_text,
                 QSystemTrayIcon.MessageIcon.Information,
                 6000,
             )
-        if notification_sound and notification_sound != "windows":
+        if custom_sound:
             for index in range(4):
                 QTimer.singleShot(index * 650, lambda sound=notification_sound: self.sounds.play_notification(sound))
         self.show_update_notice(message_text, 6000)
@@ -1105,14 +1737,16 @@ class MainWindow(QMainWindow):
     def show_audio_test_notification(self, sound: str) -> None:
         clean_sound = str(sound or "windows").strip().lower()
         message = random.choice(self.AUDIO_TEST_MESSAGES)
-        if self._tray_icon is not None and self._tray_icon.isVisible():
+        custom_sound = clean_sound != "windows"
+        toast_shown = show_windows_toast("ONCard Dummy Notification", message, silent=custom_sound)
+        if not toast_shown and self._tray_icon is not None and self._tray_icon.isVisible():
             self._tray_icon.showMessage(
                 "ONCard Dummy Notification",
                 message,
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
             )
-        if clean_sound != "windows":
+        if custom_sound:
             self.sounds.play_notification(clean_sound)
 
     def begin_update_shutdown(self) -> None:
@@ -1299,10 +1933,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._closing:
+            if self._web_lesson_server is not None:
+                self._web_lesson_server.stop()
+                self._web_lesson_server = None
             super().closeEvent(event)
             return
         self._app_menu.hide()
         self._profile_menu.hide()
+        self._notifications_menu.hide()
+        self._create_mode_menu.hide()
+        self._quick_add_menu.hide()
         if not self._update_shutdown_requested and self.create_tab.has_pending_work():
             answer = QMessageBox.question(
                 self,
@@ -1315,6 +1955,9 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         if self._update_shutdown_requested:
+            if self._web_lesson_server is not None:
+                self._web_lesson_server.stop()
+                self._web_lesson_server = None
             super().closeEvent(event)
             return
         event.ignore()

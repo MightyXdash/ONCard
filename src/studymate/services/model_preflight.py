@@ -9,7 +9,15 @@ import time
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from studymate.services.data_store import DataStore
-from studymate.services.model_registry import MODELS, non_embedding_llm_keys
+from studymate.services.model_registry import (
+    MODELS,
+    QN_SUMMARIZER_AUTO_SELECTED_SETTING,
+    QN_SUMMARIZER_CONTEXT_LENGTH,
+    QN_SUMMARIZER_MODEL_KEY,
+    non_embedding_llm_keys,
+    ocr_llm_keys,
+    smallest_supported_ocr_llm_key,
+)
 from studymate.services.ollama_service import OllamaService
 
 
@@ -94,6 +102,24 @@ class ModelPreflightService:
                 else:
                     installed_models[key] = bool(installed_models.get(key, False))
 
+            installed_ocr_keys = [key for key in ocr_llm_keys() if bool(installed_models.get(key, False))]
+            selected_ocr_key = str(ai_settings.get("selected_ocr_llm_key", "")).strip()
+            if installed_ocr_keys and selected_ocr_key not in installed_ocr_keys:
+                ai_settings["selected_ocr_llm_key"] = smallest_supported_ocr_llm_key(installed_ocr_keys)
+                self.datastore.save_ai_settings(ai_settings)
+            if bool(installed_models.get(QN_SUMMARIZER_MODEL_KEY, False)) and not bool(ai_settings.get(QN_SUMMARIZER_AUTO_SELECTED_SETTING, False)):
+                changed = False
+                if not str(ai_settings.get("wiki_breakdown_model_key", "")).strip():
+                    ai_settings["wiki_breakdown_model_key"] = QN_SUMMARIZER_MODEL_KEY
+                    changed = True
+                if str(ai_settings.get("wiki_breakdown_model_key", "")).strip() == QN_SUMMARIZER_MODEL_KEY and int(ai_settings.get("wiki_breakdown_context_length", 0) or 0) != QN_SUMMARIZER_CONTEXT_LENGTH:
+                    ai_settings["wiki_breakdown_context_length"] = QN_SUMMARIZER_CONTEXT_LENGTH
+                    changed = True
+                ai_settings[QN_SUMMARIZER_AUTO_SELECTED_SETTING] = True
+                changed = True
+                if changed:
+                    self.datastore.save_ai_settings(ai_settings)
+
             if installed_models != dict(setup.get("installed_models", {})):
                 setup["installed_models"] = installed_models
                 self.datastore.save_setup(setup)
@@ -123,11 +149,16 @@ class ModelPreflightService:
     def semantic_search_available(self, *, force: bool = False) -> bool:
         return self.has_model("nomic_embed_text_v2_moe", force=force)
 
-    def gemma_available(self, *, force: bool = False) -> bool:
-        return self.has_model("gemma3_4b", force=force)
+    def default_text_model_available(self, *, force: bool = False) -> bool:
+        return self.has_model("gemma4_e2b", force=force)
 
     def require_model(self, model_key: str, *, parent: QWidget | None, feature_name: str, force: bool = False) -> bool:
         snap = self.snapshot(force=force)
+        if snap.cloud_mode and model_key in set(non_embedding_llm_keys()):
+            settings = self.datastore.load_ai_settings()
+            cloud_tag = str(settings.get("ollama_cloud_selected_model_tag", "")).strip()
+            if snap.cloud_key_present and snap.api_reachable and cloud_tag:
+                return True
         if snap.has_model(model_key):
             return True
         spec = MODELS.get(model_key)

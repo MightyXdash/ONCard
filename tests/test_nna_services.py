@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import base64
 import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QImage, QTextDocument
+from PySide6.QtWidgets import QApplication
 
 from studymate.services.data_store import DataStore
 from studymate.services.embedding_service import EmbeddingService
@@ -14,6 +20,12 @@ from studymate.services.study_intelligence import build_session_state, enqueue_s
 from studymate.ui.study_tab import AiResponseOverlay, StudyTab
 from studymate.utils.markdown import markdown_to_html
 from studymate.utils.paths import AppPaths
+from studymate.workers.ai_search_worker import WIKIPEDIA_THUMB_SIZE, _extract_image_search_terms_loose, fetch_wikipedia_extract
+
+
+VALID_THUMBNAIL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 
 class FakeOllama:
@@ -34,7 +46,24 @@ class FakeOllama:
         return [0.5, 0.5, 0.0]
 
 
+class FakeWikipediaResponse:
+    def __init__(self, payload: dict, *, content: bytes = b"", headers: dict | None = None) -> None:
+        self._payload = payload
+        self.content = content
+        self.headers = headers or {}
+
+    def raise_for_status(self) -> None:
+        return
+
+    def json(self) -> dict:
+        return self._payload
+
+
 class NnaServiceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = QApplication.instance() or QApplication([])
+
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name)
@@ -366,6 +395,40 @@ class NnaServiceTests(unittest.TestCase):
         self.assertIn("<ul><li>First point</li><li>Second point with <strong>bold</strong> text</li></ul>", rendered)
         self.assertNotIn("# Step 1", rendered)
 
+    def test_editorial_bullet_html_marks_only_bold_lead_ins(self) -> None:
+        markdown = "- **2022:** Launched **ChatGPT**, which got **1 million users** quickly."
+
+        rendered = markdown_to_html(markdown, editorial=True)
+
+        self.assertIn('<font color="#B66A2C"><b>2022:</b></font>', rendered)
+        self.assertIn('<font color="#566064"><b>ChatGPT</b></font>', rendered)
+        self.assertIn('<font color="#566064"><b>1 million users</b></font>', rendered)
+
+    def test_editorial_bullet_html_marks_dash_separated_lead_ins(self) -> None:
+        markdown = "- **Core idea** - Keep **ordinary bold** in body text."
+
+        rendered = markdown_to_html(markdown, editorial=True)
+
+        self.assertIn('<font color="#B66A2C"><b>Core idea</b></font>', rendered)
+        self.assertIn('<font color="#566064"><b>ordinary bold</b></font>', rendered)
+
+    def test_editorial_paragraph_html_keeps_body_bold_body_colored(self) -> None:
+        markdown = "Key Fact: Musk succeeds through **risk-taking** and **innovation**."
+
+        rendered = markdown_to_html(markdown, editorial=True)
+
+        self.assertIn('<font color="#566064"><b>risk-taking</b></font>', rendered)
+        self.assertIn('<font color="#566064"><b>innovation</b></font>', rendered)
+
+    def test_editorial_heading_html_uses_teal_without_affecting_plain_markdown(self) -> None:
+        markdown = "## Key moments"
+
+        rendered_editorial = markdown_to_html(markdown, editorial=True)
+        rendered_plain = markdown_to_html(markdown)
+
+        self.assertIn('<h2><font color="#357B78">KEY MOMENTS</font></h2>', rendered_editorial)
+        self.assertIn("<h2>Key moments</h2>", rendered_plain)
+
     def test_markdown_to_html_renders_tables(self) -> None:
         markdown = "| Topic | Score |\n| --- | --- |\n| Math | 9/10 |"
 
@@ -376,6 +439,190 @@ class NnaServiceTests(unittest.TestCase):
         self.assertIn("<th>Score</th>", rendered)
         self.assertIn("<td>Math</td>", rendered)
         self.assertIn("<td>9/10</td>", rendered)
+
+    def test_markdown_to_html_renders_links_as_anchors(self) -> None:
+        markdown = "Read [the source](https://example.com/path?x=1&y=2)."
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn('<a href="https://example.com/path?x=1&amp;y=2">the source</a>', rendered)
+
+    def test_markdown_to_html_renders_wiki_thumbnail_image(self) -> None:
+        markdown = "![Article](https://example.com/thumb.jpg)\n\n# Article"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn('<img class="wiki-thumb"', rendered)
+        self.assertIn('src="https://example.com/thumb.jpg"', rendered)
+        self.assertIn('alt="Article"', rendered)
+        self.assertIn('float:left', rendered)
+        self.assertIn('width="252"', rendered)
+
+    def test_markdown_to_html_renders_wiki_thumbnail_with_spaced_url(self) -> None:
+        markdown = "![Article](https://example.com/250 px-Article.jpg)\n\n# Article"
+
+        rendered = markdown_to_html(markdown)
+
+        self.assertIn('<img class="wiki-thumb"', rendered)
+        self.assertIn('src="https://example.com/250%20px-Article.jpg"', rendered)
+        self.assertNotIn("![Article]", rendered)
+
+    def test_ai_overlay_registers_valid_local_wiki_thumbnail_resource(self) -> None:
+        image_path = self.root / "thumb.png"
+        image_path.write_bytes(VALID_THUMBNAIL_PNG)
+        image_url = QUrl.fromLocalFile(str(image_path)).toString()
+        document = QTextDocument()
+
+        cleaned = AiResponseOverlay._prepare_local_markdown_images(f"![Article]({image_url})\n\n# Article", document)
+        self.assertIn("![Article](oncard-wiki-thumb:0)", cleaned)
+        resource = document.resource(QTextDocument.ResourceType.ImageResource, QUrl("oncard-wiki-thumb:0"))
+
+        self.assertIsInstance(resource, QImage)
+        self.assertFalse(resource.isNull())
+        self.assertEqual(float(AiResponseOverlay.WIKI_THUMB_SUPERSAMPLE), resource.devicePixelRatio())
+        self.assertLessEqual(
+            resource.width(),
+            (AiResponseOverlay.WIKI_THUMB_WIDTH + AiResponseOverlay.WIKI_THUMB_RIGHT_GAP)
+            * AiResponseOverlay.WIKI_THUMB_SUPERSAMPLE,
+        )
+        self.assertLessEqual(
+            resource.height(),
+            (AiResponseOverlay.WIKI_THUMB_MAX_HEIGHT + AiResponseOverlay.WIKI_THUMB_BOTTOM_GAP)
+            * AiResponseOverlay.WIKI_THUMB_SUPERSAMPLE,
+        )
+        self.assertEqual(0, resource.pixelColor(0, 0).alpha())
+
+    def test_ai_overlay_normalize_markdown_preserves_wiki_thumbnail_url(self) -> None:
+        image_path = self.root / "thumb.png"
+        image_path.write_bytes(VALID_THUMBNAIL_PNG)
+        image_url = QUrl.fromLocalFile(str(image_path)).toString()
+
+        normalized = AiResponseOverlay._normalize_markdown(f"![Article]({image_url})\n\n# Article")
+
+        self.assertIn(f"![Article]({image_url})", normalized)
+        self.assertNotIn("App Data", normalized)
+
+    def test_ai_overlay_strips_invalid_local_wiki_thumbnail_resource(self) -> None:
+        image_path = self.root / "broken.jpg"
+        image_path.write_bytes(b"not an image")
+        image_url = QUrl.fromLocalFile(str(image_path)).toString()
+        document = QTextDocument()
+
+        cleaned = AiResponseOverlay._prepare_local_markdown_images(f"![Article]({image_url})\n\n# Article", document)
+
+        self.assertNotIn("![Article]", cleaned)
+        self.assertIn("# Article", cleaned)
+
+    def test_fetch_wikipedia_extract_returns_thumbnail_url(self) -> None:
+        responses = [
+            FakeWikipediaResponse({"query": {"search": [{"title": "Photosynthesis"}]}}),
+            FakeWikipediaResponse(
+                {
+                    "query": {
+                        "pages": {
+                            "1": {
+                                "title": "Photosynthesis",
+                                "fullurl": "https://en.wikipedia.org/wiki/Photosynthesis",
+                                "extract": "Photosynthesis converts light energy into chemical energy.",
+                                "thumbnail": {"source": "https://upload.wikimedia.org/thumb.jpg"},
+                            }
+                        }
+                    }
+                }
+            ),
+            FakeWikipediaResponse({}, content=VALID_THUMBNAIL_PNG, headers={"content-type": "image/png"}),
+        ]
+
+        with tempfile.TemporaryDirectory() as cache_dir:
+            with patch("studymate.workers.ai_search_worker.WIKIPEDIA_THUMB_CACHE", Path(cache_dir)):
+                with patch("studymate.workers.ai_search_worker.requests.get", side_effect=responses) as mock_get:
+                    article = fetch_wikipedia_extract("photosynthesis")
+                cached_bytes = Path(article["thumbnail_path"]).read_bytes()
+
+        self.assertEqual(WIKIPEDIA_THUMB_SIZE, mock_get.call_args_list[1].kwargs["params"]["pithumbsize"])
+        self.assertEqual("Photosynthesis", article["title"])
+        self.assertEqual("https://upload.wikimedia.org/thumb.jpg", article["thumbnail_url"])
+        self.assertTrue(article["thumbnail_path"].endswith(".jpg"))
+        self.assertEqual(VALID_THUMBNAIL_PNG, cached_bytes)
+
+    def test_fetch_wikipedia_extract_skips_thumbnail_path_when_download_fails(self) -> None:
+        responses = [
+            FakeWikipediaResponse({"query": {"search": [{"title": "Photosynthesis"}]}}),
+            FakeWikipediaResponse(
+                {
+                    "query": {
+                        "pages": {
+                            "1": {
+                                "title": "Photosynthesis",
+                                "fullurl": "https://en.wikipedia.org/wiki/Photosynthesis",
+                                "extract": "Photosynthesis converts light energy into chemical energy.",
+                                "thumbnail": {"source": "https://upload.wikimedia.org/thumb.jpg"},
+                            }
+                        }
+                    }
+                }
+            ),
+            FakeWikipediaResponse({}, content=b"not-image", headers={"content-type": "text/html"}),
+        ]
+
+        with patch("studymate.workers.ai_search_worker.requests.get", side_effect=responses):
+            article = fetch_wikipedia_extract("photosynthesis")
+
+        self.assertEqual("https://upload.wikimedia.org/thumb.jpg", article["thumbnail_url"])
+        self.assertEqual("", article["thumbnail_path"])
+
+    def test_fetch_wikipedia_extract_skips_corrupt_thumbnail_download(self) -> None:
+        responses = [
+            FakeWikipediaResponse({"query": {"search": [{"title": "Broken Image"}]}}),
+            FakeWikipediaResponse(
+                {
+                    "query": {
+                        "pages": {
+                            "1": {
+                                "title": "Broken Image",
+                                "fullurl": "https://en.wikipedia.org/wiki/Broken_Image",
+                                "extract": "This page has a corrupt thumbnail response.",
+                                "thumbnail": {"source": "https://upload.wikimedia.org/broken.jpg"},
+                            }
+                        }
+                    }
+                }
+            ),
+            FakeWikipediaResponse({}, content=b"not an image", headers={"content-type": "image/jpeg"}),
+        ]
+
+        with tempfile.TemporaryDirectory() as cache_dir:
+            with patch("studymate.workers.ai_search_worker.WIKIPEDIA_THUMB_CACHE", Path(cache_dir)):
+                with patch("studymate.workers.ai_search_worker.requests.get", side_effect=responses):
+                    article = fetch_wikipedia_extract("broken image")
+                cached_files = list(Path(cache_dir).glob("*"))
+
+        self.assertEqual("https://upload.wikimedia.org/broken.jpg", article["thumbnail_url"])
+        self.assertEqual("", article["thumbnail_path"])
+        self.assertEqual([], cached_files)
+
+    def test_fetch_wikipedia_extract_allows_missing_thumbnail(self) -> None:
+        responses = [
+            FakeWikipediaResponse({"query": {"search": [{"title": "No Image"}]}}),
+            FakeWikipediaResponse(
+                {
+                    "query": {
+                        "pages": {
+                            "1": {
+                                "title": "No Image",
+                                "fullurl": "https://en.wikipedia.org/wiki/No_Image",
+                                "extract": "This page has readable text but no image.",
+                            }
+                        }
+                    }
+                }
+            ),
+        ]
+
+        with patch("studymate.workers.ai_search_worker.requests.get", side_effect=responses):
+            article = fetch_wikipedia_extract("no image")
+
+        self.assertEqual("", article["thumbnail_url"])
 
     def test_markdown_to_html_renders_heading_without_required_space(self) -> None:
         markdown = "##Step 1: Heading still renders"
@@ -400,6 +647,20 @@ class NnaServiceTests(unittest.TestCase):
 
         self.assertIn("<h2>1. Master the 2-Minute Rule</h2>", rendered)
         self.assertNotIn("># 1. Master the 2-Minute Rule<", rendered)
+
+    def test_image_search_terms_parser_accepts_cloud_json_array(self) -> None:
+        content = '["photosynthesis diagram", "chloroplast", "plant cell", "sunlight energy"]'
+
+        terms = _extract_image_search_terms_loose(content, limit=4)
+
+        self.assertEqual(["photosynthesis diagram", "chloroplast", "plant cell", "sunlight energy"], terms)
+
+    def test_image_search_terms_parser_accepts_numbered_cloud_text(self) -> None:
+        content = "1. quadratic formula\n2. algebra equation\n3. parabola graph\n4. vertex"
+
+        terms = _extract_image_search_terms_loose(content, limit=4)
+
+        self.assertEqual(["quadratic formula", "algebra equation", "parabola graph", "vertex"], terms)
 
 
 if __name__ == "__main__":

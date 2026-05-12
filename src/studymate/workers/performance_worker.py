@@ -12,7 +12,7 @@ class PerformanceWorker(QThread):
     done = Signal(float, str)
     failed = Signal(str)
 
-    def __init__(self, ollama: OllamaService, model: str = "gemma3:4b") -> None:
+    def __init__(self, ollama: OllamaService, model: str = "gemma4:e2b") -> None:
         super().__init__()
         self.ollama = ollama
         self.model = model
@@ -34,7 +34,7 @@ class PerformanceWorker(QThread):
         return PERFORMANCE_THRESHOLDS["poor"][2]
 
     def run(self) -> None:
-        self.progress.emit("Running 4 model checks with gemma3:4b...")
+        self.progress.emit(f"Running 4 model checks with {self.model}...")
         samples: list[float] = []
         for idx, prompt in enumerate(self.prompts, start=1):
             self.progress.emit(f"Question {idx}/4")

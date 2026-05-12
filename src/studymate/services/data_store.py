@@ -11,6 +11,7 @@ from typing import Any
 import uuid
 
 from studymate.constants import SUBJECT_TAXONOMY
+from studymate.services.model_registry import DEFAULT_TEXT_LLM_KEY, normalize_ai_settings
 from studymate.utils.paths import AppPaths
 
 
@@ -91,6 +92,9 @@ class DataStore:
             "performance_arena": {"skipped": True, "avg_tps": None, "tier": ""},
             "embedding_gate_declined_version": "",
             "embedding_gate_prompted_version": "",
+            "appearance": {
+                "theme": "light",
+            },
             "performance": {
                 "mode": "auto",
                 "startup_workers": 8,
@@ -128,6 +132,9 @@ class DataStore:
             "grade": "",
             "gender": "",
             "hobbies": "",
+            "avatar_category": "",
+            "avatar_file": "",
+            "avatar_index": "",
             "attention_span_minutes": 5,
             "question_focus_level": 5,
             "created_at": now,
@@ -141,14 +148,42 @@ class DataStore:
             "ask_ai_tone": "warm",
             "ask_ai_emoji_level": 2,
             "use_selected_llm_for_text_features": False,
-            "selected_text_llm_key": "gemma3_4b",
+            "selected_text_llm_key": DEFAULT_TEXT_LLM_KEY,
             "ollama_cloud_enabled": False,
             "ollama_cloud_api_key": "",
             "ollama_cloud_selected_model_tag": "",
+            "selected_ocr_llm_key": DEFAULT_TEXT_LLM_KEY,
+            "autofill_context_length": 8192,
+            "grading_context_length": 8192,
+            "mcq_context_length": 8192,
             "discuss_context_length": 8192,
+            "ask_ai_planner_context_length": 4400,
+            "ask_ai_answer_context_length": 9216,
+            "ask_ai_image_context_length": 8192,
+            "wiki_breakdown_context_length": 6000,
             "followup_context_length": 9216,
             "reinforcement_context_length": 8192,
+            "files_to_cards_ocr_context_length": 8192,
+            "files_to_cards_paper_context_length": 8192,
+            "files_to_cards_cards_context_length": 8192,
+            "stats_context_length": 4000,
+            "autofill_model_key": "",
+            "grading_model_key": "",
+            "mcq_model_key": "",
+            "ask_ai_planner_model_key": "",
+            "ask_ai_answer_model_key": "",
+            "ask_ai_image_model_key": "",
+            "wiki_breakdown_model_key": "",
+            "followup_model_key": "",
+            "followup_reasoning_mode": "instant",
+            "reinforcement_model_key": "",
+            "files_to_cards_ocr_model_key": "",
+            "files_to_cards_paper_model_key": "",
+            "files_to_cards_cards_model_key": "",
+            "stats_model_key": "",
             "files_to_cards_ocr": True,
+            "neural_acceleration": True,
+            "image_search_term_count": 4,
             "updated_at": cls.now_iso(),
         }
 
@@ -407,10 +442,19 @@ class DataStore:
                     self._save_section_locked(section, payload)
                     self._conn.commit()
                 self._settings_cache[section] = payload
-            return self._merge_dict(default, payload)
+            merged = self._merge_dict(default, payload)
+            if section == "ai_settings":
+                normalized = normalize_ai_settings(merged)
+                if normalized != payload:
+                    self._save_section_locked(section, normalized)
+                    self._conn.commit()
+                merged = normalized
+            return merged
 
     def _save_section(self, section: str, payload: dict) -> None:
         with self._lock:
+            if section == "ai_settings":
+                payload = normalize_ai_settings(payload)
             self._save_section_locked(section, payload)
             self._conn.commit()
 

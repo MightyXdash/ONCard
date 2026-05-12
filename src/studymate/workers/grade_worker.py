@@ -24,8 +24,9 @@ class GradeWorker(QThread):
         user_answer: str,
         difficulty: int,
         ollama: OllamaService,
-        model: str = "gemma3:4b",
+        model: str = "gemma4:e2b",
         profile_context: dict | None = None,
+        context_length: int = 8192,
         stream_preview: bool = True,
     ) -> None:
         super().__init__()
@@ -36,6 +37,7 @@ class GradeWorker(QThread):
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.context_length = max(1024, int(context_length or 8192))
         self.stream_preview = stream_preview
 
     def _expected_answer_block(self) -> str:
@@ -135,6 +137,7 @@ class GradeWorker(QThread):
                     system_prompt=preview_prompt,
                     user_prompt=user_preview_prompt,
                     temperature=0.2,
+                    extra_options={"num_ctx": self.context_length},
                 ):
                     preview_text += chunk
                     self.stream.emit(preview_text)
@@ -180,6 +183,7 @@ class GradeWorker(QThread):
                 user_prompt=user_structured,
                 schema=GRADE_RESPONSE_SCHEMA,
                 temperature=0.0,
+                extra_options={"num_ctx": self.context_length},
             )
         except OllamaError as exc:
             self.failed.emit(str(exc))

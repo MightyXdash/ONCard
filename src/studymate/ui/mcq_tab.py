@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import textwrap
+import time
 
 from PySide6.QtCore import QEvent, QPropertyAnimation, Qt, QEasingCurve
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QSizePolicy, QStackedLayout, QTextBrowser, QVBoxLayout, QWidget
 
 from studymate.services.data_store import DataStore
 from studymate.services.model_preflight import ModelPreflightService
 from studymate.services.ollama_service import OllamaService
 from studymate.services.study_intelligence import mark_card_completed
+from studymate.theme import is_dark_theme
 from studymate.ui.animated import AnimatedButton
 from studymate.ui.icon_helper import IconHelper
-from studymate.ui.study_tab import PromptTextEdit, SessionCardEntry, StudyTab
+from studymate.ui.study_tab import FollowUpThinkingPanel, PromptTextEdit, SessionCardEntry, StudyTab
 from studymate.workers.mcq_worker import MCQBulkWorker, MCQWorker, build_mcq_payload, cached_mcq_payload, save_mcq_payload
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
 class MCQTab(StudyTab):
@@ -36,48 +43,72 @@ class MCQTab(StudyTab):
         root.setSpacing(16)
 
         left_surface = self._surface()
+        dark = is_dark_theme()
+        choice_bg = "rgba(26, 35, 46, 0.98)" if dark else "rgba(255, 255, 255, 0.98)"
+        choice_border = "rgba(122, 142, 164, 0.34)" if dark else "rgba(166, 182, 198, 0.58)"
+        choice_text = "#e7edf4" if dark else "#3d4f5f"
+        selected_border = "#79b7ff" if dark else "#9aa6b2"
+        skeleton = (
+            "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #263443, stop:0.5 #344253, stop:1 #263443)"
+            if dark
+            else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8ecf1, stop:0.5 #f5f7fa, stop:1 #e8ecf1)"
+        )
+        skeleton_border = "rgba(122, 142, 164, 0.34)" if dark else "#dfe6ee"
         left_surface.setStyleSheet(
-            """
-            QPushButton#MCQChoiceButton {
-                background-color: rgba(255, 255, 255, 0.98);
-                border: 1px solid rgba(166, 182, 198, 0.58);
+            f"""
+            QLabel#MCQCardTitle {{
+                font-family: "Nunito Sans", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                font-size: 15px;
+                font-weight: 800;
+                color: {"#33465a" if dark else "#46596d"};
+            }}
+            QLabel#MCQQuestionLead {{
+                font-family: "Nunito Sans", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+                font-size: 24px;
+                font-weight: 700;
+                color: {"#c6d1dc" if dark else "#4f6478"};
+                line-height: 1.35;
+            }}
+            QPushButton#MCQChoiceButton {{
+                background-color: {choice_bg};
+                border: 1px solid {choice_border};
                 border-radius: 8px;
                 padding: 18px;
-                color: #3d4f5f;
+                color: {choice_text};
                 font-size: 16px;
                 font-weight: 500;
                 text-align: left;
-            }
-            QPushButton#MCQChoiceButton:hover {
-                background-color: rgba(255, 255, 255, 0.98);
-                border-color: rgba(166, 182, 198, 0.58);
-            }
-            QPushButton#MCQChoiceButton[result="correct"] {
+            }}
+            QPushButton#MCQChoiceButton:hover {{
+                background-color: {choice_bg};
+                border-color: {choice_border};
+            }}
+            QPushButton#MCQChoiceButton[result="correct"] {{
                 background-color: #d9f4df;
                 border-color: #58b66f;
                 color: #123d20;
-            }
-            QPushButton#MCQChoiceButton[result="correct-red"] {
+            }}
+            QPushButton#MCQChoiceButton[result="correct-red"] {{
                 background-color: #ffe1e1;
                 border-color: #d95c5c;
                 color: #6c1818;
-            }
-            QPushButton#MCQChoiceButton[result="selected"] {
-                background-color: rgba(255, 255, 255, 0.98);
-                border-color: #9aa6b2;
-            }
-            QWidget#MCQChoiceHost {
+            }}
+            QPushButton#MCQChoiceButton[result="selected"] {{
+                background-color: {choice_bg};
+                border-color: {selected_border};
+            }}
+            QWidget#MCQChoiceHost {{
                 background: transparent;
-            }
-            QPushButton#MCQChoiceButton[result="skeleton"] {
-                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8ecf1, stop:0.5 #f5f7fa, stop:1 #e8ecf1);
-                border-color: #dfe6ee;
+            }}
+            QPushButton#MCQChoiceButton[result="skeleton"] {{
+                background-color: {skeleton};
+                border-color: {skeleton_border};
                 color: transparent;
-            }
-            QPushButton#MCQChoiceButton[result="skeleton"]:hover {
-                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e8ecf1, stop:0.5 #f5f7fa, stop:1 #e8ecf1);
-                border-color: #dfe6ee;
-            }
+            }}
+            QPushButton#MCQChoiceButton[result="skeleton"]:hover {{
+                background-color: {skeleton};
+                border-color: {skeleton_border};
+            }}
             """
         )
         left_layout = QVBoxLayout(left_surface)
@@ -87,7 +118,7 @@ class MCQTab(StudyTab):
         actions = QHBoxLayout()
         self.start_btn = AnimatedButton("Start")
         self.start_btn.setProperty("skipClickSfx", True)
-        self.start_btn.clicked.connect(self._open_start_dialog)
+        self.start_btn.clicked.connect(self._handle_study_primary_action)
         self.refresh_study_btn = AnimatedButton("Refresh")
         self.refresh_study_btn.clicked.connect(lambda: self.reload_cards(force=True))
         actions.addStretch(1)
@@ -96,13 +127,25 @@ class MCQTab(StudyTab):
         left_layout.addLayout(actions)
 
         self.session_title = QLabel("Pick a card to start")
-        self.session_title.setObjectName("PageTitle")
+        self.session_title.setObjectName("MCQCardTitle")
         self.session_meta = QLabel("")
         self.session_meta.setObjectName("SmallMeta")
         self.session_question = QLabel("Use the Cards subtab or press Start for the current section.")
-        self.session_question.setObjectName("SectionText")
+        self.session_question.setObjectName("MCQQuestionLead")
         self.session_question.setWordWrap(True)
+        self.session_question.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         self.session_question.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.session_question.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self.question_shell = QWidget()
+        self.question_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        question_layout = QVBoxLayout(self.question_shell)
+        question_layout.setContentsMargins(40, 0, 40, 0)
+        question_layout.setSpacing(0)
+        question_layout.addStretch(1)
+        question_layout.addWidget(self.session_question)
+        question_layout.addStretch(1)
+        self.question_shell.setMinimumHeight(210)
 
         self.choice_host = QWidget()
         self.choice_host.setObjectName("MCQChoiceHost")
@@ -167,8 +210,7 @@ class MCQTab(StudyTab):
 
         left_layout.addWidget(self.session_title)
         left_layout.addWidget(self.session_meta)
-        left_layout.addWidget(self.session_question)
-        left_layout.addStretch(1)
+        left_layout.addWidget(self.question_shell, 1)
         left_layout.addWidget(self.choice_host)
         left_layout.addWidget(self.mcq_result)
         left_layout.addLayout(hint_row)
@@ -186,20 +228,21 @@ class MCQTab(StudyTab):
         self.grade_summary.setObjectName("PageTitle")
         self.grade_feedback = QTextBrowser()
         self.grade_feedback.setMinimumHeight(280)
-        self.followup_title = QLabel("Follow up on this card")
-        self.followup_title.setObjectName("SectionTitle")
-        self.followup_title.hide()
-        self.followup_input = PromptTextEdit()
-        self.followup_input.setPlaceholderText("Ask about your question")
-        self.followup_input.setMinimumHeight(120)
-        self.followup_input.submitted.connect(self._run_followup)
-        self.followup_btn = AnimatedButton("Ask follow up")
-        self.followup_btn.clicked.connect(self._run_followup)
-
+        self._init_followup_feedback_browser(self.grade_feedback)
+        self.followup_thinking_panel = FollowUpThinkingPanel()
+        self.followup_response_host = QWidget()
+        self.followup_response_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.followup_response_host.setAutoFillBackground(False)
+        self.followup_response_host.setStyleSheet("background: transparent; border: none;")
+        self.followup_response_stack = QStackedLayout(self.followup_response_host)
+        self.followup_response_stack.setContentsMargins(0, 0, 0, 0)
+        self.followup_response_stack.setStackingMode(QStackedLayout.StackOne)
+        self.followup_response_stack.addWidget(self.grade_feedback)
+        self.followup_response_stack.addWidget(self.followup_thinking_panel)
+        self.followup_response_stack.setCurrentWidget(self.grade_feedback)
         right_layout.addWidget(self.grade_summary)
-        right_layout.addWidget(self.grade_feedback, 1)
-        right_layout.addWidget(self.followup_input)
-        right_layout.addWidget(self.followup_btn)
+        right_layout.addWidget(self.followup_response_host, 1)
+        self._build_followup_controls(right_layout, hidden=False)
 
         root.addWidget(left_surface, 2)
         root.addWidget(right_surface, 1)
@@ -219,10 +262,10 @@ class MCQTab(StudyTab):
     def _fill_missing_mcqs_in_background(self) -> None:
         if self.mcq_background_worker is not None and self.mcq_background_worker.isRunning():
             return
-        model_spec = self._active_text_llm_spec()
+        model_spec = self._feature_text_llm_spec("mcq_context_length")
         if not self.preflight.has_model(model_spec.key):
             return
-        model_tag = self._active_text_model_tag()
+        model_tag = self._feature_text_model_tag("mcq_context_length")
         missing: list[dict] = []
         for card in self._filtered_cards():
             if not str(card.get("question", "")).strip():
@@ -232,12 +275,14 @@ class MCQTab(StudyTab):
         if not missing:
             return
         mcq_difficulty = self._mcq_difficulty()
+        ai_settings = self.datastore.load_ai_settings()
         worker = MCQBulkWorker(
             cards=missing,
             datastore=self.datastore,
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            context_length=int(ai_settings.get("mcq_context_length", 8192) or 8192),
             difficulty=mcq_difficulty,
         )
         self.mcq_background_worker = worker
@@ -385,6 +430,9 @@ class MCQTab(StudyTab):
             "answer_text": "",
             "selected_index": -1,
             "mcq_payload": None,
+            "mcq_started_monotonic": None,
+            "mcq_presented_at": "",
+            "mcq_response_seconds": None,
             "hints_used": 0,
             "grade_report": None,
             "review_markdown": "",
@@ -439,7 +487,7 @@ class MCQTab(StudyTab):
         if not isinstance(card, dict):
             return
         self._set_choices_busy("Preparing choices...")
-        model_tag = self._active_text_model_tag()
+        model_tag = self._feature_text_model_tag("mcq_context_length")
         cached = cached_mcq_payload(self.datastore, card, model_tag)
         if cached is None and card.get("mcq_answers"):
             try:
@@ -452,15 +500,17 @@ class MCQTab(StudyTab):
             self._apply_mcq_payload_to_card_answer(entry, cached)
             self._render_mcq_entry(entry)
             return
-        model_spec = self._active_text_llm_spec()
+        model_spec = self._feature_text_llm_spec("mcq_context_length")
         if not self.preflight.require_model(model_spec.key, parent=self, feature_name="MCQ generation"):
             self.mcq_result.setText("MCQ choices could not be generated until the model is ready.")
             return
+        ai_settings = self.datastore.load_ai_settings()
         worker = MCQWorker(
             card=card,
             ollama=self.ollama,
             model=model_tag,
             profile_context=self.datastore.load_profile(),
+            context_length=int(ai_settings.get("mcq_context_length", 8192) or 8192),
             difficulty=self._mcq_difficulty(),
         )
         self.mcq_worker = worker
@@ -528,6 +578,8 @@ class MCQTab(StudyTab):
         self.mcq_result.setText("")
         self._apply_choice_heights(list(choices))
         can_answer = not entry.get("attempt_logged") and self.mcq_worker is None
+        if can_answer and selected_index < 0 and choices:
+            self._ensure_mcq_timer_started(entry)
         for index, button in enumerate(self.choice_buttons):
             button.setText(self._wrapped_choice_text(str(choices[index])) if index < len(choices) else "")
             button.setEnabled(can_answer and index < len(choices))
@@ -555,6 +607,82 @@ class MCQTab(StudyTab):
         button.style().polish(button)
         button.update()
 
+    def _ensure_mcq_timer_started(self, entry: dict) -> None:
+        if entry.get("mcq_started_monotonic") is not None:
+            return
+        entry["mcq_started_monotonic"] = time.monotonic()
+        entry["mcq_presented_at"] = datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _mcq_target_seconds(card: dict, hints_used: int) -> float:
+        question_words = len(str(card.get("question", "")).split())
+        difficulty = _clamp(float(card.get("natural_difficulty", 5) or 5), 1.0, 10.0)
+        base_seconds = 6.0 + (difficulty * 1.55) + min(question_words, 28) * 0.33
+        hint_adjustment = min(max(hints_used, 0), 3) * 2.2
+        return _clamp(base_seconds + hint_adjustment, 7.5, 36.0)
+
+    @staticmethod
+    def _mcq_speed_factor(response_seconds: float, target_seconds: float) -> float:
+        if target_seconds <= 0:
+            return 0.5
+        ratio = response_seconds / target_seconds
+        if ratio <= 0.55:
+            return 1.0
+        if ratio <= 1.0:
+            return _clamp(1.0 - ((ratio - 0.55) / 0.45) * 0.18, 0.82, 1.0)
+        if ratio <= 1.6:
+            return _clamp(0.82 - ((ratio - 1.0) / 0.6) * 0.27, 0.55, 0.82)
+        if ratio <= 2.4:
+            return _clamp(0.55 - ((ratio - 1.6) / 0.8) * 0.35, 0.20, 0.55)
+        return max(0.0, 0.20 - min(0.20, (ratio - 2.4) * 0.08))
+
+    def _build_mcq_grade_report(self, entry: dict, payload: dict, selected_answer: str, correct: bool) -> dict:
+        card = entry.get("card") or {}
+        started_monotonic = entry.get("mcq_started_monotonic")
+        response_seconds = 0.0
+        if isinstance(started_monotonic, (int, float)):
+            response_seconds = max(0.2, time.monotonic() - float(started_monotonic))
+        hints_used = int(entry.get("hints_used", 0) or 0)
+        target_seconds = self._mcq_target_seconds(card, hints_used)
+        speed_factor = self._mcq_speed_factor(response_seconds, target_seconds)
+        hint_multiplier = max(0.55, 1.0 - (min(hints_used, 4) * 0.12))
+        difficulty = _clamp(float(card.get("natural_difficulty", 5) or 5), 1.0, 10.0)
+        difficulty_bonus = ((difficulty - 5.0) / 5.0) * 0.4
+
+        if correct:
+            marks = (5.6 + (4.1 * speed_factor) + difficulty_bonus) * hint_multiplier
+            how_good = _clamp((89.0 + (11.0 * speed_factor) + (difficulty_bonus * 4.0)) - (hints_used * 2.5), 0.0, 100.0)
+        else:
+            marks = max(0.0, (0.4 + (3.0 * speed_factor) + max(0.0, difficulty_bonus * 0.5)) * (hint_multiplier - 0.08))
+            how_good = _clamp((10.0 + (34.0 * speed_factor) + (difficulty_bonus * 3.0)) - (hints_used * 3.5), 0.0, 55.0)
+
+        marks = round(_clamp(marks, 0.0, 10.0), 1)
+        response_seconds = round(response_seconds, 2)
+        entry["mcq_response_seconds"] = response_seconds
+
+        return {
+            "marks_out_of_10": marks,
+            "how_good": round(how_good, 4),
+            "state": "correct" if correct else "wrong",
+            "what_went_good": "Correct MCQ choice." if correct else "",
+            "what_went_bad": "" if correct else "Selected the wrong MCQ choice.",
+            "what_to_improve": "" if correct else f"Review the correct answer: {payload.get('correct_answer', '')}",
+            "mcq": True,
+            "hide_score": True,
+            "selected_answer": selected_answer,
+            "correct_answer": payload.get("correct_answer", ""),
+            "response_time_seconds": response_seconds,
+            "answered_at": datetime.now(timezone.utc).isoformat(),
+            "scoring_factors": {
+                "correct": correct,
+                "target_seconds": round(target_seconds, 2),
+                "speed_factor": round(speed_factor, 4),
+                "hint_multiplier": round(hint_multiplier, 4),
+                "difficulty_bonus": round(difficulty_bonus, 4),
+                "hints_used": hints_used,
+            },
+        }
+
     def _select_choice(self, index: int) -> None:
         entry = self._current_history_entry()
         if entry is None or entry.get("attempt_logged") or not entry.get("mcq_payload"):
@@ -571,25 +699,16 @@ class MCQTab(StudyTab):
         correct = index == correct_index
         entry["answer_text"] = selected_answer
         entry["selected_index"] = index
-        report = {
-            "marks_out_of_10": 10.0 if correct else 0.0,
-            "how_good": 120.0 if correct else 0.0,
-            "state": "correct" if correct else "wrong",
-            "what_went_good": "Correct MCQ choice." if correct else "",
-            "what_went_bad": "" if correct else "Selected the wrong MCQ choice.",
-            "what_to_improve": "" if correct else f"Review the correct answer: {payload.get('correct_answer', '')}",
-            "mcq": True,
-            "selected_answer": selected_answer,
-            "correct_answer": payload.get("correct_answer", ""),
-        }
+        report = self._build_mcq_grade_report(entry, payload, selected_answer, correct)
         self._apply_grade_result(entry, report)
-        self._render_mcq_entry(entry)
+        self._show_history_entry(self.current_history_index)
 
     def _update_study_controls(self) -> None:
         entry = self._current_history_entry()
         is_latest = self.current_history_index == len(self.session_history) - 1
         pending_current = entry is not None and entry.get("status") in {"queued", "grading"}
         can_choose = bool(entry) and not pending_current and not entry.get("attempt_logged") and self.mcq_worker is None
+        self._update_study_primary_action()
         self.prev_card_btn.setEnabled(self.current_history_index > 0)
         self.next_btn.setEnabled(bool(entry and entry.get("attempt_logged")) and self.mcq_worker is None)
         self.skip_btn.setEnabled(can_choose and is_latest)
@@ -622,7 +741,6 @@ class MCQTab(StudyTab):
     def _finish_session(self) -> None:
         for batch_id in list(self.session_temp_batches.keys()):
             self._finalize_temp_batch(batch_id)
-        avg_marks = sum(self.session_scores) / len(self.session_scores) if self.session_scores else 0.0
         avg_difficulty = (
             sum(int(card.get("natural_difficulty", 5)) for card in self.session_cards) / len(self.session_cards)
             if self.session_cards
@@ -633,7 +751,7 @@ class MCQTab(StudyTab):
         QMessageBox.information(
             self,
             "MCQ session complete",
-            f"Average marks: {avg_marks:.1f}/10\nAverage difficulty: {avg_difficulty:.1f}/10",
+            f"Cards completed: {len(self.session_scores)}\nAverage difficulty: {avg_difficulty:.1f}/10",
         )
         self._cancel_session_prep()
         self.current_card = None
@@ -659,6 +777,7 @@ class MCQTab(StudyTab):
         self.skip_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.hint_btn.setEnabled(False)
+        self._update_study_primary_action()
         for button in self.choice_buttons:
             button.setText("")
             button.setEnabled(False)

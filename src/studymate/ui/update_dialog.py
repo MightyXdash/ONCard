@@ -20,11 +20,12 @@ from studymate.services.update_service import ReleaseInfo
 from studymate.ui.animated import AnimatedButton
 from studymate.ui.audio import UiSoundBank
 from studymate.ui.banner_widget import BannerWidget
+from studymate.ui.window_effects import polish_popup_window
 
 
 def _use_frameless_surface(dialog: QDialog) -> None:
     dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    polish_popup_window(dialog, set_frameless=False)
 
 
 def _add_surface_shadow(surface: QFrame) -> None:

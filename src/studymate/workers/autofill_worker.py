@@ -16,8 +16,9 @@ def generate_card_payload(
     *,
     question: str,
     ollama: OllamaService,
-    model: str = "gemma3:4b",
+    model: str = "gemma4:e2b",
     profile_context: dict | None = None,
+    context_length: int = 8192,
     subject_override: str | None = None,
     category_override: str | None = None,
     subtopic_override: str | None = None,
@@ -25,6 +26,9 @@ def generate_card_payload(
     extra_options: dict | None = None,
 ) -> dict:
     profile_context = profile_context or {}
+    context_length = max(1024, int(context_length or 8192))
+    options = dict(extra_options or {})
+    options.setdefault("num_ctx", context_length)
 
     def fallback() -> dict:
         subject = subject_override or random.choice(list(SUBJECT_TAXONOMY.keys()))
@@ -93,7 +97,7 @@ def generate_card_payload(
             user_prompt=user_prompt,
             schema=CREATE_RESPONSE_SCHEMA,
             temperature=0.0,
-            extra_options=extra_options,
+            extra_options=options,
         )
     except OllamaError:
         payload = fallback()
@@ -146,14 +150,16 @@ class AutofillWorker(QThread):
         self,
         question: str,
         ollama: OllamaService,
-        model: str = "gemma3:4b",
+        model: str = "gemma4:e2b",
         profile_context: dict | None = None,
+        context_length: int = 8192,
     ) -> None:
         super().__init__()
         self.question = question
         self.ollama = ollama
         self.model = model
         self.profile_context = profile_context or {}
+        self.context_length = max(1024, int(context_length or 8192))
 
     def _fallback(self) -> dict:
         return generate_card_payload(
@@ -161,6 +167,7 @@ class AutofillWorker(QThread):
             ollama=self.ollama,
             model=self.model,
             profile_context=self.profile_context,
+            context_length=self.context_length,
             response_to_user="Done! I queued a fallback draft card so you can keep studying.",
         )
 
@@ -174,6 +181,7 @@ class AutofillWorker(QThread):
                 ollama=self.ollama,
                 model=self.model,
                 profile_context=self.profile_context,
+                context_length=self.context_length,
             )
         except OllamaError:
             payload = self._fallback()

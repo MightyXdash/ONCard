@@ -4,8 +4,8 @@ from pathlib import Path
 import re
 import shutil
 
-from PySide6.QtCore import QEasingCurve, QPointF, Property, QPropertyAnimation, QRectF, QSize, Qt, QVariantAnimation, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QPointF, Property, QPropertyAnimation, QRectF, QSize, Qt, QUrl, QVariantAnimation, QTimer
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -23,10 +23,11 @@ from PySide6.QtWidgets import (
 )
 
 from studymate.services.data_store import DataStore
-from studymate.services.model_registry import resolve_active_text_model_tag
+from studymate.services.model_registry import resolve_feature_text_model_tag
 from studymate.services.ollama_service import OllamaService
 from studymate.services.stats_service import RANGE_CONFIGS, StatsService
 from studymate.ui.animated import AnimatedComboBox, polish_surface
+from studymate.utils.markdown import markdown_to_html
 from studymate.workers.stats_summary_worker import StatsSummaryWorker
 
 
@@ -538,7 +539,9 @@ class StatsDialog(QDialog):
         self.summary = QTextBrowser()
         self.summary.setObjectName("StatsSummary")
         self.summary.setMinimumHeight(260)
+        self.summary.setOpenLinks(False)
         self.summary.setOpenExternalLinks(False)
+        self.summary.anchorClicked.connect(self._open_summary_link)
         self.summary.setStyleSheet(
             "QTextBrowser#StatsSummary { border: 1px solid rgba(166,181,197,0.38); border-radius: 22px; padding: 12px; background: #ffffff; }"
         )
@@ -582,7 +585,7 @@ class StatsDialog(QDialog):
                 text-decoration: none;
             }
             a:hover {
-                color: #2E7DFF;
+                color: #8C96A1;
             }
             """
         )
@@ -635,7 +638,9 @@ class StatsDialog(QDialog):
         self._summary_token += 1
         token = self._summary_token
         summary_payload = dict(snapshot.get("summary_payload", {}))
-        context_length = int(snapshot.get("range", {}).get("context_length", 4000))
+        ai_settings = self.datastore.load_ai_settings()
+        default_context = int(snapshot.get("range", {}).get("context_length", 4000))
+        context_length = int(ai_settings.get("stats_context_length", default_context) or default_context)
         self._show_summary_skeleton(force=True)
 
         worker = StatsSummaryWorker(
@@ -643,7 +648,7 @@ class StatsDialog(QDialog):
             profile=self.profile,
             summary_payload=summary_payload,
             context_length=context_length,
-            model=resolve_active_text_model_tag(self.datastore.load_ai_settings()),
+            model=resolve_feature_text_model_tag(ai_settings, "stats_context_length"),
         )
         self._summary_worker = worker
         self._summary_workers.add(worker)
@@ -678,7 +683,7 @@ class StatsDialog(QDialog):
             self._summary_reveal_anim.stop()
             self._summary_reveal_anim = None
         self.summary_reveal_overlay.hide()
-        self.summary.setMarkdown(self._last_summary_markdown)
+        self.summary.setHtml(markdown_to_html(self._last_summary_markdown))
         if force:
             self.summary_skeleton.start()
             self.summary_stack.setCurrentWidget(self.summary_skeleton)
@@ -693,7 +698,7 @@ class StatsDialog(QDialog):
         if cleaned:
             self._last_summary_markdown = cleaned
         self.summary_skeleton.stop()
-        self.summary.setMarkdown(self._last_summary_markdown)
+        self.summary.setHtml(markdown_to_html(self._last_summary_markdown))
         bar = self.summary.verticalScrollBar()
         if bar is not None:
             bar.setValue(bar.maximum())
@@ -742,6 +747,14 @@ class StatsDialog(QDialog):
         animation.setEndValue(0)
         animation.start()
         self._summary_scroll_anim = animation
+
+    def _open_summary_link(self, url) -> None:
+        link = url.toString().strip()
+        if not link:
+            return
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", link):
+            link = f"https://{link}"
+        QDesktopServices.openUrl(QUrl(link))
 
     def _on_link_clicked(self, url) -> None:
         link = url.toString().strip().lower()

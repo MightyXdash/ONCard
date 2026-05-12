@@ -102,7 +102,7 @@ class MCQWorkerUtilityTests(unittest.TestCase):
 
     def test_build_payload_shuffles_and_preserves_correct_marker(self) -> None:
         card = {"id": "card-1", "question": "Which organelle makes ATP?"}
-        payload = build_mcq_payload(card, ["Mitochondria", "Ribosomes", "Lysosomes", "Centrioles"], "gemma3:4b")
+        payload = build_mcq_payload(card, ["Mitochondria", "Ribosomes", "Lysosomes", "Centrioles"], "gemma4:e2b")
         self.assertEqual(4, len(payload["choices"]))
         self.assertEqual("Mitochondria", payload["correct_answer"])
         self.assertEqual("Mitochondria", payload["choices"][payload["correct_index"]])
@@ -112,7 +112,7 @@ class MCQWorkerUtilityTests(unittest.TestCase):
         payload = generate_mcq_payload(
             card={"id": "card-1", "question": "What is the availability heuristic?"},
             ollama=ollama,
-            model="gemma3:4b",
+            model="gemma4:e2b",
         )
         self.assertEqual(2, ollama.calls)
         self.assertEqual("Availability heuristic", payload["correct_answer"])
@@ -124,11 +124,11 @@ class MCQWorkerUtilityTests(unittest.TestCase):
             store = DataStore(paths)
             card = {"id": "card-1", "question": "Which organelle makes ATP?"}
             changed = {"id": "card-1", "question": "Which organelle stores DNA?"}
-            self.assertNotEqual(mcq_cache_key(card, "gemma3:4b"), mcq_cache_key(changed, "gemma3:4b"))
+            self.assertNotEqual(mcq_cache_key(card, "gemma4:e2b"), mcq_cache_key(changed, "gemma4:e2b"))
 
-            payload = build_mcq_payload(card, ["Mitochondria", "Ribosomes", "Lysosomes", "Centrioles"], "gemma3:4b")
+            payload = build_mcq_payload(card, ["Mitochondria", "Ribosomes", "Lysosomes", "Centrioles"], "gemma4:e2b")
             save_mcq_payload(store, card, payload)
-            cached = cached_mcq_payload(store, card, "gemma3:4b")
+            cached = cached_mcq_payload(store, card, "gemma4:e2b")
             self.assertIsNotNone(cached)
             self.assertEqual(payload["correct_answer"], cached["correct_answer"])
             store.close()
@@ -137,7 +137,7 @@ class MCQWorkerUtilityTests(unittest.TestCase):
         payload = generate_card_payload(
             question="What process lets plants make food?",
             ollama=FakeOllama(),
-            model="gemma3:4b",
+            model="gemma4:e2b",
         )
         self.assertEqual("Photosynthesis", payload["answer"])
         self.assertEqual(["Photosynthesis", "Respiration", "Transpiration", "Fermentation"], payload["mcq_answers"])
@@ -146,7 +146,7 @@ class MCQWorkerUtilityTests(unittest.TestCase):
         payload = generate_card_payload(
             question="What process lets plants make food?",
             ollama=FakePlaceholderAutofillOllama(),
-            model="gemma3:4b",
+            model="gemma4:e2b",
         )
         self.assertEqual("", payload["answer"])
         self.assertEqual([], payload["mcq_answers"])

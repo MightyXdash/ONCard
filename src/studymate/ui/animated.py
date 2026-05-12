@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from studymate.ui.window_effects import polish_popup_window
+
 
 def _refresh_style(widget: QWidget) -> None:
     style = widget.style()
@@ -146,7 +148,7 @@ class AnimatedComboBox(QComboBox):
                 border-radius: 12px;
             }
             QListView#DropdownView::item:hover {
-                background: #eef4fa;
+                background: transparent;
             }
             QListView#DropdownView::item:selected {
                 background: #dbe8f6;
@@ -163,7 +165,7 @@ class AnimatedComboBox(QComboBox):
                 min-height: 42px;
             }
             QScrollBar::handle:vertical:hover {
-                background: rgba(121, 146, 171, 0.9);
+                background: rgba(150, 170, 191, 0.75);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
@@ -195,21 +197,16 @@ class AnimatedComboBox(QComboBox):
         if popup is None:
             return
         popup.setObjectName("ComboPopup")
-        popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        popup.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        popup.setAutoFillBackground(True)
-        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, False)
+        polish_popup_window(popup, set_frameless=False)
         popup_palette = popup.palette()
-        popup_palette.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
-        popup_palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        popup_palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+        popup_palette.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
         popup.setPalette(popup_palette)
         popup.setStyleSheet(
             """
             QWidget#ComboPopup {
-                background-color: #ffffff;
-                border: 1px solid rgba(163, 179, 197, 0.85);
-                border-radius: 18px;
+                background: transparent;
+                border: none;
             }
             """
         )
@@ -329,15 +326,14 @@ class CardHoverChrome:
         self.widget = widget
 
     def set_hovered(self, hovered: bool) -> None:
-        self.widget.setProperty("hovered", hovered)
-        _refresh_style(self.widget)
+        del hovered
 
 
 class _MotionMixin:
     def _init_motion(self) -> None:
         self._press_progress = 0.0
         self._hover_progress = 0.0
-        self._motion_scale_range = 0.012
+        self._motion_scale_range = 0.0
         self._motion_lift = 0.0
         self._motion_press_scale = 0.0
         self._motion_hover_grow_x = 0
@@ -391,19 +387,10 @@ class _MotionMixin:
             self.setFixedSize(value)
 
     def _animate_hover_state(self, hovered: bool) -> None:
+        del hovered
         self._hover_animation.stop()
-        self._hover_animation.setStartValue(self._hover_progress)
-        self._hover_animation.setEndValue(1.0 if hovered else 0.0)
-        self._hover_animation.start()
-        if self._motion_hover_grow_x > 0 or self._motion_hover_grow_y > 0:
-            base = self._ensure_base_size()
-            grow_x = self._motion_hover_grow_x if hovered else 0
-            grow_y = self._motion_hover_grow_y if hovered else 0
-            target = QSize(base.width() + grow_x, base.height() + grow_y)
-            self._size_animation.stop()
-            self._size_animation.setStartValue(self.size())
-            self._size_animation.setEndValue(target)
-            self._size_animation.start()
+        self._size_animation.stop()
+        self._hover_progress = 0.0
 
     def _animate_press_state(self, pressed: bool) -> None:
         self._press_animation.stop()
@@ -412,7 +399,7 @@ class _MotionMixin:
         self._press_animation.start()
 
     def _press_offset(self) -> int:
-        return int(round(1 * self._press_progress))
+        return 0
 
     def _lift_offset(self) -> float:
         return self._motion_lift * self._hover_progress
@@ -446,16 +433,12 @@ class AnimatedButton(QPushButton, _MotionMixin):
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
-        self.setProperty("hovered", False)
-        _refresh_style(self)
         self._animate_hover_state(False)
         if not self.isDown() and self.property("disablePressMotion") is not True:
             self._animate_press_state(False)
 
     def enterEvent(self, event) -> None:
         super().enterEvent(event)
-        self.setProperty("hovered", True)
-        _refresh_style(self)
         self._animate_hover_state(True)
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -496,16 +479,12 @@ class AnimatedToolButton(QToolButton, _MotionMixin):
 
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
-        self.setProperty("hovered", False)
-        _refresh_style(self)
         self._animate_hover_state(False)
         if not self.isDown() and self.property("disablePressMotion") is not True:
             self._animate_press_state(False)
 
     def enterEvent(self, event) -> None:
         super().enterEvent(event)
-        self.setProperty("hovered", True)
-        _refresh_style(self)
         self._animate_hover_state(True)
 
     def paintEvent(self, event: QPaintEvent) -> None:

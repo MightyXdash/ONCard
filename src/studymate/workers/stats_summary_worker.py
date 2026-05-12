@@ -14,6 +14,7 @@ STATS_SUMMARY_SYSTEM_PROMPT = (
     "- Always refer to the student in third person (never 'you').\n"
     "- Pronouns are mandatory. If profile gender is male, use only he/him for the student. If profile gender is female, use only she/her for the student. If gender is not male or female, avoid gendered pronouns and use the student name.\n"
     "- Use normal markdown for readability. Markdown headings, bold, and italics are allowed.\n"
+    "- Do not use # heading syntax. Do not turn the first line into a large title.\n"
     "- Use these two section headings in this order:\n"
     "  1. How good [name] is performing:\n"
     "  2. What I think [name] should do:\n"
@@ -27,6 +28,7 @@ STATS_SUMMARY_SYSTEM_PROMPT = (
     "- Clarify that around 3 to 6 minutes is already a good/healthy range, 1 to 2 is somewhat low, and values closer to 10 are strongest.\n"
     "- If data is sparse, explicitly say evidence is limited.\n"
     "- Keep tone supportive, direct, and practical.\n"
+    "- Do not end with offers or follow-up questions like 'Do you want me to break this down further?'.\n"
     "- Maximum 170 words."
 )
 
@@ -46,6 +48,14 @@ def _case_like(source: str, target: str) -> str:
     if source[:1].isupper():
         return target[:1].upper() + target[1:]
     return target
+
+
+def _demote_large_headings(markdown_text: str) -> str:
+    lines = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned: list[str] = []
+    for line in lines:
+        cleaned.append(re.sub(r"^\s*#{1,6}\s+", "", line).rstrip())
+    return "\n".join(cleaned).strip()
 
 
 def _replace_token(text: str, pattern: str, replacement: str) -> str:
@@ -89,7 +99,7 @@ class StatsSummaryWorker(QThread):
         profile: dict,
         summary_payload: dict,
         context_length: int,
-        model: str = "gemma3:4b",
+        model: str = "gemma4:e2b",
     ) -> None:
         super().__init__()
         self.ollama = ollama
@@ -125,7 +135,7 @@ class StatsSummaryWorker(QThread):
                 model=self.model,
                 system_prompt=STATS_SUMMARY_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                temperature=0.25,
+                temperature=0.14,
                 extra_options={"num_ctx": self.context_length},
                 timeout=180,
                 should_stop=self.isInterruptionRequested,
@@ -142,5 +152,5 @@ class StatsSummaryWorker(QThread):
         except Exception as exc:  # pragma: no cover - defensive guard for thread safety
             self.failed.emit(str(exc))
             return
-        summary = _enforce_pronouns("".join(parts).strip(), profile_gender)
+        summary = _demote_large_headings(_enforce_pronouns("".join(parts).strip(), profile_gender))
         self.finished.emit(summary)
