@@ -22,7 +22,7 @@
 </p>
 
 
-
+> ONCard uses ollama for the AI engine. This helps me use my own models and improve overall ease of use.
 
 
 
