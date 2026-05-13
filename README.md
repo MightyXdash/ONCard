@@ -21,6 +21,22 @@
   <img src="https://img.shields.io/badge/QNS--1-SUMMARIZER-FF9F1C?style=flat-square&logo=Ollama&logoColor=white" alt="QNS-1 Summarizer">
 </p>
 
+<p align="center">
+  <a href="https://github.com/MightyXdash/ONCard/wiki">
+    <img src="https://img.shields.io/badge/ONCard-Wiki-06B6D4?style=flat-square&logo=github&logoColor=white" alt="ONCard Wiki">
+  </a>
+
+  <a href="https://github.com/MightyXdash/ONCard/stargazers">
+    <img src="https://img.shields.io/github/stars/MightyXdash/ONCard?style=flat-square&color=FACC15&logo=github&label=Stars" alt="GitHub Stars">
+  </a>
+
+  <a href="https://github.com/MightyXdash/ONCard/releases">
+    <img src="https://img.shields.io/github/downloads/MightyXdash/ONCard/total?style=flat-square&color=22C55E&logo=github&label=Downloads" alt="Total Downloads">
+  </a>
+</p>
+
+
+
 
 > ONCard uses ollama for the AI engine. This helps me use my own models and improve overall ease of use.
 
