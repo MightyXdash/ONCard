@@ -5,8 +5,29 @@
   </p>
 </p>
 
+
+
+
+
+
+
 <p align="center">
-  <img width="850" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
+  <img src="https://img.shields.io/badge/Python-3.10+-4F46E5?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
+
+  <img src="https://img.shields.io/badge/License-Apache%202.0-FF6B6B?style=flat-square&logo=bookstack&logoColor=white" alt="Apache 2.0 License">
+
+  <img src="https://img.shields.io/badge/Ollama-Local%20AI-111827?style=flat-square&logo=ollama&logoColor=white" alt="Ollama">
+
+  <img src="https://img.shields.io/badge/QNS--1-SUMMARIZER-FF9F1C?style=flat-square&logo=Ollama&logoColor=white" alt="QNS-1 Summarizer">
+</p>
+
+
+
+
+
+
+<p align="center">
+  <img width="450" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
 </p>
 
 
