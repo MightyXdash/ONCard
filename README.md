@@ -136,8 +136,17 @@ For a smooth experience:
 If you use this project or parts of its code, please cite:
 
 ```bibtex
-@MightyXdash/ONCard, 2026
-https://github.com/MightyXdash/ONCard
+@software{mightyxdash_oncard_2026,
+  author       = {{MightyXdash}},
+  title        = {{ONCard}: Open-source Neural-Accelerated Cards},
+  year         = {2026},
+  version      = {1.5.9},
+  date         = {2026-05-13},
+  publisher    = {GitHub},
+  url          = {https://github.com/MightyXdash/ONCard},
+  license      = {Apache-2.0},
+  note         = {Fully offline AI-powered study platform featuring local neural workflows, adaptive learning systems, semantic search, virtual teacher feedback, flashcard and MCQ generation, and Ollama-powered AI integration.}
+}
 ```
 
 Thanks for using ONCard 🤗
