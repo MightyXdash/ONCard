@@ -104,7 +104,7 @@ These are the core features that make ONCard powerful for daily studying:
 
 ## Installation
 
-> **Note:** The app does not currently have a license file.
+> **Note:** Currently the app is not code signed.
 >
 > If Windows Defender shows a warning during installation, you may need to allow the app manually.
 > ("More info" -> "Run anyways")
