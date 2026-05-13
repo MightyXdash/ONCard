@@ -1,7 +1,19 @@
-# ONCard
-Elevate your learning experience with a fully offline AI-powered study app.
+<p align="center">
+  <h1 align="center">ONCard</h1>
+  <p align="center">
+    Fully offline AI-powered studying, flashcards, MCQs, and intelligent learning tools.
+  </p>
+</p>
 
-<img width="1280" height="720" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
+<p align="center">
+  <img width="850" alt="ONCard app preview" src="https://github.com/user-attachments/assets/ef66e9e1-5729-424d-898e-691a490336b0" />
+</p>
+
+
+
+
+
+
 
 
 
